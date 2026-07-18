@@ -27,6 +27,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
 
 include(CPM)
 find_package(EACP REQUIRED)
+find_package(TreeSitter REQUIRED)
 
 # eacp appends its CMake helper directory to CMAKE_MODULE_PATH only within its
 # own directory scope, so re-add it here: App/ calls find_package(ResEmbed) via

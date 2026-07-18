@@ -1,4 +1,5 @@
 #include <ECodeRender/TextRenderer.h>
+#include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <eacp/GPU/GPU.h>
 #include <eacp/Graphics/Graphics.h>
@@ -43,6 +44,13 @@ struct EditorView final : GPU::GPUView
         // Until there is a file tree, the editor opens its own renderer — a
         // real file, long enough to scroll, and it changes as we work on it.
         openFile(FilePath {__FILE__});
+
+        auto syntax = makeOwned<SyntaxHighlighter>();
+
+        // A grammar that failed to load leaves highlighter null, and everything
+        // still draws as plain text.
+        if (syntax->isValid())
+            highlighter = std::move(syntax);
     }
 
     void openFile(const FilePath& path)
@@ -175,6 +183,14 @@ struct EditorView final : GPU::GPUView
         renderer->prepare(document, area, scrollY);
         atlas->commit();
 
+        // Highlight exactly the lines about to be drawn: tree-sitter parses the
+        // whole file, but querying it all would put scrolling cost back in
+        // proportion to file size.
+        if (highlighter != nullptr)
+            highlighter->update(document,
+                                renderer->firstVisibleLine(scrollY),
+                                renderer->lastVisibleLine(document, area, scrollY));
+
         renderer->draw(pass,
                        *sprites,
                        *batch,
@@ -212,7 +228,7 @@ struct EditorView final : GPU::GPUView
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
     std::optional<GlyphBatch> batch;
-    OwningPointer<Highlighter> highlighter;
+    OwningPointer<SyntaxHighlighter> highlighter;
 
     float builtAtScale = 1.f;
     float scrollY = 0.f;
