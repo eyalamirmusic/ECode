@@ -45,4 +45,5 @@ if (APPLE)
             CACHE INTERNAL "eacp macOS bundle Info.plist template")
 endif ()
 
+add_subdirectory(Lib)
 add_subdirectory(App)

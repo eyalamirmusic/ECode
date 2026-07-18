@@ -287,6 +287,36 @@ Fix, don't inherit:
   drawable is in. This is the most likely visual-quality gap versus native text, and it shows
   worst on light-on-dark, which is the default theme.
 
+### Status: the module exists
+
+`eacp-text` is in place — `Lib/eacp/Text`, target `eacp-text`, linking `eacp-gpu`:
+
+- `Font.h` — `FontStyle` (the four faces a code editor switches between mid-line),
+  `FontRequest` (points + scale, so the rasterizer works in pixels and callers in points),
+  `FontMetrics`.
+- `GlyphBitmap.h` — pixels plus **bearings and advance**, the thing CowTerm's `GlyphSlot` lacked
+  and the reason it could only ever draw a fixed grid.
+- `GlyphRasterizer` — the only platform-specific file (`-Apple.mm`; CoreText works on iOS too, so
+  it is not named `-macOS`). Rasterizes each glyph into a bitmap sized to its own bounding box.
+- `ShelfPacker` — pure arithmetic, no GPU, no fonts.
+- `GlyphAtlas` — cache, packing, growth, dual mask/colour pages, incremental upload.
+
+**The structural change worth keeping:** the rasterizer sits behind a `GlyphSource` interface, so
+the atlas is driven by a stub in tests. CowTerm fuses rasterizer and atlas into one Pimpl, which
+is why its two backends duplicate packing, blitting and upload line-for-line across 867 lines, and
+why none of it could be tested without a real font.
+
+Two deviations from what this section originally said:
+
+- **Grow, don't evict.** The plan called for LRU with stable handles. What shipped doubles the
+  atlas up to a cap, keeping every existing placement — a shelf only ever extends right and down,
+  so nothing is re-rasterized and no slot goes stale. Only at the cap does it clear, and
+  `generation()` ticks so callers notice. This is what Ghostty does, and LRU can wait for a
+  profile that asks for it.
+- **Slots are returned by value.** CowTerm returns a reference into its cache that a reset
+  invalidates — a dangling read waiting for the first time the atlas fills. A slot is four floats
+  and two flags.
+
 ### What Ghostty and Alacritty actually do
 
 Read from both source trees rather than from blog posts, and it corrects two things I assumed
