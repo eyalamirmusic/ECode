@@ -44,6 +44,14 @@ class GlyphBatch
 public:
     GlyphBatch();
 
+    // Defined in the .cpp, where Program is complete. Without it the implicit
+    // destructor would delete an incomplete type here in the header, which is
+    // undefined behaviour rather than merely a warning.
+    ~GlyphBatch();
+
+    GlyphBatch(const GlyphBatch&) = delete;
+    GlyphBatch& operator=(const GlyphBatch&) = delete;
+
     // Logical size of the surface being drawn into, for the pixel-to-clip
     // mapping. Cheap to call every frame — unlike SpriteRenderer, whose logical
     // size is baked at construction and forces a rebuild on every resize.

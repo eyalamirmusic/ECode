@@ -175,8 +175,14 @@ struct EditorView final : GPU::GPUView
         renderer->prepare(document, area, scrollY);
         atlas->commit();
 
-        renderer->draw(
-            pass, *sprites, *batch, document, area, scrollY, builtAtScale);
+        renderer->draw(pass,
+                       *sprites,
+                       *batch,
+                       document,
+                       highlighter.get(),
+                       area,
+                       scrollY,
+                       builtAtScale);
     }
 
     void drawChrome()
@@ -206,6 +212,7 @@ struct EditorView final : GPU::GPUView
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
     std::optional<GlyphBatch> batch;
+    OwningPointer<Highlighter> highlighter;
 
     float builtAtScale = 1.f;
     float scrollY = 0.f;

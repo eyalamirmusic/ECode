@@ -59,6 +59,37 @@ std::string lineNumberText(std::size_t line)
 }
 } // namespace
 
+const Graphics::Color& TextTheme::colorFor(TokenKind kind) const
+{
+    switch (kind)
+    {
+        case TokenKind::Keyword:
+            return keyword;
+        case TokenKind::String:
+            return string;
+        case TokenKind::Comment:
+            return comment;
+        case TokenKind::Number:
+            return number;
+        case TokenKind::Function:
+            return function;
+        case TokenKind::Type:
+            return type;
+        case TokenKind::Constant:
+            return constant;
+        case TokenKind::Operator:
+            return operatorColor;
+        case TokenKind::Punctuation:
+            return punctuation;
+        case TokenKind::Preprocessor:
+            return preprocessor;
+        case TokenKind::Text:
+            break;
+    }
+
+    return text;
+}
+
 TextRenderer::TextRenderer(Text::GlyphAtlas& atlasToUse, const TextTheme& themeToUse)
     : atlas(atlasToUse)
     , theme(themeToUse)
@@ -140,6 +171,7 @@ void TextRenderer::prepare(const Document& document,
 
 void TextRenderer::drawLine(GlyphBatch& batch,
                             std::string_view text,
+                            const LineStyle* spans,
                             float x,
                             float baseline,
                             const Graphics::Color& color,
@@ -147,9 +179,20 @@ void TextRenderer::drawLine(GlyphBatch& batch,
 {
     auto pen = x;
 
+    // Walks forward with the loop rather than searching per glyph; the spans and
+    // the text are both traversed left to right exactly once.
+    auto spanCursor = std::size_t {0};
+
     for (std::size_t index = 0; index < text.size();)
     {
+        const auto glyphStart = index;
         const auto codepoint = nextCodepoint(text, index);
+
+        auto glyphColor = color;
+
+        if (spans != nullptr)
+            if (const auto* span = spanAt(*spans, glyphStart, spanCursor))
+                glyphColor = theme.colorFor(span->kind);
 
         if (codepoint == U'\t')
         {
@@ -176,7 +219,7 @@ void TextRenderer::drawLine(GlyphBatch& batch,
                                                      glyph.src.w / backingScale,
                                                      glyph.src.h / backingScale};
 
-            batch.add(destination, glyph.src, color, colored);
+            batch.add(destination, glyph.src, glyphColor, colored);
         }
 
         pen += glyph.advance;
@@ -187,6 +230,7 @@ void TextRenderer::draw(GPU::RenderPass& pass,
                         Sprites::SpriteRenderer& sprites,
                         GlyphBatch& batch,
                         const Document& document,
+                        Highlighter* highlighter,
                         const Graphics::Rect& viewport,
                         float scrollY,
                         float backingScale)
@@ -225,7 +269,8 @@ void TextRenderer::draw(GPU::RenderPass& pass,
         const auto width = static_cast<float>(number.size()) * advance;
         const auto x = viewport.x + gutter - gutterPadding - width;
 
-        drawLine(batch, number, x, y + ascent, theme.lineNumber, backingScale);
+        drawLine(
+            batch, number, nullptr, x, y + ascent, theme.lineNumber, backingScale);
     }
 
     batch.flush(pass, atlas);
@@ -237,8 +282,12 @@ void TextRenderer::draw(GPU::RenderPass& pass,
     {
         const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
 
+        const auto* spans =
+            highlighter != nullptr ? &highlighter->lineStyle(line) : nullptr;
+
         drawLine(batch,
                  document.line(line),
+                 spans,
                  textRect.x + textPadding,
                  y + ascent,
                  theme.text,

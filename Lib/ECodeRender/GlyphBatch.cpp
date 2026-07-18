@@ -92,6 +92,8 @@ GlyphBatch::GlyphBatch()
 {
 }
 
+GlyphBatch::~GlyphBatch() = default;
+
 void GlyphBatch::setViewportSize(Graphics::Point size)
 {
     viewport = {size.x > 0.f ? size.x : 1.f, size.y > 0.f ? size.y : 1.f};

@@ -47,3 +47,10 @@ endif ()
 
 add_subdirectory(Lib)
 add_subdirectory(App)
+
+option(ECODE_ENABLE_TESTS "Build ECode's tests" ${PROJECT_IS_TOP_LEVEL})
+
+if (ECODE_ENABLE_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
+endif ()

@@ -3,6 +3,7 @@
 #include "GlyphBatch.h"
 
 #include <ECodeCore/Document.h>
+#include <ECodeCore/Style.h>
 
 #include <eacp/Sprites/Sprites.h>
 #include <eacp/Text/Text.h>
@@ -17,6 +18,21 @@ struct TextTheme
     eacp::Graphics::Color lineNumber {0.38f, 0.41f, 0.48f};
     eacp::Graphics::Color currentLineNumber {0.75f, 0.78f, 0.85f};
     eacp::Graphics::Color gutterEdge {1.f, 1.f, 1.f, 0.05f};
+
+    // One colour per TokenKind. A syntax engine maps its captures onto kinds and
+    // never names a colour; this is the only place colours live.
+    eacp::Graphics::Color keyword {0.78f, 0.57f, 0.92f};
+    eacp::Graphics::Color string {0.65f, 0.85f, 0.55f};
+    eacp::Graphics::Color comment {0.42f, 0.47f, 0.55f};
+    eacp::Graphics::Color number {0.95f, 0.72f, 0.45f};
+    eacp::Graphics::Color function {0.45f, 0.72f, 0.95f};
+    eacp::Graphics::Color type {0.40f, 0.85f, 0.82f};
+    eacp::Graphics::Color constant {0.95f, 0.62f, 0.60f};
+    eacp::Graphics::Color operatorColor {0.80f, 0.82f, 0.88f};
+    eacp::Graphics::Color punctuation {0.62f, 0.66f, 0.74f};
+    eacp::Graphics::Color preprocessor {0.90f, 0.68f, 0.50f};
+
+    const eacp::Graphics::Color& colorFor(TokenKind kind) const;
 };
 
 // Draws the visible slice of a Document through a glyph atlas.
@@ -37,10 +53,12 @@ public:
     // Every glyph the frame needs must already be in the atlas: call
     // prepare() first, then GlyphAtlas::commit(), then this. Uploading in the
     // middle of a pass would mutate a texture the earlier draws have bound.
+    // highlighter may be null, in which case everything draws as plain text.
     void draw(eacp::GPU::RenderPass& pass,
               eacp::Sprites::SpriteRenderer& sprites,
               GlyphBatch& batch,
               const Document& document,
+              Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
               float scrollY,
               float backingScale);
@@ -65,8 +83,10 @@ public:
     float contentHeight(const Document& document) const;
 
 private:
+    // spans may be null for uniformly coloured text (the line-number gutter).
     void drawLine(GlyphBatch& batch,
                   std::string_view text,
+                  const LineStyle* spans,
                   float x,
                   float baseline,
                   const eacp::Graphics::Color& color,
