@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TextEdit.h"
+
 #include <eacp/Core/Core.h>
 
 #include <string>
@@ -22,6 +24,28 @@ public:
 
     static Document fromText(std::string text);
     static Document fromFile(const eacp::FilePath& path);
+
+    // Applies an edit and returns it filled in: `removed` is populated with
+    // whatever was actually there, which is what makes the result invertible
+    // and therefore undoable. The caller passes what to remove as a range.
+    //
+    // Out-of-range offsets are clamped rather than rejected — a stale cursor
+    // after an external reload should land somewhere sensible, not corrupt the
+    // buffer or throw.
+    TextEdit replace(std::size_t start, std::size_t end, std::string_view text);
+
+    // Re-applies a recorded edit verbatim, for undo and redo. The edit must
+    // have come from this document's history.
+    void apply(const TextEdit& edit);
+
+    // Byte offset of a line/column position, and the reverse. Column is a byte
+    // offset within the line, matching tree-sitter's TSPoint and the renderer's
+    // per-byte span walk.
+    std::size_t offsetAt(std::size_t line, std::size_t column) const;
+    std::size_t lineAt(std::size_t offset) const;
+    std::size_t columnAt(std::size_t offset) const;
+
+    std::size_t length() const { return contents.size(); }
 
     // Lines are counted the way an editor counts them: a trailing newline ends
     // the last line rather than starting an empty one, but a genuinely empty
