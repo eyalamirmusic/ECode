@@ -1,0 +1,453 @@
+# ECode — a GPU-drawn, VSCode-style code editor on eacp
+
+## Decisions taken
+
+- **VSCode-like, not Vim-like.** Modeless editing, mouse-first, standard chords, multi-cursor,
+  command palette, sidebar tree, tabs, panel, status bar.
+- **No webview.** Every pixel is drawn by us on the GPU.
+- **macOS first**, Windows later — but the glyph-raster seam stays abstract from day one.
+- **Shared text stack**: the glyph atlas + cell renderer get promoted into eacp as a new
+  `eacp-text` module, consumed by both ECode and CowTerm.
+- **Milestone 1 is a fast read-only viewer** — open, highlight, scroll at frame rate. Editing
+  lands after the render core is proven.
+
+---
+
+## 1. The central architectural call
+
+**One `GPU::GPUView` for the entire window, with our own widget tree inside it.**
+
+Not one `Graphics::View` per widget. This is forced by three findings:
+
+1. Every `Graphics::View` is backed by a real `NSView` (`View-macOS.mm:285` sets
+   `wantsLayer = YES`). A file tree with 5,000 rows would be 5,000 NSViews.
+2. `Graphics::View` chrome is composited by CoreAnimation while text is drawn by Metal — two
+   pipelines, two vsync paths, and cross-boundary z-order becomes CALayer ordering rather than
+   GPU z-order.
+3. `GPUView::paint()` is `final`, so a GPU view cannot also use the `Graphics::Context` API.
+   The two drawing models are disjoint by construction.
+
+The precedent to read before designing: `Cameras::CameraView`, which renders its content and then
+calls a `virtual void drawOverlay(Sprites::SpriteRenderer&, const Rect&)` hook **in the same render
+pass** (`Apps/Mixed/MixedViews/Main.cpp` subclasses it). That is exactly the "chrome + embedded
+custom text view" shape we need. For hand-rolled widgets with hover/press states and manual
+layout, read `Apps/Graphics/ComplexGUI/TaskBoard.cpp`.
+
+`Graphics::View` still gets used for the **window's root** and for genuinely native things (menu
+bar, tray). It is not used for in-window UI.
+
+---
+
+## 2. Repository scaffold
+
+Follows the `EACPExamples` house style — vendored CPM, then a `Find*.cmake` per dependency that
+wraps `CPMAddPackage`.
+
+```
+ECode/
+  CMakeLists.txt
+  CMake/
+    CPM.cmake               # vendored verbatim, CPM 0.40.2 (match eacp)
+    FindEACP.cmake
+    FindTreeSitter.cmake
+    ECodeWarnings.cmake
+  Lib/
+    ECodeCore/              # buffer, edits, undo, selections — no GPU, no platform
+    ECodeUI/                # widget tree, layout, theme
+    ECodeRender/            # instanced glyph renderer, atlas client
+  App/
+    Main.cpp
+    CMakeLists.txt
+  Tests/                    # NanoTest
+  justfile
+```
+
+`CMake/FindEACP.cmake`:
+
+```cmake
+include(CPM)
+
+CPMAddPackage(
+        NAME eacp
+        GITHUB_REPOSITORY eyalamirmusic/eacp
+        GIT_TAG main
+        OPTIONS
+            "EACP_ENABLE_EXAMPLES OFF"
+            "EACP_ENABLE_TESTS OFF"
+            "EACP_BUILD_WEBVIEW OFF")
+```
+
+Turning `EACP_BUILD_WEBVIEW OFF` is deliberate — we never use it, and it drops the WebView2 /
+WKWebView surface and the Vite/npm codegen path from the build entirely.
+
+Root `CMakeLists.txt` — note the standalone-bootstrap block, which is the part that is easy to get
+wrong. eacp runs `eacp_default_setup()` **only when it is the root project**, so as the root we
+must reproduce the pieces we depend on:
+
+```cmake
+cmake_minimum_required(VERSION 3.31)
+project(ECode VERSION 0.1.0 LANGUAGES C CXX)
+
+if (APPLE)
+    enable_language(OBJCXX)
+endif ()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+if (MSVC)
+    add_compile_options(/EHsc)   # must precede the CPM packages
+endif ()
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
+
+include(CPM)
+find_package(EACP REQUIRED)
+find_package(TreeSitter REQUIRED)
+
+# eacp appends its helper dir to CMAKE_MODULE_PATH only inside its own scope.
+list(APPEND CMAKE_MODULE_PATH "${eacp_SOURCE_DIR}/CMake")
+
+# eacp_setup_apple is a macro keyed off CMAKE_CURRENT_SOURCE_DIR, so it cannot be
+# reused verbatim from here; point the plist var straight at eacp's template.
+if (APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
+    set(EACP_MACOS_PLIST "${eacp_SOURCE_DIR}/CMake/macOSBundleInfo.plist.in"
+            CACHE INTERNAL "eacp macOS bundle Info.plist template")
+endif ()
+
+add_subdirectory(Lib)
+add_subdirectory(App)
+```
+
+`App/CMakeLists.txt` tail — the helper call order matters:
+
+```cmake
+target_link_libraries(ECode PRIVATE ECodeCore ECodeUI ECodeRender eacp-sprites)
+
+res_embed_add(ECode DIRECTORY Resources)     # JetBrains Mono, themes, icons
+
+set(BUNDLE_ID "com.eacp.ecode")
+set_target_properties(ECode PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "ECode"
+        MACOSX_BUNDLE_GUI_IDENTIFIER ${BUNDLE_ID}
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${BUNDLE_ID})
+
+eacp_set_gui_subsystem(ECode)     # WIN32_EXECUTABLE + /ENTRY:mainCRTStartup
+set_default_target_setting(ECode) # warnings, LTO in Release, stamps the plist
+eacp_set_app_icon(ECode IMAGE "${CMAKE_CURRENT_SOURCE_DIR}/Icon.png")
+```
+
+Local iteration against a checkout: `-DCPM_eacp_SOURCE=/Users/eyalamir/Code/eacp`.
+Always configure with `-DEACP_UNITY_BUILD=OFF` so `compile_commands.json` is per-file and LSP
+tooling stays accurate.
+
+---
+
+## 3. Upstream work in eacp (blocking, do first)
+
+These are framework gaps, not app gaps. Each blocks something structural, and each is small
+relative to the app work it unblocks. Ordered by how hard they block.
+
+Every framework change ships with **unit tests and a live example**. Tests go under `Tests/<Module>`
+(NanoTest, registered in that directory's `CMakeLists.txt`); examples go under `Apps/<Module>/<Name>`
+and are added to `Apps/GPU/CMakeLists.txt` et al. GPU state with no CPU-side observable — a scissor
+rect returns nothing and can't be queried — is tested by rendering off-screen through
+`View::renderToImage(scale)` and reading the pixels back, which is what `Tests/GPU/GPUSnapshotTests.cpp`
+already does.
+
+Two lessons worth carrying.
+
+**Check that a new test fails without the change.** The first version of the `scrollWheel:`
+registration test passed either way, because `respondsToSelector:` is satisfied by `NSView`'s own
+inherited implementation. It only became a real test once it compared the resolved method against
+the *immediate superclass's*. Same discipline caught nothing wrong in the texture-region suite,
+but confirmed it: forcing the upload origin to (0,0) fails exactly the one test that asserts a
+second region leaves the first alone.
+
+**Build for iOS before calling anything done.** `APPLE` is true on iOS, so
+`if (APPLE)` in a `CMakeLists.txt` pulls macOS-only sources into the iOS build — that is how the
+`ScrollWheelTests-macOS.mm` AppKit include broke it. The guard is `if (APPLE AND NOT IOS)`. The CI
+invocation, worth running locally on anything touching `Graphics`, `GPU` or a `CMakeLists.txt`:
+
+```bash
+cmake -G Xcode -B build-ios -DCMAKE_SYSTEM_NAME=iOS \
+      -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64 \
+      -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO -DEACP_CI_BUILD=ON
+cmake --build build-ios --config Debug -- -sdk iphonesimulator
+```
+
+Note `EACP_CI_BUILD=ON` turns unity builds on, which changes what compiles together — a source
+file can be fine alone and break in a unity blob. Existing gating to copy: `Tests/GPU` is already
+excluded on iOS (`AND NOT IOS`), and `Lib/eacp/Video` likewise.
+
+**Done so far**, on the eacp branch `ecode-editor-support` (497 eacp tests pass, up from 469):
+
+- **Gap 1 — scissor rects.** `RenderPass::setScissorRect(Rect)` / `clearScissorRect()`, in
+  render-target pixels, top-left origin, clamped to the target so a partly-scrolled-off region
+  clips instead of tripping Metal's API validation. Metal and D3D12 backends both done; `Frame`
+  now passes the target's pixel size into the pass. Verified in ECode: rows drawn 1.6× the
+  sidebar width are cut exactly at its edge.
+- **Gap 2 — macOS scroll wheel.** `scrollWheel:` registered on the backing view. Uses
+  `scrollingDelta*` (not `delta*`, which is already quantised back to whole lines and loses
+  trackpad smoothness), and adds `MouseEvent::preciseScrolling` plus a `ScrollPhase` enum
+  covering gesture phase *and* momentum. Verified end-to-end with synthesized events.
+- **Gap 8 — backing scale.** `GPUView::backingScale()` now public, plus an
+  `onBackingScaleChanged` callback. The real bug behind this one:
+  `viewDidChangeBackingProperties` updated only the native layer's `contentsScale` and never told
+  the C++ side, so a `CAMetalLayer`'s `drawableSize` — and any glyph atlas — silently kept the old
+  display's scale. Added `View::backingScaleChanged()` as the virtual hook and routed it.
+- **Bonus — `Graphics::Color` is now `constexpr`** (inline in the header, out-of-line bodies
+  removed). A theme is a table of named colors; it should live in rodata, not run at static-init.
+
+Tests and example added alongside:
+- `Tests/GPU/ScissorTests.cpp` — 8 tests, off-screen render + pixel readback: clips on both axes,
+  clamps an out-of-bounds rect, discards on empty and fully-outside rects, restores on clear, and
+  confirms the rect is in pixels rather than points.
+- `Tests/GPU/BackingScaleTests.cpp` — 7 tests: scale usable before layout, `bounds * scale` equals
+  the rendered pixel size, a resize at unchanged scale does *not* notify, and the hook is virtual
+  on the base `View`.
+- `Tests/Graphics/ScrollWheelTests.cpp` (+ `-macOS.mm`) — 8 tests: routing to the view under the
+  cursor, view-local coordinates, precise/phase fields surviving the trip, wheel ignoring
+  mouse-down capture, and the native class implementing `scrollWheel:` itself.
+- `Tests/Graphics/ColorTests.cpp` — 5 tests plus `static_assert`s that fail the *build* if a
+  `Color` definition moves back out of line.
+- `Tests/GPU/TextureRegionTests.cpp` — 8 tests. There is no texture read-back API, so these get
+  one: draw the texture 1:1 into an off-screen `GPUView` with Nearest sampling and read *that*
+  back, one texel per pixel. Covers origin placement, leaving the rest untouched, region height,
+  source stride, out-of-bounds rejection, empty/null no-ops.
+- `Apps/GPU/Clipping` — two independently scrollable panes whose rows are drawn wider than their
+  pane, so the scissor rect is what keeps them apart.
+- `Apps/GPU/TextureAtlas` — a 512² atlas filled one 16×16 tile at a time, the glyph-atlas pattern.
+  Logs the running totals: after 192 tiles, 192 KB uploaded by region versus 196,608 KB had each
+  tile re-sent the whole atlas.
+
+Still open: gaps 3, 4, 6, 7, 9, 10.
+
+| # | Gap | Why it blocks | Shape of fix |
+|---|-----|---------------|--------------|
+| 1 | **No scissor/clip anywhere.** `RenderPass` has no `setScissorRect` or `setViewport`; `Graphics::Context` has no clip method. | Every scrolling region — editor viewport, file tree, minimap, dropdowns, panel — needs it. | Add `setScissorRect` to `RenderPass`. Metal `setScissorRect:` / D3D12 `RSSetScissorRects`. Both backends already exist. Contained, ~an afternoon. |
+| 2 | **macOS scroll wheel is never delivered.** `MouseEventType::Wheel` exists and dispatches, but a repo-wide grep for `scrollWheel` returns zero hits; the only producer is the Windows path. | No scrolling on the primary target platform. | Implement `scrollWheel:` on the macOS backing view — **plus** momentum phase, precise deltas, and rubber-band state. None of that is plumbed. |
+| 3 | **No IME / composition.** No `NSTextInputClient`, no `interpretKeyEvents:`, no `WM_IME_*`. | CJK input, dead keys (`Option+e` → é), and the emoji picker are all broken. Cannot be layered on from app code. | Implement `NSTextInputClient` on the macOS backing view: marked-text range, composition callbacks, candidate-window rect. Real Objective-C++ work; the largest of these. |
+| 4 | **Clipboard is copy-only.** `Clipboard::copyText` exists; there is no read/paste API. | Cmd+V. | Add `Clipboard::readText()` / `hasText()`. Small. |
+| 5 | ~~**`Texture::update()` re-uploads the whole texture**~~ — **done.** | One new glyph cost a full-atlas upload. CowTerm eats 16 MB per new glyph. | `update(region, pixels, bytesPerRow)` added. Metal `replaceRegion:` at an offset; D3D12 asks `GetCopyableFootprints` at the *region's* size and places the copy with `CopyTextureRegion`. Out-of-bounds is **dropped, not clamped** — a clamped region keeps consuming source rows at the original width and silently uploads skewed pixels. |
+| 6 | **Keycode table is incomplete.** No punctuation, brackets, semicolon, quote, slash, backslash, minus, equals; no Home/End/PageUp/PageDown/Insert; no keypad. | An editor needs all of these, everywhere. CowTerm works around it with hand-defined macOS raw virtual keycodes — a portability landmine we should not inherit. | Extend `KeyCode` and both platform translation tables. |
+| 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
+| 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
+| 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables. | Cursor movement, selection, backspace all operate on graphemes, not bytes. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. |
+| 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially. |
+
+**Not a gap, contrary to first impressions:** instanced rendering is first-class —
+`ShaderProgram::instanceInput(&Instance::field, slot)` + `RenderPass::drawInstanced()`, with a
+1000-instance worked example at `Apps/GPU/Instancing/Main.cpp`. `Sprites::SpriteRenderer` happens
+not to use it (one draw call per quad), but the machinery underneath is good. We write our own
+instanced glyph shader rather than fixing `SpriteRenderer`.
+
+---
+
+## 4. `eacp-text` — the new shared module
+
+Promoted out of CowTerm, generalized for proportional text and ligatures, consumed by both apps.
+
+CowTerm's `GlyphAtlas.h` is the right seam and should be kept: `(codepoint, bold, italic) →
+GlyphSlot` plus one `GPU::Texture&` and scalar metrics, with the platform split done by a `Pimpl`
+whose implementation CMake selects — no virtual interface. Three changes:
+
+- **`GlyphSlot` gains bearing and advance.** Today it is `{src, colored, valid}`, which is why
+  CowTerm can only do a monospace grid. Ligatures and proportional UI text need per-glyph
+  positioning.
+- **A shaping pass.** CowTerm maps codepoint→glyph one at a time and shapes nothing. Ligatures
+  (Fira Code, JetBrains Mono) and any complex script need real shaping — CoreText line shaping on
+  macOS, DirectWrite on Windows, behind one interface.
+- **Grayscale atlas in `R8Unorm`**, which eacp documents as the natural mask format — ¼ the memory
+  of CowTerm's RGBA8. Color emoji go to a second RGBA8 atlas.
+
+Keep from CowTerm as-is, all verified good:
+- Grayscale AA, subpixel/LCD AA explicitly **off** on both platforms
+  (`CGContextSetShouldSmoothFonts(false)`, `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`) — the atlas must
+  be tintable, so ClearType would bake subpixel colour into it.
+- White-RGB + coverage-in-alpha storage, straight (un-premultiplied), so one atlas entry tints to
+  any colour.
+- The **prepass**: rasterize every glyph the frame needs, then force the single texture upload,
+  *then* issue draws. Without it a mid-frame `update()` mutates a texture already bound by earlier
+  draws in the same pass.
+- The DPI convention: atlas rasterizes in **device pixels**, everything else is in logical points,
+  accessors divide the scale back out.
+
+Fix, don't inherit:
+- **Atlas eviction.** CowTerm has none — it flushes the whole atlas when full, and `glyph()`
+  returns a reference into a map that a later reset invalidates. A 2048² atlas rarely wraps for a
+  terminal at one size; an editor with multiple sizes and weights hits it much sooner. Needs LRU
+  and stable handles.
+- **Gamma-correct blending.** Absent in CowTerm; coverage alpha is blended in whatever space the
+  drawable is in. This is the most likely visual-quality gap versus native text, and it shows
+  worst on light-on-dark, which is the default theme.
+
+### What Ghostty and Alacritty actually do
+
+Read from both source trees rather than from blog posts, and it corrects two things I assumed
+earlier.
+
+**Do not do subpixel positioning.** I had assumed it was near-universal. It isn't: neither
+terminal does it. Ghostty's cache key is a packed u64 of `{index, glyph, opts}` with no fractional
+field; Alacritty's is `{character, font_key, size}`. On a fixed monospace grid, integer cell
+origins mean every occurrence of a glyph shares one subpixel phase, so consistency costs **one**
+atlas entry instead of four. Zed pays for four variants because GPUI renders proportional UI text
+— a code grid doesn't have that problem. Start with integer cell snapping.
+
+**Grayscale everywhere, and solve gamma instead of subpixel AA.** The two projects split the hard
+problems and neither solved both: Alacritty did subpixel AA via dual-source blending and ignored
+gamma entirely (`with_srgb(Some(false))`); Ghostty is grayscale-only into an `r8unorm` atlas and
+solved gamma. Subpixel AA also forces a permanent trade — it cannot coexist with a transparent
+window background (Direct2D, WebRender, foot and kitty all hit the same wall), and macOS dropped
+it in Mojave anyway. Take Ghostty's side.
+
+Its `linear-corrected` mode is worth copying exactly: render into an sRGB target so blending is
+linear, then remap the coverage alpha so the result still *looks* like the familiar sRGB blend —
+`a' = (blend_l - bg_l) / (fg_l - bg_l)`. This is Skia's `SkMaskGamma` run backwards (Skia
+pre-distorts the mask and blends wrong; Ghostty blends right and post-distorts the alpha).
+
+**The constraint that dictates our shader interface:** that remap needs the **per-cell background
+colour inside the text shader**. Ghostty gets it because `cell_text_vertex` reads a flat
+`bg_colors[row * cols + col]` buffer. The same data path is what enables minimum-contrast later.
+Design it in from the start — it is genuinely hard to retrofit.
+
+**Backgrounds want a fullscreen pass, not instanced quads.** Ghostty moved cell backgrounds to a
+flat `[4]u8` array read by a fullscreen-triangle shader, which cut GPU memory ~20% and shrank its
+text instance from 56 to 32 bytes. Its floor is three draw calls per frame: clear, cell
+backgrounds, then one instanced call for all glyph quads. That is a better target than CowTerm's
+run-length rects.
+
+**Atlas packing:** Ghostty uses a skyline packer starting at 512² and doubles the same texture
+when full; Alacritty uses a shelf packer at 1024² and pushes a new atlas onto a vector. Growing
+avoids atlas-switch batch breaks, appending avoids the realloc-and-recopy stall. Either beats
+CowTerm's flush-everything.
+
+**Damage:** Alacritty does real compositor damage (double-buffered, `swap_buffers_with_damage`);
+Ghostty has only CPU-side dirty tracking. Follow Alacritty.
+
+---
+
+## 5. ECode's own architecture
+
+### `ECodeCore` — no GPU, no platform, fully unit-testable
+
+- **Text buffer.** A rope or piece table. CowTerm's `std::vector<Cell>` grid at 16 bytes/cell is
+  right for an 80×24 terminal and wrong for a 100 MB file. Note `eacp::File` is a chunked bounded
+  reader (`read(offset, span)`), so large-file open without a full load is available.
+  `EA::CopyOnWrite` and `EA::CircularBuffer` from `cpp_data_structures` are worth evaluating for
+  the undo stack.
+- **Edit transactions + undo/redo.** Every mutation is a transaction; undo is a stack of inverses.
+  Design this in from the start — it is very hard to retrofit.
+- **Multi-cursor / multi-selection.** VSCode semantics: N cursors, each with an anchor, all edits
+  applied per-cursor with offset fixup. CowTerm's single contiguous `CellRef` range and O(1)
+  `isSelected` test do not generalize; plan for N selections from the beginning.
+- **Logical ↔ visual line mapping.** Soft wrap, folding, and variable line heights all break the
+  `row * cellH` assumption. This is the single biggest structural difference from a terminal grid,
+  and the mapping layer should exist even in the read-only milestone.
+- **Syntax:** tree-sitter (C library, CPM-friendly), incremental reparse on edit, styles attached
+  to ranges rather than baked into cells.
+
+### `ECodeRender`
+
+- Instanced glyph shader written in eacp's C++ shader EDSL — shaders are C++ structs,
+  MSL and HLSL and the vertex layout are all generated, and `pass.draw(shader)` binds
+  pipeline + vertices + uniforms + textures in one call. No `.metal` files.
+- One instance buffer of `{rect, uvRect, fgColor, flags}`; one `drawInstanced` per atlas.
+- **Keep** CowTerm's run-length background coalescing — it collapses long same-colour spans into
+  one quad and skips default-background cells entirely, since the pass clear already painted them.
+- **Real damage tracking.** CowTerm's `changeVersion` machinery exists but its only consumer is
+  write-only dead code, so every repaint redraws the whole grid. A dirty-line bitset lets us skip
+  both the glyph prepass and the draw loop for unchanged rows.
+- On-demand rendering (`GPUView` default) — idle submits zero GPU work. `setContinuous(true)` only
+  while animating. `renderNow()` is available for the lowest-latency keystroke→glass path.
+- MSAA off (`setSampleCount(1)`); text is grayscale-AA'd in the atlas already.
+- Note `SpriteRenderer`'s logical size is baked at construction, so CowTerm reconstructs it on
+  every resize — recompiling the shader mid-drag. Our renderer takes a settable logical size.
+
+### `ECodeUI`
+
+A widget tree living inside the single `GPUView`. Everything here is ours — eacp contributes a
+base class and nothing else.
+
+Available for free: `Graphics::Rect`'s JUCE-style `removeFromLeft/Right/Top/Bottom`,
+`inset`, `fromLeft` … which suit IDE chrome well (activity bar `removeFromLeft(48)`, status bar
+`removeFromBottom(22)`). Mouse capture already works correctly — `mouseDownTarget` is latched on
+Down and all Drag/Up route to it, which is exactly what splitter dragging and text selection need.
+`clickCount` is present for double/triple-click word and line selection.
+
+Must be built: widget base + layout pass, focus traversal (none exists), scrollbar, virtualized
+list, tree view, tab bar, splitter, popup/overlay, in-window context menu (`Graphics::Menu` is the
+native menu bar only — no `popup(at:)`), minimap, tooltip, status bar, animation/easing.
+
+Lift from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer) and `Palette` — a command
+palette almost for free. Its **peek** pattern (navigating the list live-switches the background
+view, Enter commits, Esc restores) maps directly onto file-preview-on-highlight.
+`SessionView`'s recursive split-pane tree maps onto editor groups.
+
+### Config and theming
+
+Miro reflection, exactly as CowTerm does it — the struct *is* the schema, `MIRO_REFLECT(...)`,
+`Miro::fromJSONString`, unknown keys ignored and missing keys defaulted for free, five lines total.
+Two changes: **themes as data** (CowTerm hardcodes them in C++) and **file watching for reload**
+(CowTerm reads config once at construction).
+
+### Keybindings
+
+CowTerm has three unrelated mechanisms and no unified keymap — a leader-key `bool`, an if-chain on
+Cmd chords, and config bindings limited to a single character with no modifier support and no way
+to name a command. Do not inherit this. Build a **command registry** plus a keymap table
+(`{"keys": "cmd+shift+p", "command": "workbench.showPalette", "when": "editorFocus"}`) from day
+one; the palette then enumerates the registry for free.
+
+Steal one detail: `charactersIgnoringModifiers` is the correct field for matching shortcuts (so
+Cmd+C is "c" on any layout) while `characters` is the correct field for text insertion.
+
+---
+
+## 6. Milestones
+
+**M0 — Scaffold.** Repo skeleton, vendored CPM, `find_package(EACP)`, empty `GPUView` in a window,
+`just build` / `just run`, CI on macOS. *Done when a coloured window opens.*
+
+**M1 — Upstream unblock.** eacp gaps 1, 2, 5, 8 (scissor, scroll wheel, texture sub-upload, backing
+scale). These four gate everything visual. *Done when a scissored, scrollable, sub-uploading test
+view works.*
+
+**M2 — `eacp-text`.** Extract CowTerm's atlas, add bearing/advance and shaping, R8 grayscale atlas,
+LRU eviction, gamma-correct blend. Port CowTerm onto it to prove the seam holds. *Done when
+CowTerm renders identically through the new module.*
+
+**M3 — The viewer (the stated first milestone).** Open a file, line index, instanced glyph
+rendering, smooth scrolling, tree-sitter highlighting, damage tracking. No editing. *Done when a
+10 MB source file scrolls at display rate with correct colours.*
+
+**M4 — Editing.** Buffer mutations, transactions, undo/redo, single cursor, selection, clipboard
+(needs gap 4), save. Then multi-cursor.
+
+**M5 — IDE chrome.** Widget layer, file tree, tabs, splitters, status bar, command palette (via
+`FuzzyMatch` + `Palette`), find/replace.
+
+**M6 — Depth.** LSP client over `Processes::runAsync` → `Async<T>` coroutines, diagnostics,
+completion, go-to-definition. IME (gap 3) — needed before anyone outside Latin scripts can use it.
+Then the Windows glyph backend.
+
+---
+
+## 7. Risks worth naming now
+
+- **eacp is self-declared alpha**: "APIs will change without notice between commits." ECode is
+  pinned to `GIT_TAG main`, as are eacp's own four dependencies. Expect drift. Consider pinning to
+  a SHA once ECode is past M3.
+- **eacp's README and CLAUDE.md predate the GPU stack** and describe the framework as Core Graphics
+  only. Read the tree, not the docs.
+- **IME is the long pole** and is easy to defer past the point where retrofitting is painful — the
+  text model has to carry a marked-text range from early on, even if nothing populates it yet.
+- **Gamma-correct text blending** is the difference between "looks native" and "looks slightly
+  off," and it is much cheaper to get right in M2 than to retrofit after theming exists.
+- **No Linux GUI path exists in eacp at all** — the whole `Graphics`/`GPU` tree is gated behind
+  `(APPLE OR WIN32)`. Linux is not "later," it is a separate project.
