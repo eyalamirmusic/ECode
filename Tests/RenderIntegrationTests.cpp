@@ -51,8 +51,8 @@ struct EditorTestView final : GPU::GPUView
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 2048);
 
         renderer.emplace(*atlas, theme);
-        batch.emplace();
-        batch->setViewportSize({viewWidth, viewHeight});
+        glyphs.emplace();
+        glyphs->setViewportSize({viewWidth, viewHeight});
 
         return true;
     }
@@ -61,7 +61,7 @@ struct EditorTestView final : GPU::GPUView
     {
         auto pass = frame.beginPass({theme.background});
 
-        if (!renderer || !atlas || !batch)
+        if (!renderer || !atlas || !glyphs)
             return;
 
         const auto area = Graphics::Rect {0.f, 0.f, viewWidth, viewHeight};
@@ -79,7 +79,7 @@ struct EditorTestView final : GPU::GPUView
                                 renderer->lastVisibleLine(document, area, 0.f));
 
         renderer->draw(
-            pass, sprites, *batch, document, highlighter.get(), area, 0.f, 1.f);
+            pass, sprites, *glyphs, document, highlighter.get(), area, 0.f, 1.f);
     }
 
     TextTheme theme;
@@ -88,7 +88,7 @@ struct EditorTestView final : GPU::GPUView
 
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
-    std::optional<GlyphBatch> batch;
+    std::optional<Text::GlyphRenderer> glyphs;
 };
 
 Document codeSample()

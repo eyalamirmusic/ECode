@@ -84,7 +84,7 @@ struct EditorView final : GPU::GPUView
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 4096);
 
         renderer.emplace(*atlas, theme);
-        batch.emplace();
+        glyphs.emplace();
         builtAtScale = scale;
     }
 
@@ -98,8 +98,8 @@ struct EditorView final : GPU::GPUView
         {
             sprites.emplace(Graphics::Point {bounds.w, bounds.h}, sampleCount());
 
-            if (batch)
-                batch->setViewportSize({bounds.w, bounds.h});
+            if (glyphs)
+                glyphs->setViewportSize({bounds.w, bounds.h});
         }
 
         clampScroll();
@@ -170,10 +170,10 @@ struct EditorView final : GPU::GPUView
         sprites->begin(pass);
         drawChrome();
 
-        if (!renderer || !atlas || !batch)
+        if (!renderer || !atlas || !glyphs)
             return;
 
-        batch->setViewportSize({getLocalBounds().w, getLocalBounds().h});
+        glyphs->setViewportSize({getLocalBounds().w, getLocalBounds().h});
 
         const auto area = editorArea();
 
@@ -193,7 +193,7 @@ struct EditorView final : GPU::GPUView
 
         renderer->draw(pass,
                        *sprites,
-                       *batch,
+                       *glyphs,
                        document,
                        highlighter.get(),
                        area,
@@ -227,7 +227,7 @@ struct EditorView final : GPU::GPUView
     std::optional<Sprites::SpriteRenderer> sprites;
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
-    std::optional<GlyphBatch> batch;
+    std::optional<Text::GlyphRenderer> glyphs;
     OwningPointer<SyntaxHighlighter> highlighter;
 
     float builtAtScale = 1.f;

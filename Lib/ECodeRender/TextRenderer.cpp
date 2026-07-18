@@ -169,7 +169,7 @@ void TextRenderer::prepare(const Document& document,
     }
 }
 
-void TextRenderer::drawLine(GlyphBatch& batch,
+void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
                             std::string_view text,
                             const LineStyle* spans,
                             float x,
@@ -219,7 +219,7 @@ void TextRenderer::drawLine(GlyphBatch& batch,
                                                      glyph.src.w / backingScale,
                                                      glyph.src.h / backingScale};
 
-            batch.add(destination, glyph.src, glyphColor, colored);
+            glyphs.add(destination, glyph.src, glyphColor, colored);
         }
 
         pen += glyph.advance;
@@ -228,7 +228,7 @@ void TextRenderer::drawLine(GlyphBatch& batch,
 
 void TextRenderer::draw(GPU::RenderPass& pass,
                         Sprites::SpriteRenderer& sprites,
-                        GlyphBatch& batch,
+                        Text::GlyphRenderer& glyphs,
                         const Document& document,
                         Highlighter* highlighter,
                         const Graphics::Rect& viewport,
@@ -258,7 +258,7 @@ void TextRenderer::draw(GPU::RenderPass& pass,
     // be flushed under its own rect rather than everything being queued and
     // submitted once at the end.
     pass.setScissorRect(toPixels(gutterRect));
-    batch.begin();
+    glyphs.begin();
 
     for (auto line = first; line < last; ++line)
     {
@@ -270,13 +270,13 @@ void TextRenderer::draw(GPU::RenderPass& pass,
         const auto x = viewport.x + gutter - gutterPadding - width;
 
         drawLine(
-            batch, number, nullptr, x, y + ascent, theme.lineNumber, backingScale);
+            glyphs, number, nullptr, x, y + ascent, theme.lineNumber, backingScale);
     }
 
-    batch.flush(pass, atlas);
+    glyphs.flush(pass, atlas);
 
     pass.setScissorRect(toPixels(textRect));
-    batch.begin();
+    glyphs.begin();
 
     for (auto line = first; line < last; ++line)
     {
@@ -285,7 +285,7 @@ void TextRenderer::draw(GPU::RenderPass& pass,
         const auto* spans =
             highlighter != nullptr ? &highlighter->lineStyle(line) : nullptr;
 
-        drawLine(batch,
+        drawLine(glyphs,
                  document.line(line),
                  spans,
                  textRect.x + textPadding,
@@ -294,7 +294,7 @@ void TextRenderer::draw(GPU::RenderPass& pass,
                  backingScale);
     }
 
-    batch.flush(pass, atlas);
+    glyphs.flush(pass, atlas);
     pass.clearScissorRect();
 
     // The batch left its own pipeline bound, so the sprite renderer has to

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "GlyphBatch.h"
-
 #include <ECodeCore/Document.h>
 #include <ECodeCore/Style.h>
 
@@ -56,7 +54,7 @@ public:
     // highlighter may be null, in which case everything draws as plain text.
     void draw(eacp::GPU::RenderPass& pass,
               eacp::Sprites::SpriteRenderer& sprites,
-              GlyphBatch& batch,
+              eacp::Text::GlyphRenderer& glyphs,
               const Document& document,
               Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
@@ -84,7 +82,7 @@ public:
 
 private:
     // spans may be null for uniformly coloured text (the line-number gutter).
-    void drawLine(GlyphBatch& batch,
+    void drawLine(eacp::Text::GlyphRenderer& glyphs,
                   std::string_view text,
                   const LineStyle* spans,
                   float x,
