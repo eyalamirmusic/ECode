@@ -65,5 +65,26 @@ struct ChromeTheme
     // undo. Greyed rather than hidden, since a command vanishing from the list
     // is harder to understand than one that is visibly unavailable.
     eacp::Graphics::Color paletteDisabledText {0.42f, 0.44f, 0.50f};
+
+    // The find bar. Opaque, unlike the palette's backdrop: it sits over the text
+    // it is searching and stays there while the person works, so anything
+    // showing through would be the very lines they are trying to read.
+    eacp::Graphics::Color findBackground {0.145f, 0.157f, 0.184f};
+    eacp::Graphics::Color findBorder {1.f, 1.f, 1.f, 0.13f};
+    eacp::Graphics::Color findFieldBackground {0.098f, 0.106f, 0.125f};
+
+    eacp::Graphics::Color findText {0.88f, 0.90f, 0.94f};
+    eacp::Graphics::Color findHintText {0.50f, 0.53f, 0.60f};
+
+    // An option that is on. A filled chip rather than a brighter label, because
+    // the difference has to be readable at a glance and two weights of grey are
+    // not — this is state the search result depends on, and someone puzzled by a
+    // missing match needs to see it without hunting.
+    eacp::Graphics::Color findToggleOn {0.24f, 0.42f, 0.68f};
+    eacp::Graphics::Color findToggleOnText {0.96f, 0.97f, 0.99f};
+
+    // A query that matched nothing. Said in words as well, so it does not rely
+    // on colour alone.
+    eacp::Graphics::Color findNoResults {0.898f, 0.541f, 0.310f};
 };
 } // namespace ecode

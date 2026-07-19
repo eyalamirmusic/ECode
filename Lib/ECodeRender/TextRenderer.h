@@ -4,6 +4,7 @@
 
 #include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
+#include <ECodeCore/Search.h>
 #include <ECodeCore/Style.h>
 
 #include <eacp/Sprites/Sprites.h>
@@ -23,6 +24,18 @@ struct TextTheme
     eacp::Graphics::Color selection {0.22f, 0.32f, 0.46f};
     eacp::Graphics::Color currentLine {1.f, 1.f, 1.f, 0.035f};
 
+    // Search hits. Every match gets the dim one and the match being looked at
+    // gets the bright one, because the two answer different questions — "where
+    // else is this?" and "which one am I on?" — and a single colour for both
+    // makes the second unanswerable without counting.
+    //
+    // Both are drawn under the glyphs, so they have to stay dark enough to read
+    // through. That is why the current match is a stronger orange rather than a
+    // lighter fill: raising the brightness far enough to distinguish it would
+    // start to swallow the text on top of it.
+    eacp::Graphics::Color searchMatch {0.35f, 0.31f, 0.16f};
+    eacp::Graphics::Color currentSearchMatch {0.62f, 0.44f, 0.13f};
+
     // One colour per TokenKind. A syntax engine maps its captures onto kinds and
     // never names a colour; this is the only place colours live.
     eacp::Graphics::Color keyword {0.78f, 0.57f, 0.92f};
@@ -37,6 +50,25 @@ struct TextTheme
     eacp::Graphics::Color preprocessor {0.90f, 0.68f, 0.50f};
 
     const eacp::Graphics::Color& colorFor(TokenKind kind) const;
+};
+
+// What the renderer draws on top of the text, as against the text itself.
+//
+// Grouped rather than passed one by one: draw() was already at seven arguments
+// with two bools among them, and search would have taken it to nine. A caller
+// that wants none of this passes a default-constructed one and gets a plain
+// document.
+struct EditorOverlay
+{
+    // Null while the editor has no caret to show — a view being rendered to an
+    // image, or one that has never been focused.
+    const Cursor* cursor = nullptr;
+    bool caretVisible = false;
+
+    // Every search hit on screen, and which of them the find bar is on. Null
+    // when nothing is being searched for.
+    const eacp::Vector<SearchMatch>* matches = nullptr;
+    int currentMatch = -1;
 };
 
 // Draws the visible slice of a Document through a glyph atlas.
@@ -63,8 +95,7 @@ public:
     // highlighter may be null, in which case everything draws as plain text.
     void draw(PaintContext& context,
               const Document& document,
-              const Cursor* cursor,
-              bool caretVisible,
+              const EditorOverlay& overlay,
               Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
               float scrollY);
@@ -112,13 +143,26 @@ private:
 
     void prepareLine(std::string_view text);
 
-    void drawSelection(eacp::Sprites::SpriteRenderer& sprites,
-                       const Document& document,
-                       const Cursor& cursor,
-                       const eacp::Graphics::Rect& textRect,
-                       float scrollY,
-                       std::size_t first,
-                       std::size_t last);
+    // Paints one byte range as a band per line it covers, clipped to the lines
+    // on screen. A selection and a search hit are the same shape, so they are
+    // the same code — the only thing that differs is the colour.
+    void fillRange(eacp::Sprites::SpriteRenderer& sprites,
+                   const Document& document,
+                   std::size_t from,
+                   std::size_t to,
+                   const eacp::Graphics::Rect& textRect,
+                   float scrollY,
+                   std::size_t first,
+                   std::size_t last,
+                   const eacp::Graphics::Color& color);
+
+    void drawMatches(eacp::Sprites::SpriteRenderer& sprites,
+                     const Document& document,
+                     const EditorOverlay& overlay,
+                     const eacp::Graphics::Rect& textRect,
+                     float scrollY,
+                     std::size_t first,
+                     std::size_t last);
 
     eacp::Text::GlyphAtlas& atlas;
     TextTheme theme;

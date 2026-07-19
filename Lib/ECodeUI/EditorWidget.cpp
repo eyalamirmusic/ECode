@@ -37,6 +37,28 @@ void EditorWidget::clampScroll()
     scrollY = std::clamp(scrollY, lowest, 0.f);
 }
 
+void EditorWidget::scrollToLine(std::size_t line)
+{
+    if (renderer == nullptr)
+        return;
+
+    const auto lineHeight = renderer->lineHeight();
+    const auto top = static_cast<float>(line) * lineHeight;
+
+    // Already on screen: leave the view alone. Re-centring on every hit would
+    // scroll the file out from under a match that was perfectly visible, and
+    // ⌘G down a screenful of hits would judder rather than step.
+    if (top + scrollY >= 0.f && top + lineHeight + scrollY <= bounds().h)
+        return;
+
+    // Otherwise centre it rather than bringing it just inside the edge. A hit
+    // revealed by the smallest possible scroll lands hard against the top or
+    // bottom with no context on the side it arrived from.
+    scrollY = -top + (bounds().h - lineHeight) * 0.5f;
+
+    clampScroll();
+}
+
 void EditorWidget::scrollToCaret()
 {
     if (renderer == nullptr)
@@ -105,6 +127,108 @@ void EditorWidget::focusLost()
     repaint();
 }
 
+void EditorWidget::refreshSearch()
+{
+    finder.refresh(document());
+    searchedVersion = editor().version();
+}
+
+void EditorWidget::setSearchQuery(const SearchQuery& query, std::size_t from)
+{
+    finder.setQuery(query);
+
+    refreshSearch();
+    finder.selectAtOrAfter(from);
+
+    // Deliberately does not move the caret. A query still being typed should
+    // highlight what it has found without dragging the insertion point across
+    // the file on every keystroke — the caret follows only on an explicit find.
+    repaint();
+}
+
+void EditorWidget::clearSearch()
+{
+    finder.setQuery({});
+
+    refreshSearch();
+    repaint();
+}
+
+void EditorWidget::goToCurrentMatch()
+{
+    const auto* match = finder.currentMatch();
+
+    if (match == nullptr)
+        return;
+
+    // Selected rather than merely scrolled to, so that closing the find bar
+    // leaves the caret on what was being looked for and ready to be typed over.
+    editor().placeCaret(match->start);
+    editor().placeCaret(match->end, true);
+
+    caretVisible = true;
+    blinkPhase = 0;
+
+    scrollToLine(document().lineAt(match->start));
+
+    onStateChanged();
+    repaint();
+}
+
+void EditorWidget::findNext()
+{
+    refreshSearch();
+
+    // From the end of whatever is selected, so a hit that is already selected is
+    // stepped over rather than found again.
+    finder.selectAtOrAfter(editor().cursor().end());
+    goToCurrentMatch();
+}
+
+void EditorWidget::findPrevious()
+{
+    refreshSearch();
+
+    finder.selectBefore(editor().cursor().start());
+    goToCurrentMatch();
+}
+
+void EditorWidget::replaceCurrent(std::string_view replacement)
+{
+    const auto* match = finder.currentMatch();
+
+    if (match == nullptr)
+        return;
+
+    const auto at = match->start;
+
+    replaceMatch(editor(), *match, replacement);
+
+    refreshSearch();
+
+    // Past the replacement rather than at it. Replacing "a" with "aa" produces
+    // text that matches the query again, and resuming at the same offset would
+    // find the replacement and replace it forever.
+    finder.selectAtOrAfter(at + replacement.size());
+
+    goToCurrentMatch();
+}
+
+int EditorWidget::replaceAllMatches(std::string_view replacement)
+{
+    const auto replaced = replaceAll(editor(), finder.query(), replacement);
+
+    if (replaced > 0)
+    {
+        refreshSearch();
+
+        onStateChanged();
+        repaint();
+    }
+
+    return replaced;
+}
+
 std::size_t EditorWidget::caretLine() const
 {
     return document().lineAt(editor().cursor().head) + 1;
@@ -122,15 +246,26 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
     if (renderer == nullptr)
         return;
 
+    // The match list describes text as it was when the search last ran, so an
+    // edit anywhere invalidates it — typing, undo, or a reload from disk.
+    //
+    // Checked here, once a frame, rather than on every keystroke: a scan is
+    // linear in the file and doing one per key would be felt on a large one.
+    // The empty-query case costs nothing, so an editor nobody is searching in
+    // pays nothing for this.
+    if (!finder.query().isEmpty() && searchedVersion != editor().version())
+        refreshSearch();
+
     renderer->prepare(document(), bounds(), scrollY);
 
     // Highlight exactly the lines about to be drawn: tree-sitter parses the
     // whole file, but querying all of it would put scrolling cost back in
     // proportion to file size.
     if (highlighter != nullptr)
-        highlighter->update(document(),
-                            renderer->firstVisibleLine(scrollY),
-                            renderer->lastVisibleLine(document(), bounds(), scrollY));
+        highlighter->update(
+            document(),
+            renderer->firstVisibleLine(scrollY),
+            renderer->lastVisibleLine(document(), bounds(), scrollY));
 }
 
 void EditorWidget::paint(PaintContext& context)
@@ -138,13 +273,13 @@ void EditorWidget::paint(PaintContext& context)
     if (renderer == nullptr)
         return;
 
-    renderer->draw(context,
-                   document(),
-                   &editor().cursor(),
-                   caretVisible,
-                   highlighter,
-                   bounds(),
-                   scrollY);
+    auto overlay = EditorOverlay {};
+    overlay.cursor = &editor().cursor();
+    overlay.caretVisible = caretVisible;
+    overlay.matches = &finder.matches();
+    overlay.currentMatch = finder.currentIndex();
+
+    renderer->draw(context, document(), overlay, highlighter, bounds(), scrollY);
 }
 
 void EditorWidget::mouseDown(const Graphics::MouseEvent& event)

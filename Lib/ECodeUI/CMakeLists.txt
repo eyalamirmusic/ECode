@@ -6,9 +6,11 @@ add_library(ECodeUI STATIC
         CommandPalette.cpp
         EditorWidget.cpp
         FileTreeView.cpp
+        FindBar.cpp
         Keymap.cpp
         ListView.cpp
         ScrollView.cpp
+        TextField.cpp
         UIText.cpp
         Widget.cpp
         WidgetHost.cpp)

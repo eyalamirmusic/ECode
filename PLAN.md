@@ -3,11 +3,12 @@
 **Status:** a working editor. Opens a file, highlights it with tree-sitter,
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
 saves, with external-change detection. The chrome is a widget tree, the sidebar
-holds a real file tree you can scroll and open files from, and every command is
+holds a real file tree you can scroll and open files from, every command is
 named in a registry that a keymap and a fuzzy-matching command palette both read
-from. Next are the remaining widgets — splitter and context menu — and find /
-replace (§7.4). Sections 1–5 are the design and the research behind it;
-**§6 is where things stand and §7 is what to do next.**
+from, and ⌘F finds and replaces with the hits lit up in the file. Next are the
+remaining widgets — splitter and context menu (§7.4). Sections 1–5 are the
+design and the research behind it; **§6 is where things stand and §7 is what to
+do next.**
 
 ## Decisions taken
 
@@ -266,7 +267,7 @@ Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching
 | 6 | ~~**Keycode table is incomplete.**~~ — **done.** Punctuation, Home/End/PageUp/PageDown, forward delete and the keypad added, with the Windows OEM mapping. Originally: No punctuation, brackets, semicolon, quote, slash, backslash, minus, equals; no Home/End/PageUp/PageDown/Insert; no keypad. | An editor needs all of these, everywhere. CowTerm works around it with hand-defined macOS raw virtual keycodes — a portability landmine we should not inherit. | Extend `KeyCode` and both platform translation tables. |
 | 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
 | 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
-| 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables. | Cursor movement, selection, backspace all operate on graphemes, not bytes. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. |
+| 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables, and no case folding. | Cursor movement, selection, backspace all operate on graphemes, not bytes — and search's case-insensitive match folds ASCII only, so "Ä" does not match "ä". | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. `ecode::Utf8` now carries `next`, `previousBoundary` and `nextBoundary`, which is the shape the eacp version wants. |
 | 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially. ECode polls `File::modificationTime` once a second for the open file, and enumerates directories through `std::filesystem` behind `eacp::toStdPath`. The seams FSEvents replaces are `TextFile::hasChangedOnDisk` and `FileTreeModel::refresh`. |
 
 **Not a gap, contrary to first impressions:** instanced rendering is first-class —
@@ -442,11 +443,14 @@ Down and all Drag/Up route to it, which is exactly what splitter dragging and te
 `clickCount` is present for double/triple-click word and line selection.
 
 Built: widget base + layout pass, focus traversal, scroll view + scrollbar, virtualised list,
-tree view, tab bar, status bar, and the command palette — the first overlay. Still to build:
+tree view, tab bar, status bar, the command palette — the first overlay — and a reusable
+single-line `TextField` that the find bar uses twice. Still to build:
 splitter, in-window context menu
 (`Graphics::Menu` is the native menu bar only — no `popup(at:)`), minimap, tooltip,
 animation/easing, and hover states — no widget tracks the pointer yet, so nothing highlights
-under it.
+under it. A `Button` widget is the other obvious gap: the find bar's six controls are a
+hotspot table inside it rather than widgets, which is the right call only while there are no
+hover states to give them.
 
 Lifted from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer), now returning matched
 positions as well as a score so the palette can tint the characters the query hit. Its **peek**
@@ -501,7 +505,7 @@ the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasteri
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
-**Done in ECode** (245 tests): `Document` with an incremental line index,
+**Done in ECode** (317 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -510,7 +514,8 @@ loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
 layer, with the chrome drawn by it rather than hardcoded — scroll containers,
 a virtualised list, and a working file tree in the sidebar — and the command
 layer: `CommandRegistry`, `Keymap`, `FuzzyMatch` and a `CommandPalette` that
-reads both.
+reads both — and find/replace: a `Search` model, a `TextField`, a `FindBar`,
+match highlighting in the renderer and grouped undo for replace-all.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -578,9 +583,14 @@ of sequencing not to get wrong, and reversing that should be visible.
 `Editor` holds a single `Cursor` and every operation assumes it. The change
 itself stays contained — `Cursor` becomes `Vector<Cursor>`, edits apply per
 cursor from the highest offset down so earlier edits do not shift later ones,
-and overlapping cursors merge after each operation. What grows is everything
-written against a single cursor in the meantime: the widget layer, find and
-replace, the palette's commands.
+and overlapping cursors merge after each operation. **One piece of it already
+exists**: replace-all needed the same shape — several edits, highest offset
+first, one thing to undo — so `EditHistory::beginGroup`/`endGroup` and the RAII
+`UndoGroup` are in and tested. That is the part of multi-cursor that would
+otherwise have been discovered late.
+
+What grows is everything written against a single cursor in the meantime: the
+widget layer, find and replace, the palette's commands.
 
 The bill comes due when multi-cursor lands, and it is a refactor across the app
 rather than the couple of hours it would be today. What keeps it from getting
@@ -752,11 +762,63 @@ unconfirmed is the part only a person can judge — whether ⌘⇧P *feels* righ
 whether the box sits at a sensible height, whether the dimming is too strong.
 Worth ten seconds in the running app.
 
-**Still to do here:** splitters, find/replace, and an in-window context menu.
-The palette is the first overlay, and it confirms the shape the others want: a
-child of the root laid out over the whole window, because `PaintContext` has no
-notion of a layer escaping its parent's clip and covering the window is also
-what makes a click outside dismiss it.
+**Also done: find and replace.** ⌘F, ⌥⌘F, ⌘G and ⌘⇧G, case and whole-word
+toggles, a live "3 of 17", every hit tinted with the current one picked out,
+replace and replace-all. The search model is `Search` in `ECodeCore` — literal
+text, no regex, and `findMatches` is the seam an engine would slot into.
+
+Six decisions worth recording:
+
+- **The search lives in `EditorWidget`, not in the find bar.** Everything it
+  needs is already there: the document to search, the scroll offset that brings
+  a hit into view, the renderer that draws the hits. The bar is a query and some
+  buttons, and reports both. The alternative — a bar that owns the search — has
+  it reaching for a document it does not have.
+- **A hit is re-found by offset, not by index.** An edit earlier in the file
+  changes how many occurrences precede the current one, so an index quietly
+  starts naming a different place, and the symptom is the counter reading the
+  same "3 of 17" while the view jumps somewhere unrelated. Pinned by a test that
+  inserts an occurrence *before* the current one.
+- **Find-next takes an offset rather than stepping a pointer.** Both directions
+  are "the first hit after / before here", driven by the caret — so moving the
+  caret and pressing ⌘G looks from where the person is rather than resuming a
+  walk they have left. Wrapping stops being a case and becomes the same
+  question asked past the end.
+- **Replace-all needed a new undo primitive.** `EditHistory` only ever merged
+  insertions that continued where the last one ended, which is right for typing
+  and refuses exactly what replace-all is: replacements, running backwards
+  through the file. So each occurrence landed on the stack separately and one
+  ⌘Z left the file half-replaced. `EditHistory::beginGroup`/`endGroup` and an
+  RAII `UndoGroup` fix it, and **multi-cursor wants the same primitive** — N
+  edits, highest offset first, one thing to undo.
+- **`Widget::isTextInput()` is the first piece of a `when` clause.** ⌘A, ⌘C and
+  ⌘V with a find field focused belong to the field; everywhere else they belong
+  to the document. Pasting a search term into the file being searched is a
+  mistake that *edits the file*, which is why this one distinction was worth a
+  virtual before contexts exist. The field claims those four chords and passes
+  every other one on.
+- **`TextField` never consumes Return, Escape or Tab.** They mean different
+  things per owner — Return runs the command in the palette and finds the next
+  hit in the find bar — so the field returns false and whoever owns it decides.
+  That is what lets one field serve both. (The palette has *not* adopted it yet;
+  its query is still bespoke. Worth doing, and deliberately not done in the same
+  change as the feature.)
+
+**Verified by rendering the assembled tree off-screen**, not by driving a live
+window: `Tests/FindRenderTests.cpp` builds a real `EditorWidget` and `FindBar`
+in a real `WidgetHost`, wires them the way `Main.cpp` does, and drives them with
+synthesized keys and clicks through `renderToImage`. That covers the toggles
+changing what is lit, replace-all rewriting what is drawn, Escape clearing the
+highlight, and an edit to the document refreshing the hits. It needs no focus
+and runs in CI — see §9 for why the live-window version was the wrong instinct.
+
+**Still to do here:** splitters and an in-window context menu. The palette is
+the first overlay, and it confirms the shape those want: a child of the root
+laid out over the whole window, because `PaintContext` has no notion of a layer
+escaping its parent's clip and covering the window is also what makes a click
+outside dismiss it. The find bar is deliberately *not* that shape — it is sized
+to its own box, because a widget laid out over the editor's full width swallows
+every click meant for the text under it.
 
 ### 7.5 IME — the largest remaining framework gap
 
@@ -896,5 +958,25 @@ Recorded because each of these cost something to find out.
   identically-scoring commands passes against `std::sort` at any length. It
   takes two score classes interleaved, so the ties genuinely have to be carried
   past each other.
+- **Two correct halves can compose into a wrong whole, and only a test that
+  draws both at once can see it.** Search found the right ranges and the
+  renderer had two hit colours, both tested. In the app the current hit came out
+  the *selection's* blue: finding a hit selects it, so the two always coincide
+  there, and the selection was being painted over the highlight. Every unit test
+  passed, and so did the render tests — because none of them set a cursor and a
+  match list in the same frame. The arrangement that was broken was the only
+  arrangement the app is ever in. When two features are correct separately, the
+  test worth writing is the one that puts them in the same picture.
+- **Render the assembled tree off-screen; do not drive the live window.** The
+  bug above was first spotted by launching the app and sending it keystrokes,
+  which meant stealing the screen, fighting other apps for focus, and a
+  screenshot that cannot run in CI. The same finding came out of a
+  `renderToImage` test over a real `WidgetHost` in a few lines — synthesized
+  keys and clicks into the actual widgets, pixels read back. `View::renderToImage`
+  is what this framework has instead of a robot, and it is strictly better:
+  no focus, no window, deterministic, and it stays as a regression test
+  afterwards. Reserve the running app for judging how something *feels*.
 - **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
   shader — passed every test that existed and was obvious in one screenshot.
+  Still true, and the point is narrower than it looks: run it to see whether
+  something is *right*, then write the off-screen test that proves it stays so.

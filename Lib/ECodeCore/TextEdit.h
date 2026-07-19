@@ -52,6 +52,21 @@ public:
     // save, a paste.
     void breakStep() { open = false; }
 
+    // Forces every edit recorded until the matching endGroup() into one step,
+    // whatever the merge rule would otherwise say.
+    //
+    // The merge rule asks "is this a continuation of the same typing?", which is
+    // the right question for a person at a keyboard and the wrong one for a
+    // single action made of several edits. Replace-all is exactly what it
+    // refuses — replacements rather than insertions, running backwards through
+    // the file — so each occurrence would land on the stack separately. One
+    // cursor per selection will want the same thing when it arrives.
+    //
+    // Nests by counting, so a grouped operation can call another one without the
+    // inner group closing the outer.
+    void beginGroup();
+    void endGroup();
+
     bool canUndo() const { return !undoStack.empty(); }
     bool canRedo() const { return !redoStack.empty(); }
 
@@ -88,6 +103,8 @@ private:
 
     bool canMergeInto(const Step& step, const TextEdit& edit) const;
 
+    bool grouping() const { return groupDepth > 0; }
+
     std::vector<Step> undoStack;
     std::vector<Step> redoStack;
 
@@ -95,5 +112,12 @@ private:
 
     // Whether the newest step is still accepting edits.
     bool open = false;
+
+    int groupDepth = 0;
+
+    // Whether the open group has pushed its step yet. The group's first edit
+    // starts a step and every later one joins it, so this is what tells those
+    // two cases apart.
+    bool groupHasStep = false;
 };
 } // namespace ecode

@@ -9,6 +9,7 @@ nano_add_executable(ECodeCoreTests
             DocumentEditTests.cpp
             EditorTests.cpp
             FileTreeTests.cpp
+            SearchTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
             TextFileTests.cpp
@@ -20,8 +21,10 @@ nano_add_executable(ECodeUITests
         SOURCES
             CommandPaletteTests.cpp
             FileTreeViewTests.cpp
+            FindBarTests.cpp
             KeymapTests.cpp
             ScrollTests.cpp
+            TextFieldTests.cpp
             WidgetTests.cpp
         TARGETS ECodeUI)
 
@@ -38,6 +41,7 @@ nano_add_executable(ECodeRenderTests
         NO_MAIN
         SOURCES
             ChromeRenderTests.cpp
+            FindRenderTests.cpp
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp
             TestMain.cpp

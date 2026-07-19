@@ -77,7 +77,8 @@ public:
     // ancestor's, so a virtualised list rasterizes the rows it will actually
     // draw rather than all of them. It is the same rectangle paint() will see
     // as its clip, and the two agreeing is what the prepass depends on.
-    virtual void prepare(eacp::Text::GlyphAtlas&, const eacp::Graphics::Rect& visible)
+    virtual void prepare(eacp::Text::GlyphAtlas&,
+                         const eacp::Graphics::Rect& visible)
     {
         (void) visible;
     }
@@ -97,6 +98,16 @@ public:
     // decorative panel does not swallow clicks meant for something beneath it.
     virtual bool wantsMouse() const { return false; }
     virtual bool acceptsFocus() const { return false; }
+
+    // True for widgets that are a text box in their own right.
+    //
+    // The application asks before deciding what ⌘A, ⌘C and ⌘V mean: with a find
+    // field focused they belong to the field, and everywhere else they belong to
+    // the document. That is the job a keymap `when` clause does in VSCode, and
+    // this is the one distinction that bites hard enough to be worth a virtual
+    // before contexts exist — pasting a search term into the file being searched
+    // is a mistake that edits the document.
+    virtual bool isTextInput() const { return false; }
 
     virtual void mouseDown(const eacp::Graphics::MouseEvent&) {}
     virtual void mouseDragged(const eacp::Graphics::MouseEvent&) {}

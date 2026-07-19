@@ -80,22 +80,24 @@ struct EditorTestView final : GPU::GPUView
 
         // The context binds the sprite pipeline on first use and flushes the
         // glyph batch on destruction, so neither is done by hand here.
-        auto context =
-            PaintContext {pass, sprites, *glyphs, *atlas, area, 1.f};
+        auto context = PaintContext {pass, sprites, *glyphs, *atlas, area, 1.f};
 
-        renderer->draw(context,
-                       document,
-                       cursor,
-                       cursor != nullptr,
-                       highlighter.get(),
-                       area,
-                       0.f);
+        auto overlay = EditorOverlay {};
+        overlay.cursor = cursor;
+        overlay.caretVisible = cursor != nullptr;
+        overlay.matches = matches;
+        overlay.currentMatch = currentMatch;
+
+        renderer->draw(context, document, overlay, highlighter.get(), area, 0.f);
     }
 
     TextTheme theme;
     Document document;
     OwningPointer<SyntaxHighlighter> highlighter;
     const Cursor* cursor = nullptr;
+
+    const eacp::Vector<SearchMatch>* matches = nullptr;
+    int currentMatch = -1;
 
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
@@ -366,6 +368,247 @@ auto tHitTestRoundTrips =
             check(document.columnAt(offset) == column);
         }
     }
+};
+
+// --- search highlighting ----------------------------------------------------
+//
+// Whether a hit is tinted, and whether the *current* hit is tinted differently
+// from the rest, are the two questions a logic test cannot reach: the match list
+// is right either way, and a renderer that ignored it — or that painted both
+// colours the same — would pass everything in SearchTests.
+
+namespace
+{
+// Average colour of a band of pixels, so a comparison is against the region
+// rather than against whichever pixel a glyph happened to land on.
+Graphics::Color averageOver(const Graphics::Image& image, const Graphics::Rect& area)
+{
+    auto r = 0.f;
+    auto g = 0.f;
+    auto b = 0.f;
+    auto count = 0;
+
+    const auto x1 = std::min(static_cast<int>(area.right()), image.width());
+    const auto y1 = std::min(static_cast<int>(area.bottom()), image.height());
+
+    for (auto y = std::max(0, static_cast<int>(area.y)); y < y1; ++y)
+    {
+        for (auto x = std::max(0, static_cast<int>(area.x)); x < x1; ++x)
+        {
+            const auto pixel = image.at(x, y);
+
+            r += pixel.r;
+            g += pixel.g;
+            b += pixel.b;
+
+            ++count;
+        }
+    }
+
+    if (count == 0)
+        return {};
+
+    const auto scale = 1.f / static_cast<float>(count);
+
+    return {r * scale, g * scale, b * scale};
+}
+
+// The band a line of text occupies, out to a width that covers a short word.
+Graphics::Rect bandOfLine(const TextRenderer& renderer,
+                          const Document& document,
+                          std::size_t line)
+{
+    const auto lineHeight = renderer.lineHeight();
+
+    return {renderer.gutterWidth(document.lineCount()) + 8.f,
+            static_cast<float>(line) * lineHeight + 2.f,
+            40.f,
+            lineHeight - 4.f};
+}
+
+Document repeatedWordSample()
+{
+    // One occurrence per line, so each hit can be looked at on its own without
+    // working out where in a line it landed.
+    return Document::fromText("target one\n"
+                              "target two\n"
+                              "target three\n");
+}
+} // namespace
+
+auto tMatchesAreTinted = test("RenderIntegration/searchHitsAreTinted") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto plain = EditorTestView {};
+    auto found = EditorTestView {};
+
+    if (!plain.build() || !found.build())
+        return;
+
+    plain.document = repeatedWordSample();
+    found.document = repeatedWordSample();
+
+    auto query = SearchQuery {};
+    query.text = "target";
+
+    const auto matches = findMatches(found.document, query);
+
+    check(matches.size() == 3);
+
+    found.matches = &matches;
+    found.currentMatch = -1;
+
+    const auto plainImage = plain.renderToImage(1.f);
+    const auto foundImage = found.renderToImage(1.f);
+
+    check(plainImage.isValid() && foundImage.isValid());
+
+    const auto band = bandOfLine(*plain.renderer, plain.document, 0);
+
+    const auto before = averageOver(plainImage, band);
+    const auto after = averageOver(foundImage, band);
+
+    // The highlight is a warm fill, so red rises and blue falls. Asserting on
+    // both directions rather than on brightness alone: a band that simply got
+    // lighter could be the text being drawn twice.
+    check(after.r > before.r + 0.05f);
+    check(after.b < before.b + 0.02f);
+};
+
+// Two hits, one of them current, compared against *each other* in the same
+// image. That is what makes this a test of the distinction rather than of
+// either colour: it fails if both are painted the same, and it cannot be
+// satisfied by the theme being changed to make hits brighter overall.
+//
+// The margin is deliberately coarse. An 8-bit drawable makes "slightly
+// different" free — see PLAN.md §9 — and the two colours here differ in red by
+// 0.27, so a tenth is comfortably clear of both quantisation and the glyphs
+// drawn on top.
+auto tCurrentMatchIsDistinct =
+    test("RenderIntegration/theCurrentHitIsTintedDifferentlyFromTheRest") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = EditorTestView {};
+
+    if (!view.build())
+        return;
+
+    view.document = repeatedWordSample();
+
+    auto query = SearchQuery {};
+    query.text = "target";
+
+    const auto matches = findMatches(view.document, query);
+
+    view.matches = &matches;
+    view.currentMatch = 1; // the hit on the second line
+
+    const auto image = view.renderToImage(1.f);
+
+    check(image.isValid());
+
+    const auto ordinary =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 0));
+    const auto current =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 1));
+
+    check(current.r > ordinary.r + 0.1f);
+};
+
+// The arrangement the app is *always* in while searching, and the one no other
+// test here builds: finding a hit selects it, so the current match and the
+// selection cover exactly the same characters.
+//
+// Drawn in the wrong order the selection covers the current-match colour, and
+// the hit being looked at comes out the same blue as any ordinary selection —
+// the distinct colour existing but never once being visible. Every other test
+// in this file passes either way, because none of them sets a cursor and a
+// match list at the same time. This one was written after seeing it on screen.
+auto tCurrentMatchSurvivesItsOwnSelection =
+    test("RenderIntegration/theCurrentHitStaysAHitWhenItIsAlsoTheSelection") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = EditorTestView {};
+
+    if (!view.build())
+        return;
+
+    view.document = repeatedWordSample();
+
+    auto query = SearchQuery {};
+    query.text = "target";
+
+    const auto matches = findMatches(view.document, query);
+
+    view.matches = &matches;
+    view.currentMatch = 1;
+
+    // Exactly what findNext leaves behind: the second hit, selected.
+    const auto selected = selectionOver(matches[1].start, matches[1].end);
+    view.cursor = &selected;
+
+    const auto image = view.renderToImage(1.f);
+
+    check(image.isValid());
+
+    const auto ordinary =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 0));
+    const auto current =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 1));
+
+    // Still the warm colour, not the selection's blue. Both halves matter: the
+    // selection is bluer than the hit colour, so testing red alone could be
+    // satisfied by a wash that happened to be bright.
+    check(current.r > ordinary.r + 0.1f);
+    check(current.r > current.b);
+};
+
+// A hit scrolled off the top must not be drawn against the first visible line.
+// The bug this rules out is a highlight loop that indexes by match rather than
+// by document position, which looks right until the file is scrolled.
+auto tMatchesFollowTheScroll =
+    test("RenderIntegration/hitsAreDrawnWhereTheTextIsNotWhereTheyAreInTheList") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = EditorTestView {};
+
+    if (!view.build())
+        return;
+
+    // Only the last line holds the word, so nothing should be tinted while the
+    // document is drawn from the top.
+    view.document = Document::fromText("nothing here\n"
+                                       "nor here\n"
+                                       "target\n");
+
+    auto query = SearchQuery {};
+    query.text = "target";
+
+    const auto matches = findMatches(view.document, query);
+
+    check(matches.size() == 1);
+
+    view.matches = &matches;
+    view.currentMatch = 0;
+
+    const auto image = view.renderToImage(1.f);
+
+    check(image.isValid());
+
+    const auto firstLine =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 0));
+    const auto thirdLine =
+        averageOver(image, bandOfLine(*view.renderer, view.document, 2));
+
+    check(thirdLine.r > firstLine.r + 0.1f);
 };
 
 // A click past the end of a line lands at its end rather than wrapping onto the

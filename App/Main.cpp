@@ -2,6 +2,7 @@
 #include <ECodeUI/CommandPalette.h>
 #include <ECodeUI/EditorWidget.h>
 #include <ECodeUI/FileTreeView.h>
+#include <ECodeUI/FindBar.h>
 #include <ECodeUI/Keymap.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
@@ -57,6 +58,9 @@ struct WindowLayout final : Widget
         addChild(status);
         addChild(editor);
 
+        // After the editor, so it draws over the text it is searching.
+        addChild(find);
+
         // Last, so it paints over everything and widgetAt finds it first.
         addChild(palette);
     }
@@ -88,12 +92,29 @@ struct WindowLayout final : Widget
         // ends rather than spanning the window.
         tabs.setBounds(area.removeFromTop(tabBarHeight));
         editor.setBounds(area);
+
+        // Over the editor's top-right corner rather than given a slice of it.
+        // The bar covers a few lines instead of pushing the file down, which is
+        // what stops the line being read from moving the moment ⌘F is pressed.
+        //
+        // Its bounds are the box itself and not the editor's width, or it would
+        // swallow every click meant for the text beneath it — widgetAt only asks
+        // whether a point is inside the bounds.
+        const auto barWidth = std::min(find.barWidth(), area.w);
+
+        find.setBounds({std::max(area.x, area.right() - findMargin - barWidth),
+                        area.y,
+                        barWidth,
+                        find.barHeight()});
     }
 
     static constexpr auto activityBarWidth = 48.f;
     static constexpr auto sidebarWidth = 240.f;
     static constexpr auto tabBarHeight = 35.f;
     static constexpr auto statusBarHeight = 22.f;
+
+    // Clear of the right edge, where a vertical scrollbar will go.
+    static constexpr auto findMargin = 14.f;
 
     ChromeTheme theme;
 
@@ -106,6 +127,7 @@ struct WindowLayout final : Widget
     TabBar tabs {theme};
     StatusBar status {theme};
     EditorWidget editor;
+    FindBar find {theme};
     CommandPalette palette;
 };
 
@@ -124,6 +146,7 @@ struct EditorView final : GPU::GPUView
 
         registerCommands();
         bindKeys();
+        connectFindBar();
 
         layout.palette.onClosed = [this]
         {
@@ -184,6 +207,122 @@ struct EditorView final : GPU::GPUView
 
     Editor& editor() { return file.editor(); }
 
+    // The find bar reports what was typed and which button was pressed; the
+    // editor widget owns the search itself, since it has the document to search
+    // and the scroll offset that brings a hit into view. This is the wiring
+    // between the two, and the counter is pushed back after every one of them
+    // because the bar cannot count what it does not hold.
+    void connectFindBar()
+    {
+        layout.find.onQueryChanged = [this]
+        {
+            layout.editor.setSearchQuery(layout.find.query(), searchOrigin);
+            updateFindCount();
+            repaint();
+        };
+
+        layout.find.onFindNext = [this]
+        {
+            layout.editor.findNext();
+            updateFindCount();
+            repaint();
+        };
+
+        layout.find.onFindPrevious = [this]
+        {
+            layout.editor.findPrevious();
+            updateFindCount();
+            repaint();
+        };
+
+        layout.find.onReplace = [this]
+        {
+            layout.editor.replaceCurrent(layout.find.replacement());
+
+            updateFindCount();
+            updateChrome();
+            repaint();
+        };
+
+        layout.find.onReplaceAll = [this]
+        {
+            layout.editor.replaceAllMatches(layout.find.replacement());
+
+            updateFindCount();
+            updateChrome();
+            repaint();
+        };
+
+        layout.find.onFocusRequested = [this](Widget& target)
+        {
+            host.setFocus(&target);
+            repaint();
+        };
+
+        layout.find.onClosed = [this]
+        {
+            // The highlight goes with the bar. Leaving it up would mean a file
+            // covered in orange with nothing on screen explaining why.
+            layout.editor.clearSearch();
+
+            host.setFocus(&layout.editor);
+
+            // The bar no longer occupies the corner it did.
+            layout.layout();
+            repaint();
+        };
+    }
+
+    void updateFindCount()
+    {
+        const auto& search = layout.editor.search();
+
+        layout.find.setMatchCount(search.currentNumber(), search.count());
+    }
+
+    void showFind(bool withReplace)
+    {
+        // Seeded from the selection, which is what every editor does: select a
+        // word, press ⌘F, and it is already the query.
+        auto seed = editor().selectedText();
+
+        // Except a multi-line one. That means "search within this", which is a
+        // different feature, and a newline in the query would match nothing
+        // while looking like an ordinary search that had failed.
+        if (seed.find('\n') != std::string::npos)
+            seed.clear();
+
+        // Where an as-you-type search starts from, so the first hit found is the
+        // one nearest the work rather than the one nearest line 1.
+        searchOrigin = editor().cursor().start();
+
+        layout.find.show(seed, withReplace);
+
+        host.setFocus(&layout.find.keyboardTarget());
+
+        layout.layout();
+        repaint();
+    }
+
+    // ⌘G with no bar open is still a search, so it opens one rather than doing
+    // nothing — the query it would have used was cleared when the bar closed.
+    void findNextOrOpen(bool backwards)
+    {
+        if (!layout.find.isOpen())
+        {
+            showFind(false);
+            return;
+        }
+
+        if (backwards)
+            layout.editor.findPrevious();
+        else
+            layout.editor.findNext();
+
+        updateFindCount();
+        repaint();
+    }
+
     // Everything the editor can be asked to do, named once. The keymap points
     // at these ids and the palette lists them, so a command added here shows up
     // in both without either holding a list of its own — which is the whole
@@ -233,6 +372,35 @@ struct EditorView final : GPU::GPUView
                       "Edit: Select All",
                       [this] { editor().selectAll(); }});
 
+        commands.add({"find.show", "Find", [this] { showFind(false); }});
+
+        commands.add({"find.showReplace", "Replace", [this] { showFind(true); }});
+
+        commands.add(
+            {"find.next", "Find: Find Next", [this] { findNextOrOpen(false); }});
+
+        commands.add({"find.previous",
+                      "Find: Find Previous",
+                      [this] { findNextOrOpen(true); }});
+
+        commands.add({"find.replaceAll",
+                      "Find: Replace All",
+                      [this]
+                      {
+                          layout.editor.replaceAllMatches(layout.find.replacement());
+
+                          updateFindCount();
+                          updateChrome();
+                      },
+                      [this]
+                      {
+                          // Listed but unavailable rather than hidden: a command
+                          // that vanishes is harder to understand than one that
+                          // is visibly not ready.
+                          return layout.find.isOpen()
+                                 && !layout.find.query().isEmpty();
+                      }});
+
         commands.add({"view.focusEditor",
                       "View: Focus Editor",
                       [this] { host.setFocus(&layout.editor); }});
@@ -259,6 +427,10 @@ struct EditorView final : GPU::GPUView
         keymap.bind("cmd+c", "edit.copy");
         keymap.bind("cmd+v", "edit.paste");
         keymap.bind("cmd+a", "edit.selectAll");
+        keymap.bind("cmd+f", "find.show");
+        keymap.bind("cmd+alt+f", "find.showReplace");
+        keymap.bind("cmd+g", "find.next");
+        keymap.bind("cmd+shift+g", "find.previous");
         keymap.bind("cmd+1", "view.focusEditor");
         keymap.bind("cmd+shift+e", "view.focusExplorer");
     }
@@ -502,6 +674,16 @@ struct EditorView final : GPU::GPUView
             return;
         }
 
+        // A focused text box takes its own editing chords before the keymap sees
+        // them: ⌘A, ⌘C and ⌘V in a find field mean the field, and letting them
+        // through to the document would select the whole file or paste the
+        // search term into it. The field consumes only those four and passes
+        // every other chord on. See Widget::isTextInput.
+        if (const auto* focused = host.focused();
+            focused != nullptr && focused->isTextInput())
+            if (host.keyDown(event))
+                return;
+
         if (handleShortcut(event))
         {
             layout.editor.wake();
@@ -548,12 +730,8 @@ struct EditorView final : GPU::GPUView
         host.prepare(*atlas);
         atlas->commit();
 
-        auto context = PaintContext {pass,
-                                     *sprites,
-                                     *glyphs,
-                                     *atlas,
-                                     getLocalBounds(),
-                                     builtAtScale};
+        auto context = PaintContext {
+            pass, *sprites, *glyphs, *atlas, getLocalBounds(), builtAtScale};
 
         host.paint(context);
     }
@@ -572,6 +750,11 @@ struct EditorView final : GPU::GPUView
     // Where focus was when the palette opened, so closing it puts the keyboard
     // back rather than always in the editor.
     Widget* focusBeforePalette = nullptr;
+
+    // Where the caret was when the find bar opened. An as-you-type search runs
+    // from here rather than from the caret as it stands, which would otherwise
+    // walk down the file one hit per keystroke.
+    std::size_t searchOrigin = 0;
 
     std::function<void(const std::string&)> onTitleChanged =
         [](const std::string&) {};

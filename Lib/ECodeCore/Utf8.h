@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string_view>
 
@@ -46,5 +47,48 @@ inline char32_t next(std::string_view text, std::size_t& index)
         value = (value << 6) | (static_cast<unsigned char>(text[index]) & 0x3fu);
 
     return value;
+}
+
+// A byte that continues a sequence rather than starting one. UTF-8 is
+// self-synchronizing precisely because these occupy a range of their own, which
+// is what makes the two functions below a scan rather than a re-decode from the
+// start of the string.
+inline bool isContinuation(char c)
+{
+    return (static_cast<unsigned char>(c) & 0xc0) == 0x80;
+}
+
+// The character boundary before `index`, and the one after it. Clamped to the
+// ends of the text.
+//
+// What a caret moves by and what backspace removes. A byte would do for ASCII
+// and leave half a sequence behind for anything else — and half a sequence is
+// not merely wrong on screen, it stops the text matching anything.
+inline std::size_t previousBoundary(std::string_view text, std::size_t index)
+{
+    index = std::min(index, text.size());
+
+    while (index > 0)
+    {
+        --index;
+
+        if (!isContinuation(text[index]))
+            break;
+    }
+
+    return index;
+}
+
+inline std::size_t nextBoundary(std::string_view text, std::size_t index)
+{
+    if (index >= text.size())
+        return text.size();
+
+    ++index;
+
+    while (index < text.size() && isContinuation(text[index]))
+        ++index;
+
+    return index;
 }
 } // namespace ecode::Utf8

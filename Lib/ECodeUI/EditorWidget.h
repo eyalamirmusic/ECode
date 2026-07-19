@@ -6,6 +6,7 @@
 #include <ECodeRender/TextRenderer.h>
 
 #include <functional>
+#include <string_view>
 
 namespace ecode
 {
@@ -27,12 +28,47 @@ public:
     // Null until the atlas has been built, which cannot happen until the view
     // is on a display and its scale is known. Everything here tolerates that.
     void setRenderer(TextRenderer* rendererToUse);
-    void setHighlighter(Highlighter* highlighterToUse) { highlighter = highlighterToUse; }
+    void setHighlighter(Highlighter* highlighterToUse)
+    {
+        highlighter = highlighterToUse;
+    }
 
     TextFile& textFile() { return file; }
     Editor& editor() { return file.editor(); }
     const Editor& editor() const { return file.editor(); }
     const Document& document() const { return file.document(); }
+
+    // --- find and replace ------------------------------------------------
+    //
+    // The search lives here rather than in the find bar because everything it
+    // needs is here: the document to search, the scroll offset to bring a match
+    // into view, and the renderer that draws the hits. The bar is the query and
+    // the buttons, and pushes both at this.
+
+    const Search& search() const { return finder; }
+
+    // Recomputes the matches and moves to the one at or after `from`, so typing
+    // in the find field carries on from where the work is rather than jumping to
+    // the top of the file on every keystroke. Does not move the caret: a search
+    // that is still being typed should not take the insertion point with it.
+    void setSearchQuery(const SearchQuery& query, std::size_t from);
+
+    // Clears the query, so nothing is highlighted and the count reads zero.
+    void clearSearch();
+
+    // Move to the next or previous hit and select it, wrapping at both ends.
+    // Selecting rather than only scrolling is what makes ⌘F then Escape leave
+    // the caret on what was being looked for.
+    void findNext();
+    void findPrevious();
+
+    // Replaces the current hit and moves to the one after it. Does nothing when
+    // there is no current hit, which is what makes holding the button stop at
+    // the end rather than looping.
+    void replaceCurrent(std::string_view replacement);
+
+    // Returns how many were replaced. One undo step for the lot.
+    int replaceAllMatches(std::string_view replacement);
 
     bool wantsMouse() const override { return true; }
     bool acceptsFocus() const override { return true; }
@@ -71,9 +107,22 @@ public:
 private:
     void clampScroll();
     void scrollToCaret();
+    void scrollToLine(std::size_t line);
     int visibleLines() const;
 
+    // Puts the caret on the current hit and brings it into view. The shared tail
+    // of findNext, findPrevious and a replace that moves on.
+    void goToCurrentMatch();
+
+    void refreshSearch();
+
     TextFile& file;
+
+    Search finder;
+
+    // The document revision the match list was built from, so a stale list can
+    // be spotted without comparing text.
+    std::uint64_t searchedVersion = 0;
 
     TextRenderer* renderer = nullptr;
     Highlighter* highlighter = nullptr;

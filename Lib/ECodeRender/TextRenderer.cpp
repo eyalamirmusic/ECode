@@ -257,19 +257,21 @@ std::size_t TextRenderer::offsetAtPoint(const Document& document,
     return document.offsetAt(line, best);
 }
 
-void TextRenderer::drawSelection(Sprites::SpriteRenderer& sprites,
-                                 const Document& document,
-                                 const Cursor& cursor,
-                                 const Graphics::Rect& textRect,
-                                 float scrollY,
-                                 std::size_t first,
-                                 std::size_t last)
+void TextRenderer::fillRange(Sprites::SpriteRenderer& sprites,
+                             const Document& document,
+                             std::size_t rangeStart,
+                             std::size_t rangeEnd,
+                             const Graphics::Rect& textRect,
+                             float scrollY,
+                             std::size_t first,
+                             std::size_t last,
+                             const Graphics::Color& color)
 {
-    if (!cursor.hasSelection())
+    if (rangeEnd <= rangeStart)
         return;
 
-    const auto from = document.lineAt(cursor.start());
-    const auto to = document.lineAt(cursor.end());
+    const auto from = document.lineAt(rangeStart);
+    const auto to = document.lineAt(rangeEnd);
 
     for (auto line = std::max(first, from); line < last && line <= to; ++line)
     {
@@ -277,13 +279,13 @@ void TextRenderer::drawSelection(Sprites::SpriteRenderer& sprites,
         const auto lineBegin = document.offsetAt(line, 0);
 
         const auto startColumn =
-            line == from ? cursor.start() - lineBegin : std::size_t {0};
-        const auto endColumn = line == to ? cursor.end() - lineBegin : text.size();
+            line == from ? rangeStart - lineBegin : std::size_t {0};
+        const auto endColumn = line == to ? rangeEnd - lineBegin : text.size();
 
         const auto left = columnToX(text, startColumn);
 
-        // A selection crossing a line end shows the newline as a sliver of
-        // trailing width, so an empty selected line is still visible.
+        // A range crossing a line end shows the newline as a sliver of trailing
+        // width, so an empty selected line is still visible.
         const auto right = line == to
                                ? columnToX(text, endColumn)
                                : columnToX(text, text.size()) + advance * 0.5f;
@@ -294,18 +296,74 @@ void TextRenderer::drawSelection(Sprites::SpriteRenderer& sprites,
                           y,
                           std::max(right - left, 1.f),
                           height},
-                         theme.selection);
+                         color);
+    }
+}
+
+void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
+                               const Document& document,
+                               const EditorOverlay& overlay,
+                               const Graphics::Rect& textRect,
+                               float scrollY,
+                               std::size_t first,
+                               std::size_t last)
+{
+    if (overlay.matches == nullptr || overlay.matches->empty())
+        return;
+
+    const auto& matches = *overlay.matches;
+
+    // Bounded by the viewport rather than by the match count. That is the
+    // property the rest of this class is built on — a 100 MB file costs what a
+    // small one does — and searching for "e" in it would otherwise put tens of
+    // thousands of skipped ranges back into every frame. The list is in document
+    // order, so the visible run is contiguous and can be found rather than
+    // filtered for.
+    const auto windowStart = document.offsetAt(first, 0);
+    const auto windowEnd =
+        last < document.lineCount() ? document.offsetAt(last, 0) : document.length();
+
+    auto visible = std::lower_bound(matches.begin(),
+                                    matches.end(),
+                                    windowStart,
+                                    [](const SearchMatch& match, std::size_t offset)
+                                    { return match.start < offset; });
+
+    // One step back, in case a match begins above the window and reaches into
+    // it. Only reachable for a query containing a newline, which the find field
+    // cannot produce today — but fillRange already handles multi-line ranges and
+    // relying on the field's key handling to keep this correct would be a
+    // coupling nobody would think to look for.
+    if (visible != matches.begin())
+        --visible;
+
+    for (auto match = visible; match != matches.end() && match->start < windowEnd;
+         ++match)
+    {
+        const auto index = static_cast<int>(std::distance(matches.begin(), match));
+
+        fillRange(sprites,
+                  document,
+                  match->start,
+                  match->end,
+                  textRect,
+                  scrollY,
+                  first,
+                  last,
+                  index == overlay.currentMatch ? theme.currentSearchMatch
+                                                : theme.searchMatch);
     }
 }
 
 void TextRenderer::draw(PaintContext& context,
                         const Document& document,
-                        const Cursor* cursor,
-                        bool caretVisible,
+                        const EditorOverlay& overlay,
                         Highlighter* highlighter,
                         const Graphics::Rect& viewport,
                         float scrollY)
 {
+    const auto* cursor = overlay.cursor;
+
     const auto first = firstVisibleLine(scrollY);
     const auto last = lastVisibleLine(document, viewport, scrollY);
     const auto gutter = gutterWidth(document.lineCount());
@@ -320,25 +378,51 @@ void TextRenderer::draw(PaintContext& context,
     const auto textRect = Graphics::Rect {
         viewport.x + gutter, viewport.y, viewport.w - gutter, viewport.h};
 
-    // Selection and the current-line band go behind the text, so they are drawn
-    // through the sprite renderer before any glyph is queued.
-    if (cursor != nullptr)
+    // Selection, search hits and the current-line band go behind the text, so
+    // they are drawn through the sprite renderer before any glyph is queued.
     {
         const auto clip = ClipScope {context, textRect};
 
-        const auto caretLine = document.lineAt(cursor->head);
-
-        if (!cursor->hasSelection() && caretLine >= first && caretLine < last)
+        if (cursor != nullptr)
         {
-            const auto y =
-                textRect.y + scrollY + static_cast<float>(caretLine) * height;
+            const auto caretLine = document.lineAt(cursor->head);
 
-            context.sprites().fillRect({textRect.x, y, textRect.w, height},
-                                       theme.currentLine);
+            if (!cursor->hasSelection() && caretLine >= first && caretLine < last)
+            {
+                const auto y =
+                    textRect.y + scrollY + static_cast<float>(caretLine) * height;
+
+                context.sprites().fillRect({textRect.x, y, textRect.w, height},
+                                           theme.currentLine);
+            }
         }
 
-        drawSelection(
-            context.sprites(), document, *cursor, textRect, scrollY, first, last);
+        if (cursor != nullptr && cursor->hasSelection())
+            fillRange(context.sprites(),
+                      document,
+                      cursor->start(),
+                      cursor->end(),
+                      textRect,
+                      scrollY,
+                      first,
+                      last,
+                      theme.selection);
+
+        // Over the selection, not under it. Finding a hit *selects* it, so the
+        // two always coincide on the current match — and drawn underneath, the
+        // current-match colour is covered by the selection every single time it
+        // matters, leaving the hit being looked at painted the same blue as any
+        // other selection. The whole point of a separate colour is lost.
+        //
+        // Painting on top means the current hit reads as a hit while the search
+        // is live, and reverts to an ordinary selection the moment the bar
+        // closes and the highlighting goes away.
+        //
+        // Found by running it. Every test passed with the order the wrong way
+        // round, because none of them rendered a selection and a hit at once —
+        // which is the only arrangement in which the bug exists.
+        drawMatches(
+            context.sprites(), document, overlay, textRect, scrollY, first, last);
     }
 
     // Each region draws under its own clip. The context flushes the glyph batch
@@ -392,7 +476,7 @@ void TextRenderer::draw(PaintContext& context,
 
         // The caret goes on top of the text: at a line's end it would otherwise
         // sit under the glyph that follows it after an edit.
-        if (cursor != nullptr && caretVisible)
+        if (cursor != nullptr && overlay.caretVisible)
         {
             const auto caretLine = document.lineAt(cursor->head);
 

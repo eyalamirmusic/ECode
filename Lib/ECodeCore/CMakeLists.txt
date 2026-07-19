@@ -7,6 +7,7 @@ add_library(ECodeCore STATIC
         Document.cpp
         Editor.cpp
         FileTree.cpp
+        Search.cpp
         TextEdit.cpp
         TextFile.cpp)
 

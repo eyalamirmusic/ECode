@@ -37,6 +37,28 @@ bool EditHistory::canMergeInto(const Step& step, const TextEdit& edit) const
     return edit.start == last.insertedEnd();
 }
 
+void EditHistory::beginGroup()
+{
+    if (groupDepth++ > 0)
+        return;
+
+    // The group's first edit starts its own step rather than merging into
+    // whatever was being typed before it. A replace-all that joined the word
+    // last typed would take that word with it on undo.
+    open = false;
+    groupHasStep = false;
+}
+
+void EditHistory::endGroup()
+{
+    if (--groupDepth > 0)
+        return;
+
+    // Nothing typed afterwards merges into the group either, for the same reason
+    // in the other direction.
+    open = false;
+}
+
 void EditHistory::record(const TextEdit& edit)
 {
     if (edit.isEmpty())
@@ -46,13 +68,25 @@ void EditHistory::record(const TextEdit& edit)
     // longer follows from the present.
     redoStack.clear();
 
-    if (!undoStack.empty() && canMergeInto(undoStack.back(), edit))
+    // Inside a group everything after the first edit joins the step it opened,
+    // so the merge rule is not consulted at all.
+    const auto joinsTopStep =
+        !undoStack.empty()
+        && (grouping() ? groupHasStep : canMergeInto(undoStack.back(), edit));
+
+    if (joinsTopStep)
     {
         undoStack.back().edits.push_back(edit);
         return;
     }
 
     undoStack.push_back({{edit}, nextStateId++});
+
+    if (grouping())
+    {
+        groupHasStep = true;
+        return;
+    }
 
     // A deletion or a newline closes the step immediately, so the *next* edit
     // starts a fresh one rather than merging into this.
@@ -112,6 +146,11 @@ void EditHistory::clear()
     undoStack.clear();
     redoStack.clear();
     open = false;
+
+    // The step the open group was appending to is gone with the rest, so the
+    // next edit has to start a new one. groupDepth is deliberately left alone:
+    // an UndoGroup is still alive out there and will call endGroup().
+    groupHasStep = false;
 
     // nextStateId deliberately keeps counting. A cleared history is a different
     // document, and reusing ids across a reload would let a stale save point

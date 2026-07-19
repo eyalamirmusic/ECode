@@ -84,6 +84,10 @@ public:
     // surrounding typing calls this — a caret move, a save, a paste.
     void breakUndoStep() { history.breakStep(); }
 
+    // Prefer the UndoGroup below to calling these directly.
+    void beginUndoGroup() { history.beginGroup(); }
+    void endUndoGroup() { history.endGroup(); }
+
     // Bumped on every change, so a view can tell whether it needs to re-run a
     // highlighter or re-measure without comparing the whole text.
     std::uint64_t version() const { return revision; }
@@ -118,5 +122,28 @@ private:
     EditHistory history;
 
     std::uint64_t revision = 0;
+};
+
+// Makes everything done inside it a single thing to undo.
+//
+// For an operation that is one action made of several edits — replace-all
+// today, one edit per cursor when multi-cursor lands. See
+// EditHistory::beginGroup for why the ordinary merge rule cannot cover those.
+class UndoGroup
+{
+public:
+    explicit UndoGroup(Editor& editorToGroup)
+        : editor(editorToGroup)
+    {
+        editor.beginUndoGroup();
+    }
+
+    ~UndoGroup() { editor.endUndoGroup(); }
+
+    UndoGroup(const UndoGroup&) = delete;
+    UndoGroup& operator=(const UndoGroup&) = delete;
+
+private:
+    Editor& editor;
 };
 } // namespace ecode
