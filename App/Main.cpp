@@ -6,6 +6,7 @@
 #include <ECodeUI/FindBar.h>
 #include <ECodeUI/Keymap.h>
 #include <ECodeUI/MenuBuilder.h>
+#include <ECodeUI/Splitter.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
@@ -62,6 +63,19 @@ struct WindowLayout final : Widget
         addChild(status);
         addChild(editor);
 
+        // After both panes, so its grab band is found before the sidebar and
+        // the editor it sits between — widgetAt takes the last child that
+        // contains the point.
+        addChild(sidebarSplitter);
+
+        sidebarSplitter.setPosition(activityBarWidth + sidebarWidth);
+
+        sidebarSplitter.onMoved = [this](float)
+        {
+            layout();
+            repaint();
+        };
+
         // After the editor, so it draws over the text it is searching.
         addChild(find);
 
@@ -94,10 +108,27 @@ struct WindowLayout final : Widget
 
         activityBar.setBounds(area.removeFromLeft(activityBarWidth));
 
-        const auto sidebarArea = area.removeFromLeft(sidebarWidth);
+        // The divider's position is measured from the window's left edge, which
+        // is what the splitter reports and what a config file would store — so
+        // the sidebar is whatever lies between the activity bar and it, rather
+        // than a width kept in step with it separately.
+        sidebarSplitter.setLimits(
+            area.x + minSidebarWidth,
+            std::max(area.x + minSidebarWidth, area.right() - minEditorWidth));
+
+        const auto sidebarArea =
+            area.removeFromLeft(sidebarSplitter.position() - area.x);
 
         sidebar.setBounds(sidebarArea);
         files.setBounds(sidebarArea);
+
+        // Straddles the seam rather than taking a slice of it, so neither pane
+        // loses width to the divider and the grab band reaches into both.
+        sidebarSplitter.setBounds(
+            {sidebarArea.right() - Splitter::grabThickness * 0.5f,
+             area.y,
+             Splitter::grabThickness,
+             area.h});
 
         // Tabs belong to the editor group, so they start where the sidebar
         // ends rather than spanning the window.
@@ -120,7 +151,16 @@ struct WindowLayout final : Widget
     }
 
     static constexpr auto activityBarWidth = 48.f;
+
+    // Where the divider starts. Only the initial value now — after that the
+    // splitter owns it.
     static constexpr auto sidebarWidth = 240.f;
+
+    // Narrow enough to be worth collapsing to and wide enough to still show a
+    // filename. The editor's floor matters more: a sidebar dragged over the
+    // whole window would leave nothing to type in and no obvious way back.
+    static constexpr auto minSidebarWidth = 120.f;
+    static constexpr auto minEditorWidth = 240.f;
     static constexpr auto tabBarHeight = 35.f;
     static constexpr auto statusBarHeight = 22.f;
 
@@ -138,6 +178,9 @@ struct WindowLayout final : Widget
     TabBar tabs {theme};
     StatusBar status {theme};
     EditorWidget editor;
+
+    Splitter sidebarSplitter {theme, Splitter::Orientation::Vertical};
+
     FindBar find {theme};
     CommandPalette palette;
     ContextMenu contextMenu;
@@ -881,13 +924,31 @@ struct EditorView final : GPU::GPUView
         host.mouseDragged(event);
     }
 
-    void mouseUp(const Graphics::MouseEvent& event) override { host.mouseUp(event); }
+    void mouseUp(const Graphics::MouseEvent& event) override
+    {
+        host.mouseUp(event);
+
+        // Releasing a splitter drag away from its band has to put the arrow
+        // back. Nothing else would until the pointer moved again, and macOS
+        // sends no move for a button release.
+        updateCursor(event.pos);
+    }
 
     // Forwarded only now that something tracks the pointer: the context menu
     // highlights the row under it, which is the first hover state in the app.
     void mouseMoved(const Graphics::MouseEvent& event) override
     {
         host.mouseMoved(event);
+        updateCursor(event.pos);
+    }
+
+    // The window is one Graphics::View, so there is exactly one cursor for the
+    // whole thing and the application is what applies it — a widget can only say
+    // what it wants. Setting the same shape twice is free, so this runs on every
+    // move without asking whether anything changed.
+    void updateCursor(const Graphics::Point& position)
+    {
+        setMouseCursor(host.cursorAt(position));
     }
 
     void mouseWheel(const Graphics::MouseEvent& event) override

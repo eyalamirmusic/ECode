@@ -53,6 +53,14 @@ public:
     // it would paste into the document with the caret visibly in the find box.
     bool runCommandOnFocus(std::string_view id);
 
+    // The shape the pointer should take at this point.
+    //
+    // A widget holding the mouse answers wherever the pointer has got to, which
+    // is what keeps the resize cursor up while a splitter is dragged past its
+    // own band — the drag is still happening, and a pointer that reverts to an
+    // arrow mid-drag reads as the drag having been dropped.
+    eacp::Graphics::MouseCursor cursorAt(const eacp::Graphics::Point& point) const;
+
     // --- focus -----------------------------------------------------------
 
     void setFocus(Widget* widget);

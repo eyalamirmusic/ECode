@@ -66,6 +66,13 @@ struct ChromeTheme
     // is harder to understand than one that is visibly unavailable.
     eacp::Graphics::Color paletteDisabledText {0.42f, 0.44f, 0.50f};
 
+    // The splitter between the sidebar and the editor. Nearly invisible until
+    // the pointer is on it: a divider is a seam most of the time and a control
+    // only while someone is reaching for it, so a permanently lit line would be
+    // drawing attention to the one part of the chrome that has nothing to say.
+    eacp::Graphics::Color splitter {1.f, 1.f, 1.f, 0.06f};
+    eacp::Graphics::Color splitterActive {0.35f, 0.55f, 0.85f};
+
     // The in-window context menu. `Graphics::Menu` is the native menu bar and
     // has no popup, so this one is drawn by us like everything else inside the
     // GPU view.

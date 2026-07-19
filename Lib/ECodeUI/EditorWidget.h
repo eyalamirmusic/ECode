@@ -96,6 +96,13 @@ public:
     std::function<void(const eacp::Graphics::Point&)> onContextMenuRequested =
         [](const eacp::Graphics::Point&) {};
 
+    // An I-beam over the text, which is the shape that says "this is
+    // selectable" before anyone tries selecting it.
+    eacp::Graphics::MouseCursor cursor() const override
+    {
+        return eacp::Graphics::MouseCursor::IBeam;
+    }
+
     void mouseDown(const eacp::Graphics::MouseEvent& event) override;
     void mouseDragged(const eacp::Graphics::MouseEvent& event) override;
     bool mouseWheel(const eacp::Graphics::MouseEvent& event) override;

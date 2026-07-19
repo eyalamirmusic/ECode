@@ -123,6 +123,27 @@ bool WidgetHost::keyDown(const Graphics::KeyEvent& event)
     return false;
 }
 
+Graphics::MouseCursor WidgetHost::cursorAt(const Graphics::Point& point) const
+{
+    // The widget holding the mouse answers first, wherever the pointer has got
+    // to. A splitter dragged past its own band is still being dragged, and a
+    // pointer reverting to the arrow mid-drag reads as the drag having been
+    // dropped.
+    if (capturedWidget != nullptr)
+        return capturedWidget->cursor();
+
+    if (rootWidget == nullptr)
+        return Graphics::MouseCursor::Default;
+
+    // Only the widget under the pointer is asked, with no walk up the tree: a
+    // parent's shape is not a default its children inherit, or the editor's
+    // I-beam would leak onto every panel laid out inside it.
+    if (const auto* target = rootWidget->widgetAt(point))
+        return target->cursor();
+
+    return Graphics::MouseCursor::Default;
+}
+
 bool WidgetHost::runCommandOnFocus(std::string_view id)
 {
     // Only the focused widget is asked, and only when it is a text box. Unlike

@@ -7,10 +7,11 @@ holds a real file tree you can scroll and open files from, every command is
 named in a registry that a keymap, a fuzzy-matching command palette, a native
 menu bar and a right-click context menu all read from, ⌘O and ⇧⌘O open a file or
 a project folder, and ⌘F finds and replaces with the hits lit up in the file.
-The splitter is the last of the planned widgets (§7.4), and it is the one that
-wants eacp's cursor-shape gap closed first (gap 7). Sections 1–5 are the design
-and the research behind it; **§6 is where things stand and §7 is what to do
-next.**
+Right-click gives a context menu and the sidebar resizes by dragging its seam,
+with the pointer changing shape over both. Every widget the plan called for now
+exists (§7.4); what is left is structural — variable line height and damage
+tracking (§7.3). Sections 1–5 are the design and the research behind it; **§6 is
+where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -258,7 +259,8 @@ And the y-axis fix, which is the largest correction made upstream so far:
   layer's path space is y-down. The existing layer cases all used full-bounds
   paths, which are orientation-symmetric and pass either way up.
 
-Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching).
+Still open: gap 3 (IME), 9 (UTF-8 helpers), 10 (file watching). Gap 7 is done on
+macOS — see §6.
 
 | # | Gap | Why it blocks | Shape of fix |
 |---|-----|---------------|--------------|
@@ -500,12 +502,12 @@ contradict each other on any non-QWERTY layout.
 Everything through M4 is done and verified on screen. Commit hashes are in the
 log; this is the shape of it.
 
-**Done in eacp** (542 tests): scissor rects, macOS scroll-wheel delivery with
+**Done in eacp** (552 tests): scissor rects, macOS scroll-wheel delivery with
 precise/momentum plumbing, backing-scale notification, texture sub-region
 upload, `constexpr` colours, `ShaderProgram::prepare`'s blend mode, clipboard
 `getText`/`hasText`, the missing key codes, `Files::writeFileAtomically` and
 `File::modificationTime`, the y-down fix to `Graphics::Rect`, **menu-item
-enablement**, and the whole `eacp-text` module — rasterizer/atlas split,
+enablement**, **cursor shapes**, and the whole `eacp-text` module — rasterizer/atlas split,
 per-glyph bearings, R8 mask + RGBA colour atlases, growth over eviction,
 incremental upload, and `Text::GlyphRenderer`.
 
@@ -523,7 +525,36 @@ is the `respondsToSelector:` check — unlike the `scrollWheel:` case, `NSObject
 does not implement `validateMenuItem:` itself, so inheritance does not satisfy
 it for free.
 
-**Done in ECode** (383 tests): `Document` with an incremental line index,
+**Gap 7 — cursor shapes** closed on macOS, and the shape of the API is the
+interesting part. A cursor fixed *per view* would have been useless here: a
+GPU-drawn UI is one view with a whole widget tree painted into it, so ECode's
+entire window has exactly one `Graphics::View` and many regions. So
+`View::setMouseCursor` is settable at any time, from inside a `mouseMoved`
+handler, and setting the same shape twice is free — the caller is a hover
+handler and should not have to remember what it last asked for.
+
+The macOS half needs both `cursorUpdate:` and an immediate `[cursor set]`.
+Without the first, a shape set from a move survives only until the pointer
+crosses a boundary and AppKit resets it, which reads as the cursor flickering
+back at random. Without the second, the shape does not change until the *next*
+cursorUpdate:, so the pointer sits on the splitter still showing an arrow. The
+tracking area also had to ask for `NSTrackingCursorUpdate`, and it is easy to
+add the method and forget the flag — the method then never fires and nothing
+else about the view looks wrong.
+
+Windows stores the shape and does not apply it, deliberately and with the reason
+written down: Windows re-asks on every `WM_SETCURSOR`, so doing it properly means
+handling that in the host window rather than in `View-Windows.cpp`, and there is
+no Windows machine in the loop to see a flickering cursor on. `getMouseCursor()`
+still answers, so the portable half is testable everywhere.
+
+`Tests/Graphics/CursorTests.cpp` covers the state, `CursorTests-macOS.mm` the
+plumbing — including an end-to-end check of the enum-to-`NSCursor` mapping via
+`NSCursor.currentCursor`, and that no two shapes collapse onto the same cursor.
+`Apps/Graphics/CursorShapes` is the live example: five bands in one view, the
+shape following the pointer across them. Confirmed red without the change.
+
+**Done in ECode** (405 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -534,8 +565,9 @@ a virtualised list, and a working file tree in the sidebar — and the command
 layer: `CommandRegistry`, `Keymap`, `FuzzyMatch` and a `CommandPalette` that
 reads both through a shared `TextField` — find/replace: a `Search` model,
 a `FindBar`, match highlighting in the renderer and grouped undo for
-replace-all — and the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher
-that the keymap and the menus both arrive at.
+replace-all — the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher that
+the keymap and the menus both arrive at — and the last two widgets: a right-click
+`ContextMenu` and a draggable `Splitter`.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -944,8 +976,40 @@ two overlays now want every non-chord key. `modalOverlay()` names them in one
 place. Still not worth inventing `when` contexts for two — worth recording that
 a third would be the moment.
 
-**Still to do here:** splitters. The palette is
-the first overlay, and it confirms the shape those want: a child of the root
+**Also done: the splitter, and the cursor that makes it legible.** The sidebar
+resizes by dragging the seam, clamped so neither pane can be squeezed out of
+existence.
+
+Three decisions worth recording:
+
+- **The splitter holds a position, not the panes.** A splitter owning its two
+  children would have to own their layout too, and every arrangement here already
+  has a parent that knows how its own rect divides — the window layout takes the
+  sidebar off the left with `removeFromLeft` and passes the rest on. So it reports
+  where the divider is and the parent lays out around it.
+- **Drawn thin, grabbed thick.** One point of line inside eight points of grab
+  band. Matching them gives either a target nobody can hit or a bar through the
+  middle of the chrome, and the band is centred on the line so it is equally
+  reachable from both panes.
+- **The drag keeps its grab offset.** Snapping the divider's centre to the
+  pointer means a visible twitch of up to half the band on every single drag.
+
+**A widget reports a cursor rather than setting one**, because setting one needs
+the `Graphics::View` that owns the GPU surface and there is exactly one of those
+for the whole window. `Widget::cursor()` says what it wants,
+`WidgetHost::cursorAt` asks whichever widget is under the pointer, and the
+application applies the answer. The captured widget answers first, which is what
+holds the resize shape while the divider is dragged past its own band — a pointer
+reverting to an arrow mid-drag reads as the drag having been dropped. The editor
+now asks for an I-beam, which is the other half of gap 7's original point.
+
+**Every widget §7.4 planned now exists.** What is left here is not a widget: the
+minimap, tooltips, hover states beyond the two that now have them, and animation
+— plus the two structural debts §7.3 names, variable line height and damage
+tracking, which are the ones that get more expensive the longer the chrome grows
+on top of them.
+
+On overlays: the palette is the first, and it confirms the shape those want: a child of the root
 laid out over the whole window, because `PaintContext` has no notion of a layer
 escaping its parent's clip and covering the window is also what makes a click
 outside dismiss it. The find bar is deliberately *not* that shape — it is sized
@@ -1142,6 +1206,13 @@ Recorded because each of these cost something to find out.
   *border* supplied the peak. Inset past the border it fails properly. The
   general form — when a test samples an area, check nothing else bright lives in
   that area, or it will answer about the wrong thing.
+- **A sample point can miss by a pixel and take three tests with it.** The
+  splitter's line is one point wide centred in an eight-point band, so it lands
+  at `x - 0.5` and the lit column is the one to the *left* of the divider.
+  Three render tests sampling the divider's own column all failed against
+  correct code. A peak across the band answers whichever side of the half-pixel
+  it falls on. Sub-pixel placement is normal; a test that names one pixel is
+  asserting on rounding.
 - **Looking is still worth it after the tests are green.** The context menu had
   38 passing tests, two of them mutation-checked, and rendering one to a file
   showed two things immediately that none of them asked about: the highlight bar

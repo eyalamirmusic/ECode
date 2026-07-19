@@ -122,6 +122,18 @@ public:
     // precedence is what stops it pasting into the document instead.
     virtual bool runCommand(std::string_view) { return false; }
 
+    // The shape the pointer should take over this widget.
+    //
+    // Reported rather than applied. Setting a cursor needs the Graphics::View
+    // that owns the GPU surface, and there is exactly one of those for the whole
+    // window — so a widget saying what it wants, and the application asking
+    // whichever widget is under the pointer, is the only arrangement that works
+    // when the entire UI lives inside a single view.
+    virtual eacp::Graphics::MouseCursor cursor() const
+    {
+        return eacp::Graphics::MouseCursor::Default;
+    }
+
     virtual void mouseDown(const eacp::Graphics::MouseEvent&) {}
     virtual void mouseDragged(const eacp::Graphics::MouseEvent&) {}
     virtual void mouseUp(const eacp::Graphics::MouseEvent&) {}
