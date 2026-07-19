@@ -3,6 +3,7 @@
 #include "Keymap.h"
 #include "UIText.h"
 
+#include <ECodeCore/Commands.h>
 #include <ECodeCore/Utf8.h>
 
 #include <eacp/Core/App/Clipboard.h>
@@ -249,6 +250,52 @@ std::string TextField::selectedText() const
     return content.substr(selectionStart(), selectionEnd() - selectionStart());
 }
 
+bool TextField::runCommand(std::string_view id)
+{
+    if (id == commands::editSelectAll)
+    {
+        selectAll();
+        return true;
+    }
+
+    if (id == commands::editCopy || id == commands::editCut)
+    {
+        // Claimed even with nothing selected. Returning false would hand the
+        // chord to the application, which would then copy from the document
+        // while the caret is visibly in this box.
+        if (!hasSelection())
+            return true;
+
+        Clipboard::copyText(selectedText());
+
+        if (id == commands::editCut)
+            replaceSelection({});
+
+        return true;
+    }
+
+    if (id == commands::editPaste)
+    {
+        if (!Clipboard::hasText())
+            return true;
+
+        auto pasted = Clipboard::getText();
+
+        // A single-line box. Pasting a multi-line clipboard would put a
+        // newline somewhere it can never otherwise appear — Return is not
+        // typed into a field — and the query would then match nothing while
+        // looking perfectly ordinary.
+        std::erase(pasted, '\n');
+        std::erase(pasted, '\r');
+
+        replaceSelection(pasted);
+
+        return true;
+    }
+
+    return false;
+}
+
 bool TextField::keyDown(const Graphics::KeyEvent& event)
 {
     const auto extend = event.modifiers.shift;
@@ -256,47 +303,24 @@ bool TextField::keyDown(const Graphics::KeyEvent& event)
     // The four chords that mean *this box* rather than the document behind it.
     // Everything else with ⌘ held is the application's — see Widget::isTextInput
     // for who decides and why this short list is where the line falls.
+    //
+    // Translated to a command id and handled in one place, because the same
+    // four now also arrive from the menu bar, which never produces a key event.
     if (event.modifiers.command)
     {
         const auto chord = Chord::fromEvent(event).key;
 
         if (chord == "a")
-        {
-            selectAll();
-            return true;
-        }
+            return runCommand(commands::editSelectAll);
 
-        if (chord == "c" || chord == "x")
-        {
-            if (!hasSelection())
-                return true;
+        if (chord == "c")
+            return runCommand(commands::editCopy);
 
-            Clipboard::copyText(selectedText());
-
-            if (chord == "x")
-                replaceSelection({});
-
-            return true;
-        }
+        if (chord == "x")
+            return runCommand(commands::editCut);
 
         if (chord == "v")
-        {
-            if (!Clipboard::hasText())
-                return true;
-
-            auto pasted = Clipboard::getText();
-
-            // A single-line box. Pasting a multi-line clipboard would put a
-            // newline somewhere it can never otherwise appear — Return is not
-            // typed into a field — and the query would then match nothing while
-            // looking perfectly ordinary.
-            std::erase(pasted, '\n');
-            std::erase(pasted, '\r');
-
-            replaceSelection(pasted);
-
-            return true;
-        }
+            return runCommand(commands::editPaste);
 
         return false;
     }

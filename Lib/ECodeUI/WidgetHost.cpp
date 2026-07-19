@@ -116,12 +116,23 @@ bool WidgetHost::mouseWheel(const Graphics::MouseEvent& event)
 
 bool WidgetHost::keyDown(const Graphics::KeyEvent& event)
 {
-    for (auto* widget = focusedWidget; widget != nullptr;
-         widget = widget->parent())
+    for (auto* widget = focusedWidget; widget != nullptr; widget = widget->parent())
         if (widget->keyDown(event))
             return true;
 
     return false;
+}
+
+bool WidgetHost::runCommandOnFocus(std::string_view id)
+{
+    // Only the focused widget is asked, and only when it is a text box. Unlike
+    // keyDown this does not bubble: a command that a field does not claim
+    // belongs to the application, not to whatever happens to contain the field.
+    // The find bar containing a query box must not answer for "edit.undo".
+    if (focusedWidget == nullptr || !focusedWidget->isTextInput())
+        return false;
+
+    return focusedWidget->runCommand(id);
 }
 
 void WidgetHost::setFocus(Widget* widget)

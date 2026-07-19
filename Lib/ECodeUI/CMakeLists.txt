@@ -9,6 +9,7 @@ add_library(ECodeUI STATIC
         FindBar.cpp
         Keymap.cpp
         ListView.cpp
+        MenuBuilder.cpp
         ScrollView.cpp
         TextField.cpp
         UIText.cpp

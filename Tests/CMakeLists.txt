@@ -23,6 +23,7 @@ nano_add_executable(ECodeUITests
             FileTreeViewTests.cpp
             FindBarTests.cpp
             KeymapTests.cpp
+            MenuBuilderTests.cpp
             ScrollTests.cpp
             TextFieldTests.cpp
             WidgetTests.cpp

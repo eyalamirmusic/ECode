@@ -6,6 +6,7 @@
 #include <eacp/Graphics/Graphics.h>
 
 #include <functional>
+#include <string_view>
 
 namespace ecode
 {
@@ -108,6 +109,18 @@ public:
     // before contexts exist — pasting a search term into the file being searched
     // is a mistake that edits the document.
     virtual bool isTextInput() const { return false; }
+
+    // The same question as isTextInput, asked about a named command rather than
+    // a keystroke — true when the widget handled it and the application should
+    // not.
+    //
+    // Both exist because a command now arrives by two routes and only one of
+    // them is a key event. A menu item's key equivalent is matched by the OS
+    // against the menu bar *before* the window sees a key down at all, so a
+    // ⌘V that reaches the find field as a keystroke reaches it as "edit.paste"
+    // once Paste is in the Edit menu. Routing the menu through the same
+    // precedence is what stops it pasting into the document instead.
+    virtual bool runCommand(std::string_view) { return false; }
 
     virtual void mouseDown(const eacp::Graphics::MouseEvent&) {}
     virtual void mouseDragged(const eacp::Graphics::MouseEvent&) {}

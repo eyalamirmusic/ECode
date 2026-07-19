@@ -4,11 +4,11 @@
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
 saves, with external-change detection. The chrome is a widget tree, the sidebar
 holds a real file tree you can scroll and open files from, every command is
-named in a registry that a keymap and a fuzzy-matching command palette both read
-from, and ⌘F finds and replaces with the hits lit up in the file. Next are the
-remaining widgets — splitter and context menu (§7.4). Sections 1–5 are the
-design and the research behind it; **§6 is where things stand and §7 is what to
-do next.**
+named in a registry that a keymap, a fuzzy-matching command palette and a native
+menu bar all read from, ⌘O and ⇧⌘O open a file or a project folder, and ⌘F finds
+and replaces with the hits lit up in the file. Next are the remaining widgets —
+splitter and context menu (§7.4). Sections 1–5 are the design and the research
+behind it; **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -195,7 +195,8 @@ Note `EACP_CI_BUILD=ON` turns unity builds on, which changes what compiles toget
 file can be fine alone and break in a unity blob. Existing gating to copy: `Tests/GPU` is already
 excluded on iOS (`AND NOT IOS`), and `Lib/eacp/Video` likewise.
 
-**Done so far**, on the eacp branch `ecode-editor-support` (497 eacp tests pass, up from 469):
+**Done so far**, now on eacp's `main` rather than the `ecode-editor-support`
+branch this originally landed on (542 eacp tests pass, up from 469):
 
 - **Gap 1 — scissor rects.** `RenderPass::setScissorRect(Rect)` / `clearScissorRect()`, in
   render-target pixels, top-left origin, clamped to the target so a partly-scrolled-off region
@@ -497,16 +498,30 @@ contradict each other on any non-QWERTY layout.
 Everything through M4 is done and verified on screen. Commit hashes are in the
 log; this is the shape of it.
 
-**Done in eacp** (branch `ecode-editor-support`, 602 tests):
-scissor rects, macOS scroll-wheel delivery with precise/momentum plumbing,
-backing-scale notification, texture sub-region upload, `constexpr` colours,
-`ShaderProgram::prepare`'s blend mode, clipboard `getText`/`hasText`, the
-missing key codes, `Files::writeFileAtomically` and `File::modificationTime`,
-the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasterizer/atlas split, per-glyph bearings,
-R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
-`Text::GlyphRenderer`.
+**Done in eacp** (542 tests): scissor rects, macOS scroll-wheel delivery with
+precise/momentum plumbing, backing-scale notification, texture sub-region
+upload, `constexpr` colours, `ShaderProgram::prepare`'s blend mode, clipboard
+`getText`/`hasText`, the missing key codes, `Files::writeFileAtomically` and
+`File::modificationTime`, the y-down fix to `Graphics::Rect`, **menu-item
+enablement**, and the whole `eacp-text` module — rasterizer/atlas split,
+per-glyph bearings, R8 mask + RGBA colour atlases, growth over eviction,
+incremental upload, and `Text::GlyphRenderer`.
 
-**Done in ECode** (322 tests): `Document` with an incremental line index,
+Menu enablement is the newest and the smallest: `MenuItem` gains a
+`std::function<bool()> isEnabled`, and the runtime target that already forwarded
+`trigger:` now also answers `validateMenuItem:`. An `NSMenu` autoenables its
+items by default, so AppKit asks that question every time a menu opens — which
+means the predicate is read live and an app never rebuilds its bar to change
+what is greyed. Without it every item is permanently enabled and nothing fails:
+a menu full of unavailable commands looks entirely normal and clicking one does
+nothing. `Tests/Graphics/MenuTests.cpp` covers the model, `MenuTests-macOS.mm`
+the plumbing, and `Apps/Graphics/MenuBarApp` is the live example. Confirmed red
+without the change: the five macOS tests fail, and the one that fails *cleanly*
+is the `respondsToSelector:` check — unlike the `scrollWheel:` case, `NSObject`
+does not implement `validateMenuItem:` itself, so inheritance does not satisfy
+it for free.
+
+**Done in ECode** (347 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -515,9 +530,10 @@ loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
 layer, with the chrome drawn by it rather than hardcoded — scroll containers,
 a virtualised list, and a working file tree in the sidebar — and the command
 layer: `CommandRegistry`, `Keymap`, `FuzzyMatch` and a `CommandPalette` that
-reads both through a shared `TextField` — and find/replace: a `Search` model,
+reads both through a shared `TextField` — find/replace: a `Search` model,
 a `FindBar`, match highlighting in the renderer and grouped undo for
-replace-all.
+replace-all — and the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher
+that the keymap and the menus both arrive at.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -836,6 +852,56 @@ changing what is lit, replace-all rewriting what is drawn, Escape clearing the
 highlight, and an edit to the document refreshing the hits. It needs no focus
 and runs in CI — see §9 for why the live-window version was the wrong instinct.
 
+**Also done: the menu bar, and opening things.** File, Edit, Find and View, plus
+the standard application menu — which is also where ⌘Q comes from, since macOS
+provides it only through a menu bar and ECode had none. ⌘O opens a file and ⇧⌘O
+opens a project folder, both through `Apps::chooseFile`/`chooseDirectory`, which
+already existed upstream. `MenuBuilder` turns a list of command ids into the
+bar: titles come from the registry, shortcuts from `Keymap::chordFor`, and
+availability from the command's own `isEnabled`, so a menu holds no strings
+anyone maintains by hand.
+
+Four decisions worth recording:
+
+- **A menu shortcut is not a keystroke, and that changes who gets it.** macOS
+  matches key equivalents against the menu bar *before* the window is sent a key
+  down. So the moment Paste is in the Edit menu, a ⌘V that used to arrive at a
+  focused find field as an event arrives as a command instead — and every piece
+  of logic that decided what ⌘V meant was written against a key event and no
+  longer runs. Left alone this pastes into the file being searched, which §7.4
+  already names as the mistake worth a virtual to prevent. `Widget::runCommand`
+  is `isTextInput` asked about a command id, `WidgetHost::runCommandOnFocus`
+  applies the same precedence, and both the keymap and the menu now converge on
+  one dispatcher rather than on the registry.
+- **The precedence moved out of `Main.cpp` so it could be tested.** It is six
+  lines, and it was six lines no test could reach — `App` is not a library. On
+  `WidgetHost` it is covered from both sides: the field claims the four editing
+  ids even with nothing selected, and passes everything else on.
+- **`runCommandOnFocus` deliberately does not bubble, though `keyDown` does.** A
+  find bar holding a query box is not itself a text input, and continuing the
+  walk past the box would let the bar answer for commands meant for the
+  document.
+- **Opening a *file* does not move the sidebar; opening a *folder* does.** The
+  root followed the open file's parent because that was the only thing there was
+  before a folder command. Keeping that would throw away the project someone is
+  working in as a side effect of ⌘O.
+
+**Verified in the running app**, which is where this one belongs: the menus are
+structure and platform behaviour rather than pixels, so `renderToImage` has
+nothing to say about them. Read back through the accessibility API rather than
+judged from a screenshot — every title, every shortcut and modifier mask, and
+the enabled flag on each item. Revert File, Undo, Redo, Cut and Copy all come up
+greyed on a freshly opened clean file and Paste does not, which is the whole
+chain end to end: command predicate → `MenuItem::isEnabled` → `validateMenuItem:`.
+
+**One thing the automation taught by accident**, and it is the §9 lesson again
+from the other direction: enumerating the menus via System Events *opened* them,
+which ran Open Folder — the tree jumped to the project root and focus moved to
+it. That looked like a bug for a while and was the feature working. Driving the
+live window also meant fighting other applications for the screen, and two
+captures came back showing the wrong app entirely. The menus were worth checking
+live; almost nothing else is.
+
 **Still to do here:** splitters and an in-window context menu. The palette is
 the first overlay, and it confirms the shape those want: a child of the root
 laid out over the whole window, because `PaintContext` has no notion of a layer
@@ -882,6 +948,17 @@ string does.
   adding one.
 - **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
   diagnostics, completion and go-to-definition after the chrome exists.
+- **macOS injects items into menus it recognises by name.** The Edit menu comes
+  back with AutoFill, Start Dictation and Emoji & Symbols appended; the View
+  menu with Show Tab Bar, Show All Tabs and Enter Full Screen, all three greyed.
+  Left alone deliberately. The two text-input ones are suppressible with
+  `NSDisabledDictationMenuItem` / `NSDisabledCharacterPaletteMenuItem`, but that
+  needs ECode to carry its own `Info.plist` instead of eacp's shared template,
+  and both items become *correct* the moment IME lands (§7.5) — so suppressing
+  them now buys tidiness and costs a thing to remember to undo. AutoFill has no
+  documented key at all. Window tabbing would need `allowsAutomaticWindowTabbing`
+  exposed from eacp, and "Enter Full Screen" being disabled is a window-options
+  gap that predates the menus.
 
 ---
 
@@ -1000,6 +1077,21 @@ Recorded because each of these cost something to find out.
   is what this framework has instead of a robot, and it is strictly better:
   no focus, no window, deterministic, and it stays as a regression test
   afterwards. Reserve the running app for judging how something *feels*.
+- **A test written against a convention can be wrong about the convention.**
+  The first key-equivalent test asserted `Chord::parse("cmd+")` was invalid and
+  therefore converted to nothing. It went red, and the code was right: `"+"` is
+  both the separator a binding is written with and a key in its own right, and
+  `parse` documents the trailing one as the key. ⌘+ is a real shortcut in most
+  applications. The test now pins that it *does* convert. Worth recording
+  because the instinct on a red test is to fix the code.
+- **The automation can be the thing that changed the state.** Reading the menus
+  through System Events opens them, and opening them ran a command — the file
+  tree jumped to a different root and focus moved, which read as a bug in the
+  new code for a while. Driving a live window also means competing for the
+  screen: two screen captures came back showing an entirely different
+  application. Both are the same lesson §9 already ends on, met from the other
+  side.
+
 - **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
   shader — passed every test that existed and was obvious in one screenshot.
   Still true, and the point is narrower than it looks: run it to see whether

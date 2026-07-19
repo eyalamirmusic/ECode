@@ -4,10 +4,12 @@
 #include <ECodeUI/FileTreeView.h>
 #include <ECodeUI/FindBar.h>
 #include <ECodeUI/Keymap.h>
+#include <ECodeUI/MenuBuilder.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
+#include <eacp/Core/App/App.h>
 #include <eacp/Core/App/Clipboard.h>
 #include <eacp/GPU/GPU.h>
 #include <eacp/Graphics/Graphics.h>
@@ -146,6 +148,11 @@ struct EditorView final : GPU::GPUView
 
         registerCommands();
         bindKeys();
+
+        // After both, since every item takes its title from the registry and
+        // its shortcut from the keymap.
+        installMenuBar();
+
         connectFindBar();
 
         layout.palette.onClosed = [this]
@@ -336,6 +343,13 @@ struct EditorView final : GPU::GPUView
                       "Show All Commands",
                       [this] { togglePalette(); }});
 
+        commands.add(
+            {"file.open", "File: Open File…", [this] { chooseFileToOpen(); }});
+
+        commands.add({"file.openFolder",
+                      "File: Open Folder…",
+                      [this] { chooseFolderToOpen(); }});
+
         commands.add({"file.save", "File: Save", [this] { saveFile(); }});
 
         commands.add({"file.revert",
@@ -420,6 +434,8 @@ struct EditorView final : GPU::GPUView
     void bindKeys()
     {
         keymap.bind("cmd+shift+p", "workbench.showPalette");
+        keymap.bind("cmd+o", "file.open");
+        keymap.bind("cmd+shift+o", "file.openFolder");
         keymap.bind("cmd+s", "file.save");
         keymap.bind("cmd+z", "edit.undo");
         keymap.bind("cmd+shift+z", "edit.redo");
@@ -483,6 +499,47 @@ struct EditorView final : GPU::GPUView
         conflicted = false;
 
         updateChrome();
+        repaint();
+    }
+
+    // Both pickers are OS modals that block until answered, so a cancel is the
+    // common case rather than an error and simply leaves everything as it was.
+    void chooseFileToOpen()
+    {
+        const auto chosen = Apps::chooseFile();
+
+        if (!chosen)
+            return;
+
+        openFile(FilePath {*chosen});
+
+        // Focus follows the open, as it does from the tree: the point of
+        // opening a file is to type in it.
+        host.setFocus(&layout.editor);
+        repaint();
+    }
+
+    // Opening a *folder* is what sets the sidebar's root; opening a file does
+    // not move it. That is what VSCode does, and the alternative — retargeting
+    // the tree at whatever directory the last file happened to live in — throws
+    // away the project someone is working in as a side effect of opening a file.
+    void chooseFolderToOpen()
+    {
+        const auto chosen = Apps::chooseDirectory();
+
+        if (!chosen)
+            return;
+
+        openFolder(FilePath {*chosen});
+    }
+
+    void openFolder(const FilePath& path)
+    {
+        layout.files.setRoot(path);
+
+        // The tree is where the work is now, so the keyboard goes with it —
+        // there is nothing to type into until a file is picked from it.
+        host.setFocus(&layout.files.keyboardTarget());
         repaint();
     }
 
@@ -646,6 +703,49 @@ struct EditorView final : GPU::GPUView
         repaint();
     }
 
+    // Where every command arrives, from the keymap and from the menu bar alike.
+    //
+    // The two routes have to converge here rather than at the registry, because
+    // a menu item's key equivalent is matched by macOS against the menu bar
+    // *before* the window is sent a key down — so the moment Paste is in the
+    // Edit menu, a ⌘V that used to reach a focused find field as a keystroke
+    // arrives as a command instead. Running it straight off the registry would
+    // paste into the document while the caret is visibly in the find box.
+    void dispatchCommand(std::string_view id)
+    {
+        if (!host.runCommandOnFocus(id))
+            commands.run(id);
+
+        repaint();
+    }
+
+    void installMenuBar()
+    {
+        const auto menus = defaultMenus();
+
+        // A menu naming a command that was never registered is left out, and
+        // silently: the item simply is not there. Worth saying out loud, since
+        // it means a rename landed on one side only.
+        for (const auto& missing: unknownCommandIds(menus, commands))
+            LOG("menu names an unregistered command: " + missing);
+
+        auto bar = Graphics::MenuBar {};
+
+        // Gives the app its About, Hide and Quit — including ⌘Q, which without
+        // a menu bar macOS does not provide at all.
+        bar.add(Graphics::standardApplicationMenu("ECode"));
+
+        for (auto& menu:
+             buildMenuBar(menus,
+                          commands,
+                          keymap,
+                          [this](std::string_view id) { dispatchCommand(id); })
+                 .menus)
+            bar.add(std::move(menu));
+
+        Graphics::setApplicationMenuBar(bar);
+    }
+
     // The chords that belong to the window rather than to whatever has focus.
     bool handleShortcut(const Graphics::KeyEvent& event)
     {
@@ -653,7 +753,7 @@ struct EditorView final : GPU::GPUView
         {
             // Consumed whether or not the command could run: a disabled undo
             // must not fall through and arrive in the document as a "z".
-            commands.run(id);
+            dispatchCommand(id);
             return true;
         }
 

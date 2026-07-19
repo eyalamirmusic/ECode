@@ -34,6 +34,21 @@ struct Command
     std::function<bool()> isEnabled = [] { return true; };
 };
 
+// The four editing commands a focused text box claims for itself.
+//
+// Named here rather than spelled out at each site because they are the one set
+// matched across module boundaries — TextField claims them, the application
+// registers them, the menu bar lists them — and a mismatch is silent in the
+// expensive direction: the field simply stops claiming the command, and ⌘V in
+// a find field pastes into the file being searched.
+namespace commands
+{
+inline constexpr auto editCut = "edit.cut";
+inline constexpr auto editCopy = "edit.copy";
+inline constexpr auto editPaste = "edit.paste";
+inline constexpr auto editSelectAll = "edit.selectAll";
+} // namespace commands
+
 // Every command the application knows about, in registration order.
 //
 // Order is the palette's order for an empty query, so it is worth registering

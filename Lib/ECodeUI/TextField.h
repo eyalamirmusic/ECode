@@ -88,6 +88,12 @@ public:
     bool acceptsFocus() const override { return true; }
     bool isTextInput() const override { return true; }
 
+    // The four editing commands that mean *this box* rather than the document
+    // behind it. Claimed whether or not there is anything to do, so a ⌘C with
+    // no selection is swallowed here rather than falling through and copying
+    // from the file. Everything else is the application's.
+    bool runCommand(std::string_view id) override;
+
     // Selected text, for ⌘C and ⌘X.
     std::string selectedText() const;
 

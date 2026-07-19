@@ -42,6 +42,17 @@ public:
     // which lets the caller fall back to application shortcuts.
     bool keyDown(const eacp::Graphics::KeyEvent& event);
 
+    // True when a focused text box claimed the command for itself, so the
+    // application should not also run it.
+    //
+    // The same precedence keyDown applies to ⌘C and ⌘V, asked about a command
+    // id instead of a keystroke — because a menu shortcut never becomes a key
+    // event. macOS matches key equivalents against the menu bar before the
+    // window sees anything, so with Paste in the Edit menu a ⌘V that used to
+    // reach a focused find field arrives as "edit.paste" instead. Without this,
+    // it would paste into the document with the caret visibly in the find box.
+    bool runCommandOnFocus(std::string_view id);
+
     // --- focus -----------------------------------------------------------
 
     void setFocus(Widget* widget);
