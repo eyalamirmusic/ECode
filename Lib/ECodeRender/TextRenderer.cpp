@@ -226,10 +226,119 @@ void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
     }
 }
 
+float TextRenderer::columnToX(std::string_view text, std::size_t column) const
+{
+    // Walks the line rather than multiplying, because a tab is not one advance
+    // wide and the caret has to land where the glyph actually is.
+    auto x = 0.f;
+
+    for (std::size_t index = 0; index < text.size() && index < column;)
+    {
+        const auto codepoint = nextCodepoint(text, index);
+
+        if (codepoint == U'\t')
+        {
+            const auto stop = std::floor(x / advance / tabWidth + 1.f) * tabWidth;
+            x = stop * advance;
+        }
+        else
+        {
+            x += advance;
+        }
+    }
+
+    return x;
+}
+
+std::size_t TextRenderer::offsetAtPoint(const Document& document,
+                                        const Graphics::Point& point,
+                                        const Graphics::Rect& viewport,
+                                        float scrollY) const
+{
+    const auto gutter = gutterWidth(document.lineCount());
+    const auto relativeY = point.y - viewport.y - scrollY;
+
+    const auto row = static_cast<std::ptrdiff_t>(std::floor(relativeY / height));
+    const auto lastLine = static_cast<std::ptrdiff_t>(document.lineCount()) - 1;
+    const auto line =
+        static_cast<std::size_t>(std::clamp(row, std::ptrdiff_t {0}, lastLine));
+
+    const auto text = document.line(line);
+    const auto x = point.x - viewport.x - gutter - textPadding;
+
+    // Nearest boundary rather than the one before, so clicking the right half
+    // of a character puts the caret after it.
+    auto best = std::size_t {0};
+    auto bestDistance = std::abs(x);
+
+    for (std::size_t index = 0; index <= text.size();)
+    {
+        const auto distance = std::abs(x - columnToX(text, index));
+
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            best = index;
+        }
+
+        if (index == text.size())
+            break;
+
+        auto next = index;
+        nextCodepoint(text, next);
+        index = next;
+    }
+
+    return document.offsetAt(line, best);
+}
+
+void TextRenderer::drawSelection(Sprites::SpriteRenderer& sprites,
+                                 const Document& document,
+                                 const Cursor& cursor,
+                                 const Graphics::Rect& textRect,
+                                 float scrollY,
+                                 std::size_t first,
+                                 std::size_t last)
+{
+    if (!cursor.hasSelection())
+        return;
+
+    const auto from = document.lineAt(cursor.start());
+    const auto to = document.lineAt(cursor.end());
+
+    for (auto line = std::max(first, from); line < last && line <= to; ++line)
+    {
+        const auto text = document.line(line);
+        const auto lineBegin = document.offsetAt(line, 0);
+
+        const auto startColumn =
+            line == from ? cursor.start() - lineBegin : std::size_t {0};
+        const auto endColumn = line == to ? cursor.end() - lineBegin : text.size();
+
+        const auto left = columnToX(text, startColumn);
+
+        // A selection crossing a line end shows the newline as a sliver of
+        // trailing width, so an empty selected line is still visible.
+        const auto right = line == to
+                               ? columnToX(text, endColumn)
+                               : columnToX(text, text.size()) + advance * 0.5f;
+
+        const auto y = textRect.y + scrollY + static_cast<float>(line) * height;
+
+        sprites.fillRect({textRect.x + textPadding + left,
+                          y,
+                          std::max(right - left, 1.f),
+                          height},
+                         theme.selection);
+    }
+}
+
 void TextRenderer::draw(GPU::RenderPass& pass,
                         Sprites::SpriteRenderer& sprites,
                         Text::GlyphRenderer& glyphs,
                         const Document& document,
+                        const Cursor* cursor,
+                        bool caretVisible,
                         Highlighter* highlighter,
                         const Graphics::Rect& viewport,
                         float scrollY,
@@ -253,6 +362,25 @@ void TextRenderer::draw(GPU::RenderPass& pass,
         Graphics::Rect {viewport.x, viewport.y, gutter, viewport.h};
     const auto textRect = Graphics::Rect {
         viewport.x + gutter, viewport.y, viewport.w - gutter, viewport.h};
+
+    // Selection and the current-line band go behind the text, so they are drawn
+    // through the sprite renderer before any glyph is queued.
+    if (cursor != nullptr)
+    {
+        pass.setScissorRect(toPixels(textRect));
+
+        const auto caretLine = document.lineAt(cursor->head);
+
+        if (!cursor->hasSelection() && caretLine >= first && caretLine < last)
+        {
+            const auto y =
+                textRect.y + scrollY + static_cast<float>(caretLine) * height;
+
+            sprites.fillRect({textRect.x, y, textRect.w, height}, theme.currentLine);
+        }
+
+        drawSelection(sprites, document, *cursor, textRect, scrollY, first, last);
+    }
 
     // Scissor is pass state applied when a draw is issued, so each region has to
     // be flushed under its own rect rather than everything being queued and
@@ -300,6 +428,29 @@ void TextRenderer::draw(GPU::RenderPass& pass,
     // The batch left its own pipeline bound, so the sprite renderer has to
     // rebind before drawing anything else.
     sprites.begin(pass);
+
+    // The caret goes on top of the text: at a line's end it would otherwise sit
+    // under the glyph that follows it after an edit.
+    if (cursor != nullptr && caretVisible)
+    {
+        const auto caretLine = document.lineAt(cursor->head);
+
+        if (caretLine >= first && caretLine < last)
+        {
+            pass.setScissorRect(toPixels(textRect));
+
+            const auto column = cursor->head - document.offsetAt(caretLine, 0);
+            const auto x = columnToX(document.line(caretLine), column);
+            const auto y =
+                textRect.y + scrollY + static_cast<float>(caretLine) * height;
+
+            sprites.fillRect({textRect.x + textPadding + x, y, 2.f, height},
+                             theme.caret);
+        }
+    }
+
+    pass.clearScissorRect();
+
     sprites.fillRect({viewport.x + gutter, viewport.y, 1.f, viewport.h},
                      theme.gutterEdge);
 }

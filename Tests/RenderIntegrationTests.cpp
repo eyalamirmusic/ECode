@@ -1,6 +1,7 @@
 #include "Common.h"
 
 #include <ECodeRender/TextRenderer.h>
+#include <ECodeCore/Cursor.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <eacp/Text/Text.h>
@@ -78,13 +79,22 @@ struct EditorTestView final : GPU::GPUView
                                 renderer->firstVisibleLine(0.f),
                                 renderer->lastVisibleLine(document, area, 0.f));
 
-        renderer->draw(
-            pass, sprites, *glyphs, document, highlighter.get(), area, 0.f, 1.f);
+        renderer->draw(pass,
+                       sprites,
+                       *glyphs,
+                       document,
+                       cursor,
+                       cursor != nullptr,
+                       highlighter.get(),
+                       area,
+                       0.f,
+                       1.f);
     }
 
     TextTheme theme;
     Document document;
     OwningPointer<SyntaxHighlighter> highlighter;
+    const Cursor* cursor = nullptr;
 
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
@@ -238,4 +248,153 @@ auto tGutterDrawsLineNumbers = test("RenderIntegration/gutterDrawsLineNumbers") 
 
     check(image.isValid());
     check(inkPixels(image) > 10);
+};
+
+// --- caret, selection and hit-testing ---------------------------------------
+//
+// The Editor's logic is covered elsewhere; what is only observable here is
+// whether the caret and selection actually reach the screen, and whether a
+// click maps back to the character under it.
+
+namespace
+{
+Cursor caretAt(std::size_t offset)
+{
+    auto cursor = Cursor {};
+    cursor.moveTo(offset);
+    return cursor;
+}
+
+Cursor selectionOver(std::size_t from, std::size_t to)
+{
+    auto cursor = Cursor {};
+    cursor.anchor = from;
+    cursor.head = to;
+    return cursor;
+}
+} // namespace
+
+// A visible caret puts ink on screen that a hidden one does not. This is what
+// the blink toggles, so it has to be observable.
+auto tCaretDraws = test("RenderIntegration/caretIsDrawnWhenVisible") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto shown = EditorTestView {};
+    auto hidden = EditorTestView {};
+
+    if (!shown.build() || !hidden.build())
+        return;
+
+    // A blank document, so anything drawn is the caret rather than text.
+    shown.document = Document::fromText("");
+    hidden.document = Document::fromText("");
+
+    const auto cursor = caretAt(0);
+    shown.cursor = &cursor;
+    hidden.cursor = nullptr;
+
+    auto shownImage = shown.renderToImage(1.f);
+    auto hiddenImage = hidden.renderToImage(1.f);
+
+    check(shownImage.isValid() && hiddenImage.isValid());
+    check(inkPixels(shownImage) > inkPixels(hiddenImage));
+};
+
+// The selection band goes behind the text, so a selected region is brighter
+// than the same region unselected.
+auto tSelectionDraws = test("RenderIntegration/selectionIsDrawnBehindTheText") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto plain = EditorTestView {};
+    auto selected = EditorTestView {};
+
+    if (!plain.build() || !selected.build())
+        return;
+
+    plain.document = codeSample();
+    selected.document = codeSample();
+
+    const auto none = caretAt(0);
+    const auto range = selectionOver(0, 12);
+
+    plain.cursor = &none;
+    selected.cursor = &range;
+
+    auto plainImage = plain.renderToImage(1.f);
+    auto selectedImage = selected.renderToImage(1.f);
+
+    check(plainImage.isValid() && selectedImage.isValid());
+    check(inkPixels(selectedImage) > inkPixels(plainImage));
+};
+
+// Clicking at a column's own x must return that column. The round trip that
+// click-to-place-caret depends on, and the thing that silently drifts if the
+// gutter width or padding is accounted for twice.
+auto tHitTestRoundTrips =
+    test("RenderIntegration/clickingAColumnReturnsThatColumn") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = EditorTestView {};
+
+    if (!view.build())
+        return;
+
+    const auto document = Document::fromText("hello world\nsecond line");
+    const auto area = Graphics::Rect {0.f, 0.f, viewWidth, viewHeight};
+    const auto gutter = view.renderer->gutterWidth(document.lineCount());
+    const auto lineHeight = view.renderer->lineHeight();
+
+    for (std::size_t line = 0; line < document.lineCount(); ++line)
+    {
+        for (std::size_t column = 0; column <= document.line(line).size(); ++column)
+        {
+            const auto x =
+                gutter + 8.f + view.renderer->columnToX(document.line(line), column);
+            const auto y = (static_cast<float>(line) + 0.5f) * lineHeight;
+
+            const auto offset =
+                view.renderer->offsetAtPoint(document, {x, y}, area, 0.f);
+
+            check(document.lineAt(offset) == line);
+            check(document.columnAt(offset) == column);
+        }
+    }
+};
+
+// A click past the end of a line lands at its end rather than wrapping onto the
+// next one or running off the document.
+auto tHitTestClamps = test("RenderIntegration/clicksOutsideTheTextClamp") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = EditorTestView {};
+
+    if (!view.build())
+        return;
+
+    const auto document = Document::fromText("short\nlonger line here");
+    const auto area = Graphics::Rect {0.f, 0.f, viewWidth, viewHeight};
+
+    // Far right of the first line.
+    const auto right = view.renderer->offsetAtPoint(
+        document, {viewWidth * 4.f, view.renderer->lineHeight() * 0.5f}, area, 0.f);
+
+    check(document.lineAt(right) == 0);
+    check(document.columnAt(right) == document.line(0).size());
+
+    // Above the first line, and far below the last.
+    const auto above =
+        view.renderer->offsetAtPoint(document, {0.f, -500.f}, area, 0.f);
+    const auto below =
+        view.renderer->offsetAtPoint(document, {0.f, 5000.f}, area, 0.f);
+
+    check(above == 0);
+    check(document.lineAt(below) == document.lineCount() - 1);
 };

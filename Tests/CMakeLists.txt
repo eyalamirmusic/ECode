@@ -6,6 +6,7 @@ nano_add_executable(ECodeCoreTests
         SOURCES
             DocumentTests.cpp
             DocumentEditTests.cpp
+            EditorTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
         TARGETS ECodeCore)

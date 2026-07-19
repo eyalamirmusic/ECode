@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
 #include <ECodeCore/Style.h>
 
@@ -16,6 +17,9 @@ struct TextTheme
     eacp::Graphics::Color lineNumber {0.38f, 0.41f, 0.48f};
     eacp::Graphics::Color currentLineNumber {0.75f, 0.78f, 0.85f};
     eacp::Graphics::Color gutterEdge {1.f, 1.f, 1.f, 0.05f};
+    eacp::Graphics::Color caret {0.55f, 0.78f, 0.98f};
+    eacp::Graphics::Color selection {0.22f, 0.32f, 0.46f};
+    eacp::Graphics::Color currentLine {1.f, 1.f, 1.f, 0.035f};
 
     // One colour per TokenKind. A syntax engine maps its captures onto kinds and
     // never names a colour; this is the only place colours live.
@@ -56,6 +60,8 @@ public:
               eacp::Sprites::SpriteRenderer& sprites,
               eacp::Text::GlyphRenderer& glyphs,
               const Document& document,
+              const Cursor* cursor,
+              bool caretVisible,
               Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
               float scrollY,
@@ -80,6 +86,18 @@ public:
     // Total height of the document, for the scroll range.
     float contentHeight(const Document& document) const;
 
+    // Where a point in the viewport falls in the document, for click-to-place.
+    // Clamps rather than failing, so a click in the margin lands on the nearest
+    // real position.
+    std::size_t offsetAtPoint(const Document& document,
+                              const eacp::Graphics::Point& point,
+                              const eacp::Graphics::Rect& viewport,
+                              float scrollY) const;
+
+    // The x offset of a column within its line, so the caret and selection can
+    // be placed without re-walking the glyphs.
+    float columnToX(std::string_view text, std::size_t column) const;
+
 private:
     // spans may be null for uniformly coloured text (the line-number gutter).
     void drawLine(eacp::Text::GlyphRenderer& glyphs,
@@ -91,6 +109,14 @@ private:
                   float backingScale);
 
     void prepareLine(std::string_view text);
+
+    void drawSelection(eacp::Sprites::SpriteRenderer& sprites,
+                       const Document& document,
+                       const Cursor& cursor,
+                       const eacp::Graphics::Rect& textRect,
+                       float scrollY,
+                       std::size_t first,
+                       std::size_t last);
 
     eacp::Text::GlyphAtlas& atlas;
     TextTheme theme;
