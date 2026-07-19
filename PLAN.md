@@ -1,5 +1,10 @@
 # ECode — a GPU-drawn, VSCode-style code editor on eacp
 
+**Status:** a working editor. Opens a file, highlights it with tree-sitter,
+scrolls, and can be typed in — with selection, undo, clipboard and mouse.
+Sections 1–5 are the design and the research behind it; **§6 is where things
+stand and §7 is what to do next.**
+
 ## Decisions taken
 
 - **VSCode-like, not Vim-like.** Modeless editing, mouse-first, standard chords, multi-cursor,
@@ -226,16 +231,16 @@ Tests and example added alongside:
   Logs the running totals: after 192 tiles, 192 KB uploaded by region versus 196,608 KB had each
   tile re-sent the whole atlas.
 
-Still open: gaps 3, 4, 6, 7, 9, 10.
+Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching).
 
 | # | Gap | Why it blocks | Shape of fix |
 |---|-----|---------------|--------------|
 | 1 | **No scissor/clip anywhere.** `RenderPass` has no `setScissorRect` or `setViewport`; `Graphics::Context` has no clip method. | Every scrolling region — editor viewport, file tree, minimap, dropdowns, panel — needs it. | Add `setScissorRect` to `RenderPass`. Metal `setScissorRect:` / D3D12 `RSSetScissorRects`. Both backends already exist. Contained, ~an afternoon. |
 | 2 | **macOS scroll wheel is never delivered.** `MouseEventType::Wheel` exists and dispatches, but a repo-wide grep for `scrollWheel` returns zero hits; the only producer is the Windows path. | No scrolling on the primary target platform. | Implement `scrollWheel:` on the macOS backing view — **plus** momentum phase, precise deltas, and rubber-band state. None of that is plumbed. |
 | 3 | **No IME / composition.** No `NSTextInputClient`, no `interpretKeyEvents:`, no `WM_IME_*`. | CJK input, dead keys (`Option+e` → é), and the emoji picker are all broken. Cannot be layered on from app code. | Implement `NSTextInputClient` on the macOS backing view: marked-text range, composition callbacks, candidate-window rect. Real Objective-C++ work; the largest of these. |
-| 4 | **Clipboard is copy-only.** `Clipboard::copyText` exists; there is no read/paste API. | Cmd+V. | Add `Clipboard::readText()` / `hasText()`. Small. |
+| 4 | ~~**Clipboard is copy-only.**~~ — **done.** | Cmd+V. | `getText`/`hasText` added across all four backends. Named to match `jamierpond/eacp`, which had it first. |
 | 5 | ~~**`Texture::update()` re-uploads the whole texture**~~ — **done.** | One new glyph cost a full-atlas upload. CowTerm eats 16 MB per new glyph. | `update(region, pixels, bytesPerRow)` added. Metal `replaceRegion:` at an offset; D3D12 asks `GetCopyableFootprints` at the *region's* size and places the copy with `CopyTextureRegion`. Out-of-bounds is **dropped, not clamped** — a clamped region keeps consuming source rows at the original width and silently uploads skewed pixels. |
-| 6 | **Keycode table is incomplete.** No punctuation, brackets, semicolon, quote, slash, backslash, minus, equals; no Home/End/PageUp/PageDown/Insert; no keypad. | An editor needs all of these, everywhere. CowTerm works around it with hand-defined macOS raw virtual keycodes — a portability landmine we should not inherit. | Extend `KeyCode` and both platform translation tables. |
+| 6 | ~~**Keycode table is incomplete.**~~ — **done.** Punctuation, Home/End/PageUp/PageDown, forward delete and the keypad added, with the Windows OEM mapping. Originally: No punctuation, brackets, semicolon, quote, slash, backslash, minus, equals; no Home/End/PageUp/PageDown/Insert; no keypad. | An editor needs all of these, everywhere. CowTerm works around it with hand-defined macOS raw virtual keycodes — a portability landmine we should not inherit. | Extend `KeyCode` and both platform translation tables. |
 | 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
 | 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
 | 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables. | Cursor movement, selection, backspace all operate on graphemes, not bytes. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. |
@@ -439,45 +444,174 @@ Cmd+C is "c" on any layout) while `characters` is the correct field for text ins
 
 ---
 
-## 6. Milestones
+## 6. Where things stand
 
-**M0 — Scaffold.** Repo skeleton, vendored CPM, `find_package(EACP)`, empty `GPUView` in a window,
-`just build` / `just run`, CI on macOS. *Done when a coloured window opens.*
+Everything through M4 is done and verified on screen. Commit hashes are in the
+log; this is the shape of it.
 
-**M1 — Upstream unblock.** eacp gaps 1, 2, 5, 8 (scissor, scroll wheel, texture sub-upload, backing
-scale). These four gate everything visual. *Done when a scissored, scrollable, sub-uploading test
-view works.*
+**Done in eacp** (branch `ecode-editor-support`, 573 tests):
+scissor rects, macOS scroll-wheel delivery with precise/momentum plumbing,
+backing-scale notification, texture sub-region upload, `constexpr` colours,
+`ShaderProgram::prepare`'s blend mode, clipboard `getText`/`hasText`, the
+missing key codes, and the whole `eacp-text` module — rasterizer/atlas split,
+per-glyph bearings, R8 mask + RGBA colour atlases, growth over eviction,
+incremental upload, and `Text::GlyphRenderer`.
 
-**M2 — `eacp-text`.** Extract CowTerm's atlas, add bearing/advance and shaping, R8 grayscale atlas,
-LRU eviction, gamma-correct blend. Port CowTerm onto it to prove the seam holds. *Done when
-CowTerm renders identically through the new module.*
+**Done in ECode** (107 tests): `Document` with an incremental line index,
+`TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
+drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
+batching, tree-sitter highlighting with incremental reparse, and the full
+typing loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret.
 
-**M3 — The viewer (the stated first milestone).** Open a file, line index, instanced glyph
-rendering, smooth scrolling, tree-sitter highlighting, damage tracking. No editing. *Done when a
-10 MB source file scrolls at display rate with correct colours.*
-
-**M4 — Editing.** Buffer mutations, transactions, undo/redo, single cursor, selection, clipboard
-(needs gap 4), save. Then multi-cursor.
-
-**M5 — IDE chrome.** Widget layer, file tree, tabs, splitters, status bar, command palette (via
-`FuzzyMatch` + `Palette`), find/replace.
-
-**M6 — Depth.** LSP client over `Processes::runAsync` → `Async<T>` coroutines, diagnostics,
-completion, go-to-definition. IME (gap 3) — needed before anyone outside Latin scripts can use it.
-Then the Windows glyph backend.
+**Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
+CJK and colour emoji correctly. That was the test of whether the extraction was
+real rather than a rearrangement, and it exposed two genuine gaps —
+`GlyphRenderer` missing entirely, and a clipboard API that duplicated Jamie's.
 
 ---
 
-## 7. Risks worth naming now
+## 7. What to do next
 
-- **eacp is self-declared alpha**: "APIs will change without notice between commits." ECode is
-  pinned to `GIT_TAG main`, as are eacp's own four dependencies. Expect drift. Consider pinning to
-  a SHA once ECode is past M3.
-- **eacp's README and CLAUDE.md predate the GPU stack** and describe the framework as Core Graphics
-  only. Read the tree, not the docs.
-- **IME is the long pole** and is easy to defer past the point where retrofitting is painful — the
-  text model has to carry a marked-text range from early on, even if nothing populates it yet.
-- **Gamma-correct text blending** is the difference between "looks native" and "looks slightly
-  off," and it is much cheaper to get right in M2 than to retrofit after theming exists.
-- **No Linux GUI path exists in eacp at all** — the whole `Graphics`/`GPU` tree is gated behind
-  `(APPLE OR WIN32)`. Linux is not "later," it is a separate project.
+Ordered by what unblocks the most, with the reasoning rather than just the list.
+
+### 7.1 Save and the file lifecycle — small, and conspicuously absent
+
+There is no save. `Files::writeFile` exists, so the work is the surrounding
+behaviour: a dirty flag driven off `Editor::version()`, Cmd+S, an atomic write
+(temp file plus rename, so a crash mid-write cannot truncate the original), and
+a decision about what to do when the file changed on disk underneath. Also no
+file watching in eacp, so external-change detection needs FSEvents upstream or
+a poll here.
+
+Worth doing first purely because an editor that cannot save is a toy, and it is
+a day's work rather than a week's.
+
+### 7.2 Multi-cursor — decide the data model now, even if the UI waits
+
+This is the one piece of sequencing I would not get wrong. `Editor` holds a
+single `Cursor`, and every operation on it assumes that. The longer the widget
+layer, the palette and find/replace are written against a single cursor, the
+more code has to change when it becomes a set.
+
+The change itself is contained — `Cursor` becomes `Vector<Cursor>`, edits apply
+per cursor from the highest offset down so earlier edits do not shift later
+ones, and overlapping cursors merge after each operation. Doing it while
+`Editor` is the only caller is a couple of hours; doing it after M5 is a
+refactor across the app.
+
+### 7.3 The widget layer — the big one, and the next real design decision
+
+The chrome is still hardcoded rectangles in `drawChrome()`. Everything in 7.4
+depends on this, and eacp deliberately provides none of it: `GPUWidgets` is
+path tessellation, not widgets, and `Graphics::View` is one `NSView` per widget,
+which a 5,000-row file tree cannot use.
+
+What it needs: a widget base with a paint that takes the `GlyphRenderer` and
+`SpriteRenderer`, a layout pass (`Rect::removeFrom*` suits IDE chrome well),
+hit-testing, focus with tab traversal, and scroll containers built on
+`setScissorRect`. Then the concrete widgets — scrollbar, virtualised list, tree,
+tab bar, splitter, overlay panel, context menu.
+
+Two things to get right at the start, because both are painful later:
+- **Variable line height.** `TextRenderer` places row *n* at `n * lineHeight`.
+  Soft wrap, folding, inline diagnostics and image lines all break that
+  assumption, and it is the single biggest structural difference between a
+  terminal grid and an editor. A logical-line to visual-line mapping should
+  exist before anything else is built on the current assumption.
+- **Damage tracking.** Every frame currently redraws everything visible. Fine
+  at this size, wrong once a file tree and a minimap are also on screen.
+
+### 7.4 IDE chrome, on top of the widget layer
+
+File tree, editor tabs, splitters, status bar contents, find/replace, and the
+command palette. CowTerm's `FuzzyMatch.h` (62 lines, header-only) and its
+`Palette` peek pattern are directly liftable and MIT-licensed — the peek
+behaviour, where navigating the list live-previews the highlighted item and
+Escape restores, maps straight onto file preview.
+
+A command registry should come with the palette rather than after it: bindings
+name commands (`{"keys": "cmd+shift+p", "command": "workbench.showPalette"}`),
+the palette enumerates the registry, and neither needs a hand-maintained list.
+CowTerm's three unrelated keybinding mechanisms are the counter-example.
+
+### 7.5 IME — the largest remaining framework gap
+
+Still absent from eacp: no `NSTextInputClient`, no `interpretKeyEvents:`, no
+`WM_IME_*`. CJK, dead keys and the emoji picker are all unavailable, and it
+cannot be layered on from app code.
+
+The implementation can wait; the **marked-text range in the cursor model should
+not**. Composition means the document holds provisional text that is styled
+differently and is not yet a real edit. Retrofitting that through `Editor`,
+`EditHistory` and the renderer after multi-cursor and the widget layer exist is
+exactly the kind of change this plan has been trying to avoid.
+
+### 7.6 The rope, when files get big
+
+`Document` is a `std::string` with a flat line index. The index is now repaired
+incrementally, but it is still linear in line count per edit, and the string
+itself makes every insert move the tail.
+
+Deliberately deferred, and cheap to defer: the mutation API is only
+`replace(start, end, text)` plus `line(i)`, so the storage can change without
+the renderer or the highlighter noticing. Do it when a real file makes it hurt,
+not before — and measure first, because the line index may bite sooner than the
+string does.
+
+### 7.7 Carried over, not forgotten
+
+- **Windows renders no text.** `GlyphRasterizer-Windows.cpp` is a documented
+  stub returning `isValid() == false`. The porting notes are in its header.
+- **Gamma-correct blending.** Planned in M2 and not done. This is the difference
+  between "looks native" and "looks slightly off", worst on light-on-dark. It
+  needs the per-cell background colour plumbed into the glyph shader, which is
+  the part that is hard to retrofit — see §4.
+- **Shaping and ligatures.** `GlyphAtlas` maps one codepoint to one glyph.
+  Fira Code's `=>` needs CoreText/DirectWrite line shaping behind the existing
+  seam, plus a run cache — Ghostty measured shaping at 96% of frame time before
+  adding one.
+- **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
+  diagnostics, completion and go-to-definition after the chrome exists.
+
+---
+
+## 8. Risks worth naming
+
+- **eacp is self-declared alpha**: "APIs will change without notice between
+  commits." ECode tracks `GIT_TAG main`, as do eacp's own four dependencies.
+  Worth pinning to a SHA now that ECode depends on real behaviour rather than
+  just compiling.
+- **Two eacp branches have diverged.** Ours has `eacp-text`; `jamierpond/eacp
+  jp/fancy-terminal` has ~22 commits we lack. The CowTerm PR is blocked on
+  reconciling them, which is a coordination problem rather than a coding one.
+  Duplicated work has already happened once (clipboard read).
+- **eacp's README and CLAUDE.md predate the GPU stack** and describe it as Core
+  Graphics only. Read the tree, not the docs.
+- **`if (APPLE)` includes iOS.** It has broken the build once. The guard is
+  `if (APPLE AND NOT IOS)`, and the CI invocation is in CLAUDE.md.
+- **No Linux GUI path exists in eacp at all** — the whole `Graphics`/`GPU` tree
+  is gated behind `(APPLE OR WIN32)`. Linux is not "later", it is a separate
+  project.
+
+---
+
+## 9. What this project has learned about testing itself
+
+Recorded because each of these cost something to find out.
+
+- **Verify a new test fails without the change.** A test here passed with the
+  feature deleted, because `respondsToSelector:` was satisfied by `NSView`'s
+  own inherited implementation.
+- **Verify the mutation applied.** Two mutation checks silently no-op'd because
+  clang-format had reflowed the text the string replace was looking for. Print
+  whether the edit landed.
+- **Test optimisations against an oracle, not against cases.** The incremental
+  line index is compared to a full rebuild after every edit; the incremental
+  reparse to a fresh parse. The oracle caught a real bug on its first run that
+  no hand-written case covered — a trailing newline becoming interior once more
+  text is typed after it.
+- **GPU state with no CPU-side observable is tested by drawing.** Scissor rects,
+  blend modes and glyph colour all return nothing queryable; render off-screen
+  with `renderToImage` and assert on pixels.
+- **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
+  shader — passed every test that existed and was obvious in one screenshot.
