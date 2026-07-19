@@ -88,6 +88,12 @@ public:
     // highlighter or re-measure without comparing the whole text.
     std::uint64_t version() const { return revision; }
 
+    // Which text this is, as opposed to how many times it has changed.
+    // Undoing back to an earlier state returns the id that state had, so a
+    // caller holding one can ask "is this still the text I saved?". See
+    // EditHistory::stateId.
+    std::uint64_t stateId() const { return history.stateId(); }
+
     // Called with every edit as it is applied, including the inverses undo and
     // redo apply. A syntax engine subscribes to reparse incrementally rather
     // than rebuilding from the whole text. Non-null by default so the editor

@@ -5,7 +5,8 @@ add_library(ECodeCore STATIC
         Cursor.cpp
         Document.cpp
         Editor.cpp
-        TextEdit.cpp)
+        TextEdit.cpp
+        TextFile.cpp)
 
 target_include_directories(ECodeCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(ECodeCore PUBLIC eacp-core)

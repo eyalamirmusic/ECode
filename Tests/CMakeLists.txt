@@ -9,6 +9,7 @@ nano_add_executable(ECodeCoreTests
             EditorTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
+            TextFileTests.cpp
         TARGETS ECodeCore)
 
 # Highlighting runs a real grammar and a real query, but still needs no GPU: the

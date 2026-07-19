@@ -231,6 +231,11 @@ Tests and example added alongside:
   Logs the running totals: after 192 tiles, 192 KB uploaded by region versus 196,608 KB had each
   tile re-sent the whole atlas.
 
+Also added since: `Files::writeFileAtomically` (temp sibling plus rename,
+keeping permissions and following symlinks) and `File::modificationTime`, which
+together are what saving a file safely needs. 10 tests in
+`Tests/Core/FilesTests.cpp`; the live example is ECode's Cmd+S.
+
 Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching).
 
 | # | Gap | Why it blocks | Shape of fix |
@@ -244,7 +249,7 @@ Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching
 | 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
 | 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
 | 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables. | Cursor movement, selection, backspace all operate on graphemes, not bytes. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. |
-| 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially. |
+| 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially — ECode polls `File::modificationTime` once a second, which is the placeholder this replaces. |
 
 **Not a gap, contrary to first impressions:** instanced rendering is first-class —
 `ShaderProgram::instanceInput(&Instance::field, slot)` + `RenderPass::drawInstanced()`, with a
@@ -449,19 +454,21 @@ Cmd+C is "c" on any layout) while `characters` is the correct field for text ins
 Everything through M4 is done and verified on screen. Commit hashes are in the
 log; this is the shape of it.
 
-**Done in eacp** (branch `ecode-editor-support`, 573 tests):
+**Done in eacp** (branch `ecode-editor-support`, 583 tests):
 scissor rects, macOS scroll-wheel delivery with precise/momentum plumbing,
 backing-scale notification, texture sub-region upload, `constexpr` colours,
 `ShaderProgram::prepare`'s blend mode, clipboard `getText`/`hasText`, the
-missing key codes, and the whole `eacp-text` module — rasterizer/atlas split,
-per-glyph bearings, R8 mask + RGBA colour atlases, growth over eviction,
-incremental upload, and `Text::GlyphRenderer`.
+missing key codes, `Files::writeFileAtomically` and `File::modificationTime`,
+and the whole `eacp-text` module — rasterizer/atlas split, per-glyph bearings,
+R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
+`Text::GlyphRenderer`.
 
-**Done in ECode** (107 tests): `Document` with an incremental line index,
+**Done in ECode** (124 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
-batching, tree-sitter highlighting with incremental reparse, and the full
-typing loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret.
+batching, tree-sitter highlighting with incremental reparse, the full typing
+loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret — and
+`TextFile`: the file lifecycle, saving included.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -474,17 +481,40 @@ real rather than a rearrangement, and it exposed two genuine gaps —
 
 Ordered by what unblocks the most, with the reasoning rather than just the list.
 
-### 7.1 Save and the file lifecycle — small, and conspicuously absent
+### 7.1 ~~Save and the file lifecycle~~ — done
 
-There is no save. `Files::writeFile` exists, so the work is the surrounding
-behaviour: a dirty flag driven off `Editor::version()`, Cmd+S, an atomic write
-(temp file plus rename, so a crash mid-write cannot truncate the original), and
-a decision about what to do when the file changed on disk underneath. Also no
-file watching in eacp, so external-change detection needs FSEvents upstream or
-a poll here.
+`TextFile` is an `Editor` plus the file its text came from: path, dirty flag,
+disk stamp, `save`/`saveOverwriting`/`reload`. Cmd+S in the app, and `ECode
+<path>` so it can open something other than its own source.
 
-Worth doing first purely because an editor that cannot save is a toy, and it is
-a day's work rather than a week's.
+Four decisions worth recording, because each went against the obvious version:
+
+- **The dirty flag follows undo, not a change counter.** `Editor::version()`
+  only counts, so undoing back to the saved text still reads as dirty. Each
+  undo step now carries an id that travels onto the redo stack and back
+  (`EditHistory::stateId`), so "back where I saved" is a comparison. The case
+  that forced it is the one a *depth* comparison also gets wrong, and gets
+  wrong in the expensive direction: save, undo, type something else — same
+  depth, different text, reported clean, save silently skipped.
+- **A save that would clobber someone else's write is refused, not merged.**
+  `save()` returns `changedOnDisk` and writes nothing. There is no dialog to
+  ask in until the widget layer exists, so the title bar carries the question
+  and a second Cmd+S answers it. Replace that with a real prompt in 7.4.
+- **A deleted file is not a conflict.** Nothing can be clobbered, so refusing
+  would only strand the text in the buffer.
+- **External changes are polled, once a second.** eacp still has no file
+  watching. Clean buffer plus a changed file means the new version is simply
+  taken, which is what makes a `git checkout` or a formatter run appear.
+  FSEvents replaces the poll upstream later; the seam is `hasChangedOnDisk`.
+
+Atomic writing went upstream as `Files::writeFileAtomically`, since every app
+that saves anything wants it. The two things a naive temp-plus-rename loses —
+an existing file's permission bits, and a symlink, which it replaces rather
+than writes through — are what its tests actually pin.
+
+**Not verified on screen.** The unsaved dot in the tab and the title-bar text
+are the one part of this that no test covers, and the session it was written in
+could not capture the display. Worth a look.
 
 ### 7.2 Multi-cursor — decide the data model now, even if the UI waits
 
@@ -602,6 +632,12 @@ Recorded because each of these cost something to find out.
 - **Verify a new test fails without the change.** A test here passed with the
   feature deleted, because `respondsToSelector:` was satisfied by `NSView`'s
   own inherited implementation.
+- **And check it fails in the direction that costs you something.** The first
+  dirty-flag test picked a sequence where the naive implementation happened to
+  answer correctly, so it passed against the thing it was written to rule out.
+  A wrong answer has two directions and usually only one of them hurts: here,
+  falsely *clean* skips the save and loses the work, while falsely dirty just
+  writes a file twice. Aim the test at the expensive one.
 - **Verify the mutation applied.** Two mutation checks silently no-op'd because
   clang-format had reflowed the text the string replace was looking for. Print
   whether the edit landed.

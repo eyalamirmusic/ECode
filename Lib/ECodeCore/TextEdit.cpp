@@ -21,13 +21,13 @@ bool containsNewline(const std::string& text)
 
 bool EditHistory::canMergeInto(const Step& step, const TextEdit& edit) const
 {
-    if (!open || step.empty())
+    if (!open || step.edits.empty())
         return false;
 
     if (!isPlainInsertion(edit) || containsNewline(edit.inserted))
         return false;
 
-    const auto& last = step.back();
+    const auto& last = step.edits.back();
 
     if (!isPlainInsertion(last))
         return false;
@@ -48,11 +48,11 @@ void EditHistory::record(const TextEdit& edit)
 
     if (!undoStack.empty() && canMergeInto(undoStack.back(), edit))
     {
-        undoStack.back().push_back(edit);
+        undoStack.back().edits.push_back(edit);
         return;
     }
 
-    undoStack.push_back({edit});
+    undoStack.push_back({{edit}, nextStateId++});
 
     // A deletion or a newline closes the step immediately, so the *next* edit
     // starts a fresh one rather than merging into this.
@@ -70,9 +70,9 @@ std::vector<TextEdit> EditHistory::undo()
     // Reverse each edit, and apply them back to front: the later edits in a
     // step were applied to text the earlier ones had already shifted.
     auto inverses = std::vector<TextEdit> {};
-    inverses.reserve(step.size());
+    inverses.reserve(step.edits.size());
 
-    for (auto edit = step.rbegin(); edit != step.rend(); ++edit)
+    for (auto edit = step.edits.rbegin(); edit != step.edits.rend(); ++edit)
         inverses.push_back(edit->inverted());
 
     redoStack.push_back(std::move(step));
@@ -92,7 +92,7 @@ std::vector<TextEdit> EditHistory::redo()
     auto step = std::move(redoStack.back());
     redoStack.pop_back();
 
-    auto edits = step;
+    auto edits = step.edits;
     undoStack.push_back(std::move(step));
 
     open = false;
@@ -100,10 +100,21 @@ std::vector<TextEdit> EditHistory::redo()
     return edits;
 }
 
+std::uint64_t EditHistory::stateId() const
+{
+    // Zero is the state the history starts in, which no recorded step can
+    // claim: ids are minted from one.
+    return undoStack.empty() ? 0 : undoStack.back().id;
+}
+
 void EditHistory::clear()
 {
     undoStack.clear();
     redoStack.clear();
     open = false;
+
+    // nextStateId deliberately keeps counting. A cleared history is a different
+    // document, and reusing ids across a reload would let a stale save point
+    // match the new file's first edit.
 }
 } // namespace ecode

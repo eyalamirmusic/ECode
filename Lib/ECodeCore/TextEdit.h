@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -65,14 +66,32 @@ public:
     std::size_t undoDepth() const { return undoStack.size(); }
     std::size_t redoDepth() const { return redoStack.size(); }
 
+    // Which text the history is currently sitting on, rather than how many
+    // changes it has seen.
+    //
+    // This is what a dirty flag needs and a counter cannot give it. Depth
+    // cannot tell "undone back to the text that was saved" apart from "undone
+    // once and then typed something else", because both leave the same number
+    // of steps on the stack. So each step is minted an id that travels with it
+    // onto the redo stack and back: undoing to a saved state restores that
+    // state's id, while a new step recorded after an undo gets a fresh id that
+    // can never collide with one already spent.
+    std::uint64_t stateId() const;
+
 private:
     // A step is the edits it is made of, in the order they were applied.
-    using Step = std::vector<TextEdit>;
+    struct Step
+    {
+        std::vector<TextEdit> edits;
+        std::uint64_t id = 0;
+    };
 
     bool canMergeInto(const Step& step, const TextEdit& edit) const;
 
     std::vector<Step> undoStack;
     std::vector<Step> redoStack;
+
+    std::uint64_t nextStateId = 1;
 
     // Whether the newest step is still accepting edits.
     bool open = false;
