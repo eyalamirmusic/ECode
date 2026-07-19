@@ -54,6 +54,12 @@ public:
     std::function<void(std::size_t row, int clickCount)> onRowClicked =
         [](std::size_t, int) {};
 
+    // The selection moved, from a click or from the keyboard. A list inside a
+    // ScrollView uses this to keep the selected row on screen: arrowing off the
+    // bottom with nothing following is the keyboard equivalent of the caret
+    // scrolling out of view. -1 when the selection was cleared.
+    std::function<void(int row)> onSelectionChanged = [](int) {};
+
     float preferredHeight(float width) const override;
 
     bool wantsMouse() const override { return true; }

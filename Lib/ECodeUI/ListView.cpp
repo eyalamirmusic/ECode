@@ -36,6 +36,8 @@ void ListView::setSelectedRow(int row)
         return;
 
     selected = clamped;
+
+    onSelectionChanged(selected);
     repaint();
 }
 

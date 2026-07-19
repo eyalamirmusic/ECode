@@ -40,6 +40,14 @@ FileTreeView::FileTreeView(const ChromeTheme& themeToUse)
 
     list.onRowClicked = [this](std::size_t index, int) { rowClicked(index); };
 
+    // Rows are laid out from the content's top, so the row index times the row
+    // height is already the content coordinate scrollToShow wants.
+    list.onSelectionChanged = [this](int row)
+    {
+        if (row >= 0)
+            scrollToShow(static_cast<float>(row) * rowHeight, rowHeight);
+    };
+
     setContent(list);
 }
 

@@ -439,9 +439,11 @@ Mouse capture already works correctly — `mouseDownTarget` is latched on
 Down and all Drag/Up route to it, which is exactly what splitter dragging and text selection need.
 `clickCount` is present for double/triple-click word and line selection.
 
-Must be built: widget base + layout pass, focus traversal (none exists), scrollbar, virtualized
-list, tree view, tab bar, splitter, popup/overlay, in-window context menu (`Graphics::Menu` is the
-native menu bar only — no `popup(at:)`), minimap, tooltip, status bar, animation/easing.
+Built: widget base + layout pass, focus traversal, scroll view + scrollbar, virtualised list,
+tree view, tab bar, status bar. Still to build: splitter, popup/overlay, in-window context menu
+(`Graphics::Menu` is the native menu bar only — no `popup(at:)`), minimap, tooltip,
+animation/easing, and hover states — no widget tracks the pointer yet, so nothing highlights
+under it.
 
 Lift from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer) and `Palette` — a command
 palette almost for free. Its **peek** pattern (navigating the list live-switches the background
@@ -603,6 +605,13 @@ Three decisions worth recording, because each went against the obvious version:
   which lines were about to be drawn — and that call is what keeps scrolling
   proportional to the viewport rather than to the file.
 
+**One thing implemented but not reachable:** `WidgetHost` does Tab traversal
+and it is tested, but nothing in the app calls it. Tab inside the editor
+inserts spaces and consumes the key, which is what VSCode does — traversal
+there is bound to chords like focus-explorer instead, and those arrive with the
+keymap in 7.4. Clicking the tree does focus it, so the arrow keys drive the
+tree today; that path is real.
+
 **Since then:** `ScrollView`, `ScrollBar` and `ListView`. Scrolling turned out
 to need no scrolling code path at all — the content is laid out at full height,
 positioned above its parent by the scroll offset, and the `ClipScope` every
@@ -659,8 +668,12 @@ Two things still to get right, because both are painful later:
   assumption, and it is the single biggest structural difference between a
   terminal grid and an editor. A logical-line to visual-line mapping should
   exist before anything else is built on the current assumption.
-- **Damage tracking.** Every frame currently redraws everything visible. Fine
-  at this size, wrong once a file tree and a minimap are also on screen.
+- **Damage tracking.** Every frame redraws everything visible. That was a
+  future worry when the sidebar was an empty rectangle; the file tree is on
+  screen now, so a caret blink repaints every visible row of it. Virtualisation
+  caps the cost at a screenful rather than at the file count, which is why this
+  is still affordable — but it is the next thing to bite, and the honest fix is
+  a dirty-region pass rather than more clever painting.
 
 ### 7.4 IDE chrome, on top of the widget layer
 
@@ -777,6 +790,15 @@ Recorded because each of these cost something to find out.
   arrangement is blind to the difference. It took a child deliberately laid out
   four times the size of its parent, asserted on all four sides. When a test
   covers a fold in the behaviour, build the case that lands on the fold.
+- **A test can be unable to fail on your machine.** The clamp that keeps a
+  negative row index from becoming an enormous unsigned one is guarding
+  undefined behaviour — and on arm64 the UB happens to do the right thing, so
+  the test written for it passed with the clamp deleted. Confirmed with a
+  two-line program rather than assumed: `(size_t)(-10.f)` saturates to 0 here.
+  The clamp stays, because the guarantee is not the platform's to give; but the
+  test was rewritten to pin what it can actually observe, and to point at the
+  sibling clamp that *is* load-bearing. A green suite is not evidence until you
+  know which of its tests could have gone red.
 - **Verify the mutation applied.** Two mutation checks silently no-op'd because
   clang-format had reflowed the text the string replace was looking for. Print
   whether the edit landed.

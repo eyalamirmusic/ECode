@@ -32,11 +32,12 @@ struct ChromeTheme
     eacp::Graphics::Color scrollThumb {1.f, 1.f, 1.f, 0.16f};
     eacp::Graphics::Color scrollThumbActive {1.f, 1.f, 1.f, 0.34f};
 
-    // Rows in a list or tree.
+    // Rows in a list or tree. No hover colour: nothing tracks the pointer yet,
+    // and a palette entry for a state that does not exist reads as though it
+    // does.
     eacp::Graphics::Color rowText {0.78f, 0.81f, 0.87f};
     eacp::Graphics::Color rowDirectoryText {0.88f, 0.90f, 0.94f};
     eacp::Graphics::Color rowSelected {1.f, 1.f, 1.f, 0.09f};
-    eacp::Graphics::Color rowHover {1.f, 1.f, 1.f, 0.05f};
 
     // Unsaved work, and a save that could not happen.
     eacp::Graphics::Color unsaved {0.694f, 0.741f, 0.831f};

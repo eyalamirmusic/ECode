@@ -212,3 +212,48 @@ auto tClicksAccountForScrolling =
 
     std::filesystem::remove_all(root);
 };
+
+// Clicking a directory leaves focus on the tree, so the arrow keys drive it
+// from there. A selection that walks off the bottom with nothing scrolling to
+// follow is the keyboard equivalent of the caret scrolling out of view.
+auto tKeyboardSelectionStaysVisible =
+    test("FileTreeView/keyboardSelectionScrollsIntoView") = []
+{
+    auto root = scratchTree("keyboard");
+
+    for (auto i = 0; i < 40; ++i)
+        touch(root / ("file-" + std::to_string(i) + ".txt"));
+
+    auto theme = ChromeTheme {};
+    auto view = FileTreeView {theme};
+    auto host = WidgetHost {};
+
+    view.setRoot(FilePath {root});
+
+    host.setRoot(view);
+    view.setBounds({0.f, 0.f, 240.f, 200.f});   // nine rows fit
+
+    // Click the first row, which focuses the tree.
+    host.mouseDown(clickAt(60.f, centreOfRow(0)));
+
+    auto down = Graphics::KeyEvent {};
+    down.keyCode = Graphics::KeyCode::DownArrow;
+
+    // Walk past the bottom of the viewport.
+    for (auto i = 0; i < 20; ++i)
+        host.keyDown(down);
+
+    check(view.scrollPosition() > 0.f);
+
+    // And back up again: the same rule has to work in the direction that
+    // scrolls towards zero, which is a different branch of scrollToShow.
+    auto up = Graphics::KeyEvent {};
+    up.keyCode = Graphics::KeyCode::UpArrow;
+
+    for (auto i = 0; i < 25; ++i)
+        host.keyDown(up);
+
+    check(view.scrollPosition() == 0.f);
+
+    std::filesystem::remove_all(root);
+};
