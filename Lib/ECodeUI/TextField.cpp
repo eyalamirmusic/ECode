@@ -17,7 +17,6 @@ using namespace eacp;
 
 namespace
 {
-constexpr auto horizontalPadding = 8.f;
 constexpr auto caretWidth = 2.f;
 
 // Text the key produced, or nothing when it is not text.

@@ -266,6 +266,48 @@ auto tShiftExtends = test("TextField/shiftExtendsTheSelection") = []
     check(fixture.field.selectedText() == "o");
 };
 
+// --- the chords that mean this box ------------------------------------------
+
+// ⌘A selects the field's own text rather than falling through to the
+// application, where it would select the whole document behind the box. The
+// clipboard chords take the same path and are deliberately not tested here:
+// exercising them would write to the real system clipboard and throw away
+// whatever the person running the suite had copied.
+auto tSelectAllChordIsTheFields =
+    test("TextField/commandAselectsTheFieldsOwnText") = []
+{
+    auto fixture = Fixture {};
+
+    fixture.field.setText("hello");
+
+    auto event = Graphics::KeyEvent {};
+
+    event.keyCode = Graphics::KeyCode::A;
+    event.characters = "a";
+    event.charactersIgnoringModifiers = "a";
+    event.modifiers.command = true;
+
+    check(fixture.field.keyDown(event));
+    check(fixture.field.selectedText() == "hello");
+};
+
+// Every other ⌘ chord goes back to the application, or a find field would
+// swallow ⌘S and the file would never save.
+auto tOtherChordsBubble = test("TextField/otherCommandChordsAreNotClaimed") = []
+{
+    auto fixture = Fixture {};
+
+    auto event = Graphics::KeyEvent {};
+
+    event.keyCode = Graphics::KeyCode::S;
+    event.characters = "s";
+    event.charactersIgnoringModifiers = "s";
+    event.modifiers.command = true;
+
+    check(!fixture.field.keyDown(event));
+    check(fixture.field.text().empty());
+};
+
 // --- focus ------------------------------------------------------------------
 
 // Two fields side by side, both drawing a caret, means the person cannot tell

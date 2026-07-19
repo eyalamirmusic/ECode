@@ -96,12 +96,8 @@ struct PaletteTestView final : GPU::GPUView
         host.prepare(*atlas);
         atlas->commit();
 
-        auto context = PaintContext {pass,
-                                     sprites,
-                                     *glyphs,
-                                     *atlas,
-                                     {0.f, 0.f, viewWidth, viewHeight},
-                                     1.f};
+        auto context = PaintContext {
+            pass, sprites, *glyphs, *atlas, {0.f, 0.f, viewWidth, viewHeight}, 1.f};
 
         host.paint(context);
     }
@@ -193,7 +189,8 @@ bool hasBlueTintedPixel(const Graphics::Image& image, const Graphics::Rect& area
 } // namespace
 
 // The palette is drawn at all, on top of what was there, and only when open.
-auto tPaletteDrawsOverTheWindow = test("PaletteRender/theBoxIsDrawnOverWhatIsBehindIt") = []
+auto tPaletteDrawsOverTheWindow =
+    test("PaletteRender/theBoxIsDrawnOverWhatIsBehindIt") = []
 {
     if (!GPU::Device::shared().isValid())
         return;
@@ -232,10 +229,51 @@ auto tPaletteDrawsOverTheWindow = test("PaletteRender/theBoxIsDrawnOverWhatIsBeh
                   view.theme.paletteBackground));
 };
 
+// The query field draws a caret, and only while it holds focus.
+//
+// Worth a test of its own because the caret changed hands: the palette used to
+// draw one unconditionally, and now it belongs to a TextField that shows it only
+// when focused. That is right — two fields both showing a caret is worse than
+// none — but it means the palette's caret is now downstream of the application
+// remembering to focus `keyboardTarget()` rather than the palette itself. Get
+// that wrong and the palette opens with no caret and no other symptom.
+auto tQueryCaretFollowsFocus =
+    test("PaletteRender/theQueryDrawsACaretOnlyWhileFocused") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto view = PaletteTestView {};
+
+    if (!view.build())
+        return;
+
+    view.palette.show();
+
+    const auto unfocused = view.renderToImage(1.f);
+
+    view.host.setFocus(&view.palette.keyboardTarget());
+
+    const auto focused = view.renderToImage(1.f);
+
+    check(unfocused.isValid() && focused.isValid());
+
+    // An empty query, so the only thing that can differ in the input strip is
+    // the caret — the placeholder is drawn either way.
+    const auto strip = view.palette.inputBounds();
+
+    check(differingPixels(focused, unfocused, strip) > 0);
+
+    // And it is the caret rather than the placeholder having moved: outside the
+    // strip the two renders are identical.
+    check(differingPixels(focused, unfocused, view.palette.resultsBounds()) == 0);
+};
+
 // The backdrop dims rather than replaces. An unblended alpha gives a flat black
 // sheet and a dropped one gives no dimming at all; the point of the palette
 // being an overlay is that the work stays visible underneath it.
-auto tBackdropIsTranslucent = test("PaletteRender/theBackdropDimsRatherThanCovers") = []
+auto tBackdropIsTranslucent =
+    test("PaletteRender/theBackdropDimsRatherThanCovers") = []
 {
     if (!GPU::Device::shared().isValid())
         return;
@@ -277,7 +315,8 @@ auto tBackdropIsTranslucent = test("PaletteRender/theBackdropDimsRatherThanCover
 // Paired against the same palette with an empty query: with nothing matched
 // there must be no tinted pixel anywhere, so this cannot pass on some blue
 // belonging to the chrome.
-auto tMatchedCharactersAreTinted = test("PaletteRender/matchedCharactersAreDrawnTinted") = []
+auto tMatchedCharactersAreTinted =
+    test("PaletteRender/matchedCharactersAreDrawnTinted") = []
 {
     if (!GPU::Device::shared().isValid())
         return;
@@ -306,7 +345,8 @@ auto tMatchedCharactersAreTinted = test("PaletteRender/matchedCharactersAreDrawn
 };
 
 // A hidden palette draws nothing whatever — not a backdrop, not a border.
-auto tHiddenPaletteDrawsNothing = test("PaletteRender/aClosedPaletteLeavesNoTrace") = []
+auto tHiddenPaletteDrawsNothing =
+    test("PaletteRender/aClosedPaletteLeavesNoTrace") = []
 {
     if (!GPU::Device::shared().isValid())
         return;

@@ -446,7 +446,7 @@ struct EditorView final : GPU::GPUView
         focusBeforePalette = host.focused();
 
         layout.palette.show();
-        host.setFocus(&layout.palette);
+        host.setFocus(&layout.palette.keyboardTarget());
 
         repaint();
     }

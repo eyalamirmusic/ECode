@@ -17,23 +17,61 @@ const auto windowBounds = Graphics::Rect {0.f, 0.f, 1200.f, 800.f};
 
 // A palette over a registry of realistic commands, so ranking is exercised
 // against titles that actually collide rather than against made-up ones.
+//
+// Keys go through a WidgetHost rather than into the palette directly, because
+// routing *is* part of the behaviour now: the query field has focus and takes
+// what it understands, and only what it declines reaches the palette. Calling
+// palette.keyDown by hand would test half the path and would report that typing
+// does nothing.
 struct Fixture
 {
     Fixture()
     {
-        registry.add({"workbench.showPalette", "Show All Commands", [this] { ran = "palette"; }});
+        registry.add({"workbench.showPalette",
+                      "Show All Commands",
+                      [this] { ran = "palette"; }});
         registry.add({"file.save", "File: Save", [this] { ran = "save"; }});
         registry.add({"edit.undo",
                       "Edit: Undo",
                       [this] { ran = "undo"; },
                       [this] { return undoAvailable; }});
-        registry.add({"edit.selectAll", "Edit: Select All", [this] { ran = "selectAll"; }});
+        registry.add(
+            {"edit.selectAll", "Edit: Select All", [this] { ran = "selectAll"; }});
 
         keymap.bind("cmd+shift+p", "workbench.showPalette");
         keymap.bind("cmd+s", "file.save");
 
         palette.onClosed = [this] { ++closes; };
+
+        root.addChild(palette);
+        host.setRoot(root);
+
+        root.setBounds(windowBounds);
         palette.setBounds(windowBounds);
+    }
+
+    // Opening and focusing the field, which is what the application does.
+    void show()
+    {
+        palette.show();
+        host.setFocus(&palette.keyboardTarget());
+    }
+
+    bool press(std::uint16_t code, std::string characters = {})
+    {
+        auto event = Graphics::KeyEvent {};
+
+        event.keyCode = code;
+        event.charactersIgnoringModifiers = characters;
+        event.characters = std::move(characters);
+
+        return host.keyDown(event);
+    }
+
+    void type(const std::string& text)
+    {
+        for (auto character: text)
+            press(Graphics::KeyCode::Unknown, std::string {character});
     }
 
     std::string titleOf(int entry) const
@@ -47,30 +85,14 @@ struct Fixture
     CommandRegistry registry;
     Keymap keymap;
 
+    Widget root;
     CommandPalette palette {theme, registry, keymap};
+    WidgetHost host;
 
     std::string ran;
     int closes = 0;
     bool undoAvailable = true;
 };
-
-Graphics::KeyEvent keyEvent(std::uint16_t code, std::string characters)
-{
-    auto event = Graphics::KeyEvent {};
-
-    event.keyCode = code;
-    event.charactersIgnoringModifiers = characters;
-    event.characters = std::move(characters);
-
-    return event;
-}
-
-Graphics::KeyEvent typed(std::string characters)
-{
-    // Codes for plain letters do not matter to the palette: it appends
-    // `characters`, which is the field text insertion belongs to.
-    return keyEvent(Graphics::KeyCode::Unknown, std::move(characters));
-}
 
 Graphics::MouseEvent mouseAt(float x, float y)
 {
@@ -93,7 +115,7 @@ auto tPaletteStartsHidden = test("Palette/startsHidden") = []
 auto tPaletteShowsEverything = test("Palette/opensOfferingEveryCommand") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
     check(fixture.palette.isOpen());
     check(fixture.palette.entries().size() == fixture.registry.commands().size());
@@ -107,7 +129,7 @@ auto tPaletteShowsEverything = test("Palette/opensOfferingEveryCommand") = []
 auto tPaletteFilters = test("Palette/filtersToWhatMatchesTheQuery") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("undo");
 
     check(fixture.palette.entries().size() == 1);
@@ -120,7 +142,7 @@ auto tPaletteFilters = test("Palette/filtersToWhatMatchesTheQuery") = []
 auto tPaletteRanksByScore = test("Palette/putsTheBestMatchFirst") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("sa");
 
     check(fixture.palette.entries().size() >= 2);
@@ -136,7 +158,8 @@ auto tPaletteRanksByScore = test("Palette/putsTheBestMatchFirst") = []
 // leaves an all-equal range where it found it. What a real sort has to permute
 // is a list it genuinely has to move: two score classes, interleaved, so the
 // ties are carried past each other rather than sitting still.
-auto tPaletteSortIsStable = test("Palette/keepsRegistrationOrderAmongEqualScores") = []
+auto tPaletteSortIsStable =
+    test("Palette/keepsRegistrationOrderAmongEqualScores") = []
 {
     auto fixture = Fixture {};
 
@@ -150,11 +173,13 @@ auto tPaletteSortIsStable = test("Palette/keepsRegistrationOrderAmongEqualScores
         // in the second, so the two score differently while every member of
         // each class scores the same — the query stops at "a" and never reaches
         // the number.
-        fixture.registry.add({"strong." + std::to_string(index), "File: Save" + suffix});
-        fixture.registry.add({"weak." + std::to_string(index), "Select All" + suffix});
+        fixture.registry.add(
+            {"strong." + std::to_string(index), "File: Save" + suffix});
+        fixture.registry.add(
+            {"weak." + std::to_string(index), "Select All" + suffix});
     }
 
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("sa");
 
     // Pulled out by class in the order the palette offers them, rather than at
@@ -186,7 +211,7 @@ auto tPaletteSortIsStable = test("Palette/keepsRegistrationOrderAmongEqualScores
 auto tPaletteNoMatches = test("Palette/reportsNoMatchesRatherThanACrash") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("zzzz");
 
     check(fixture.palette.entries().empty());
@@ -194,7 +219,7 @@ auto tPaletteNoMatches = test("Palette/reportsNoMatchesRatherThanACrash") = []
 
     // Enter with nothing selected does nothing at all, and in particular does
     // not close: a keystroke that did nothing should not also dismiss.
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Return, "\r"));
+    fixture.press(Graphics::KeyCode::Return, "\r");
 
     check(fixture.palette.isOpen());
     check(fixture.ran.empty());
@@ -205,10 +230,10 @@ auto tPaletteReopensEmpty = test("Palette/reopensWithAnEmptyQuery") = []
 {
     auto fixture = Fixture {};
 
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("undo");
     fixture.palette.hide();
-    fixture.palette.show();
+    fixture.show();
 
     check(fixture.palette.query().empty());
     check(fixture.palette.entries().size() == fixture.registry.commands().size());
@@ -219,10 +244,10 @@ auto tPaletteReopensEmpty = test("Palette/reopensWithAnEmptyQuery") = []
 auto tPaletteTypingFilters = test("Palette/typingBuildsTheQuery") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
-    check(fixture.palette.keyDown(typed("u")));
-    check(fixture.palette.keyDown(typed("n")));
+    check(fixture.press(Graphics::KeyCode::Unknown, "u"));
+    check(fixture.press(Graphics::KeyCode::Unknown, "n"));
 
     check(fixture.palette.query() == "un");
     check(fixture.selectedTitle() == "Edit: Undo");
@@ -231,12 +256,13 @@ auto tPaletteTypingFilters = test("Palette/typingBuildsTheQuery") = []
 // Return, Tab and Escape all arrive with `characters` set to a control code, so
 // a palette that appended whatever came in would type them into the query and
 // then match nothing at all.
-auto tPaletteDoesNotTypeControlCodes = test("Palette/doesNotTypeControlCharacters") = []
+auto tPaletteDoesNotTypeControlCodes =
+    test("Palette/doesNotTypeControlCharacters") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Tab, "\t"));
+    fixture.press(Graphics::KeyCode::Tab, "\t");
 
     check(fixture.palette.query().empty());
 };
@@ -244,49 +270,101 @@ auto tPaletteDoesNotTypeControlCodes = test("Palette/doesNotTypeControlCharacter
 // Backspace deletes a character, not a byte. A query with a multi-byte
 // character in it, cut mid-sequence, stops matching anything and cannot be
 // repaired by typing.
-auto tPaletteBackspaceDeletesACharacter = test("Palette/backspaceDeletesAWholeUtf8Character") = []
+auto tPaletteBackspaceDeletesACharacter =
+    test("Palette/backspaceDeletesAWholeUtf8Character") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("aé");
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Delete, "\b"));
+    fixture.press(Graphics::KeyCode::Delete, "\b");
 
     check(fixture.palette.query() == "a");
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Delete, "\b"));
+    fixture.press(Graphics::KeyCode::Delete, "\b");
 
     check(fixture.palette.query().empty());
 
     // And backspace on an empty query is a no-op rather than an underflow.
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Delete, "\b"));
+    fixture.press(Graphics::KeyCode::Delete, "\b");
 
     check(fixture.palette.query().empty());
 };
 
+// AppKit reports every function key in `characters` as a private-use codepoint —
+// Left is U+F702 — which encodes to three ordinary UTF-8 bytes and passes a
+// control-character test unharmed. The palette handles Up, Down, Home and End by
+// name and nothing else, so Left and Right fall through to the typed-text branch
+// and land in the query, where they match nothing and cannot be seen.
+auto tPaletteIgnoresFunctionKeyCharacters =
+    test("Palette/doesNotTypeTheCodepointsAppKitSendsForFunctionKeys") = []
+{
+    auto fixture = Fixture {};
+    fixture.show();
+
+    fixture.press(Graphics::KeyCode::LeftArrow, "\xef\x9c\x82");
+    fixture.press(Graphics::KeyCode::RightArrow, "\xef\x9c\x83");
+
+    check(fixture.palette.query().empty());
+};
+
+// Up and Down are the two the field has no use for, so they pass through it to
+// the palette and on to the list.
 auto tPaletteArrowsMoveTheSelection = test("Palette/arrowKeysMoveTheSelection") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::DownArrow, ""));
+    fixture.press(Graphics::KeyCode::DownArrow, "");
     check(fixture.palette.selectedEntry() == 1);
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::UpArrow, ""));
+    fixture.press(Graphics::KeyCode::UpArrow, "");
     check(fixture.palette.selectedEntry() == 0);
+};
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::End, ""));
-    check(fixture.palette.selectedEntry()
-          == fixture.palette.entries().size() - 1);
+// Home and End belong to the text, not to the list — the behaviour that changed
+// when the query became a real field.
+//
+// They used to jump the list to its first and last row. VSCode moves the caret
+// with them, which is what anyone typing into a box expects, and it is barely a
+// capability lost: the way to reach a distant command in a fuzzy palette is to
+// type, not to travel to it.
+auto tPaletteHomeAndEndMoveTheCaret =
+    test("Palette/homeAndEndMoveTheCaretRatherThanTheSelection") = []
+{
+    auto fixture = Fixture {};
+    fixture.show();
+
+    fixture.type("sa");
+
+    const auto selected = fixture.palette.selectedEntry();
+
+    fixture.press(Graphics::KeyCode::Home, "");
+    check(fixture.palette.selectedEntry() == selected);
+
+    // Typing now lands at the *front* of the query, which is only true if the
+    // caret actually moved. Asserting on the text rather than on a caret offset
+    // keeps this a test of what a person would see.
+    fixture.type("f");
+    check(fixture.palette.query() == "fsa");
+
+    fixture.press(Graphics::KeyCode::End, "");
+    fixture.type("x");
+
+    check(fixture.palette.query() == "fsax");
+
+    // Deliberately no selection check here: typing refilters, so the selection
+    // moving afterwards is the list doing its job rather than End doing the
+    // wrong one. The Home assertion above is the one that isolates the key.
 };
 
 auto tPaletteEnterRuns = test("Palette/enterRunsTheSelectedCommandAndCloses") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("undo");
 
-    check(fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Return, "\r")));
+    check(fixture.press(Graphics::KeyCode::Return, "\r"));
 
     check(fixture.ran == "undo");
     check(!fixture.palette.isOpen());
@@ -295,15 +373,16 @@ auto tPaletteEnterRuns = test("Palette/enterRunsTheSelectedCommandAndCloses") = 
 
 // The expensive direction is closing anyway: the palette vanishes, nothing
 // happened, and there is nothing on screen to say why.
-auto tPaletteEnterOnDisabled = test("Palette/enterOnADisabledCommandDoesNothingAndStaysOpen") = []
+auto tPaletteEnterOnDisabled =
+    test("Palette/enterOnADisabledCommandDoesNothingAndStaysOpen") = []
 {
     auto fixture = Fixture {};
     fixture.undoAvailable = false;
 
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("undo");
 
-    fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Return, "\r"));
+    fixture.press(Graphics::KeyCode::Return, "\r");
 
     check(fixture.ran.empty());
     check(fixture.palette.isOpen());
@@ -313,9 +392,9 @@ auto tPaletteEnterOnDisabled = test("Palette/enterOnADisabledCommandDoesNothingA
 auto tPaletteEscapeCloses = test("Palette/escapeClosesWithoutRunningAnything") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
-    check(fixture.palette.keyDown(keyEvent(Graphics::KeyCode::Escape, "\x1b")));
+    check(fixture.press(Graphics::KeyCode::Escape, "\x1b"));
 
     check(!fixture.palette.isOpen());
     check(fixture.ran.empty());
@@ -328,18 +407,19 @@ auto tPaletteEscapeCloses = test("Palette/escapeClosesWithoutRunningAnything") =
 auto tPaletteSwallowsEverything = test("Palette/consumesEveryKeyWhileOpen") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
-    check(fixture.palette.keyDown(keyEvent(Graphics::KeyCode::F5, "")));
-    check(fixture.palette.keyDown(keyEvent(Graphics::KeyCode::PageUp, "")));
+    check(fixture.press(Graphics::KeyCode::F5, ""));
+    check(fixture.press(Graphics::KeyCode::PageUp, ""));
 };
 
 // --- the mouse --------------------------------------------------------------
 
-auto tPaletteClickOutsideDismisses = test("Palette/aClickOutsideTheBoxDismisses") = []
+auto tPaletteClickOutsideDismisses =
+    test("Palette/aClickOutsideTheBoxDismisses") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
     // Bottom-left, which the box never reaches.
     fixture.palette.mouseDown(mouseAt(20.f, 700.f));
@@ -351,10 +431,11 @@ auto tPaletteClickOutsideDismisses = test("Palette/aClickOutsideTheBoxDismisses"
 // Clicking the query field is not a dismissal, which is the fold: a palette
 // that dismissed on any click reaching it would close the moment the person
 // clicked into the thing they were typing in.
-auto tPaletteClickInsideStaysOpen = test("Palette/aClickInsideTheBoxDoesNotDismiss") = []
+auto tPaletteClickInsideStaysOpen =
+    test("Palette/aClickInsideTheBoxDoesNotDismiss") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
     const auto input = fixture.palette.inputBounds();
 
@@ -369,10 +450,11 @@ auto tPaletteClickInsideStaysOpen = test("Palette/aClickInsideTheBoxDoesNotDismi
 // The palette owns the keyboard while it is open. Its result list must not be
 // a focus stop of its own, or clicking a row would move focus off the palette
 // and the next keystroke would go nowhere.
-auto tPaletteKeepsFocusOnItself = test("Palette/aClickOnAResultLeavesFocusOnThePalette") = []
+auto tPaletteKeepsFocusOnItself =
+    test("Palette/aClickOnAResultLeavesFocusOnThePalette") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
     auto host = WidgetHost {};
     host.setRoot(fixture.palette);
@@ -390,7 +472,7 @@ auto tPaletteKeepsFocusOnItself = test("Palette/aClickOnAResultLeavesFocusOnTheP
 auto tPaletteClickRunsTheRow = test("Palette/aClickOnAResultRunsIt") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
     fixture.palette.setQuery("undo");
 
     auto host = WidgetHost {};
@@ -417,7 +499,7 @@ auto tPaletteBoxIsCapped = test("Palette/theBoxStopsGrowingAndScrollsInstead") =
         fixture.registry.add({"filler." + std::to_string(index),
                               "Filler Command " + std::to_string(index)});
 
-    fixture.palette.show();
+    fixture.show();
 
     check(fixture.palette.entries().size() > 12);
     check(fixture.palette.boxBounds().h < windowBounds.h * 0.6f);
@@ -426,7 +508,7 @@ auto tPaletteBoxIsCapped = test("Palette/theBoxStopsGrowingAndScrollsInstead") =
 auto tPaletteBoxIsCentred = test("Palette/theBoxIsCentredAndFitsANarrowWindow") = []
 {
     auto fixture = Fixture {};
-    fixture.palette.show();
+    fixture.show();
 
     const auto box = fixture.palette.boxBounds();
 

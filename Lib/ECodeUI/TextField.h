@@ -52,6 +52,14 @@ public:
 
     void setColours(const Colours& newColours) { colours = newColours; }
 
+    // Inset from the field's own left edge to the first character. Settable
+    // because the two users disagree: the find bar's fields sit in a well drawn
+    // tight around them, and the palette's query is a full-width line inside a
+    // box that already carries its own margin. Without this the palette would
+    // have to hand the field a rect offset by the difference, which puts a
+    // layout constant in one place and its correction in another.
+    void setHorizontalPadding(float padding) { horizontalPadding = padding; }
+
     // Byte offsets into text(), always on character boundaries.
     std::size_t caret() const { return head; }
     std::size_t selectionStart() const { return head < anchor ? head : anchor; }
@@ -115,6 +123,8 @@ private:
 
     std::size_t head = 0;
     std::size_t anchor = 0;
+
+    float horizontalPadding = 8.f;
 
     bool focused = false;
 

@@ -18,7 +18,6 @@ constexpr auto inputHeight = 42.f;
 constexpr auto rowHeight = 26.f;
 constexpr auto padding = 12.f;
 constexpr auto borderWidth = 1.f;
-constexpr auto caretWidth = 2.f;
 
 // Past this the results scroll rather than the box growing, so the palette
 // never covers the file it is being used on.
@@ -26,40 +25,6 @@ constexpr auto maxVisibleRows = std::size_t {12};
 
 constexpr auto placeholder = "Type a command";
 constexpr auto emptyMessage = "No matching commands";
-
-// Back over one UTF-8 sequence: the continuation bytes first, then the lead.
-// Backspace deletes a character, and a query with a ⌘ in it deleted a byte at a
-// time would leave half a sequence behind and stop matching anything.
-std::size_t withoutLastCharacter(std::string_view text)
-{
-    auto index = text.size();
-
-    while (index > 0)
-    {
-        --index;
-
-        if ((static_cast<unsigned char>(text[index]) & 0xc0) != 0x80)
-            break;
-    }
-
-    return index;
-}
-
-// Text the key produced, or nothing when it is not text. Return, Tab and
-// Escape all arrive with `characters` set to a control code, so a palette that
-// simply appended whatever came in would type them into the query.
-bool isTypedText(const Graphics::KeyEvent& event)
-{
-    if (event.characters.empty() || event.modifiers.command
-        || event.modifiers.control)
-        return false;
-
-    for (auto c: event.characters)
-        if (static_cast<unsigned char>(c) < 0x20)
-            return false;
-
-    return true;
-}
 } // namespace
 
 CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
@@ -68,9 +33,27 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
     : theme(themeToUse)
     , registry(registryToUse)
     , keymap(keymapToUse)
+    , input(themeToUse)
     , results(themeToUse)
 {
     setVisible(false);
+
+    input.setPlaceholder(placeholder);
+    input.setHorizontalPadding(padding);
+
+    input.setColours({theme.paletteText,
+                      theme.paletteHintText,
+                      theme.paletteText,
+                      theme.paletteSelected});
+
+    // Every keystroke refilters, which is what makes the list follow the query
+    // rather than waiting for Return.
+    input.onTextChanged = [this](const std::string&)
+    {
+        refilter();
+        layout();
+        repaint();
+    };
 
     list.setRowHeight(rowHeight);
 
@@ -81,7 +64,8 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
     list.paintRow = [this](PaintContext& context,
                            std::size_t index,
                            const Graphics::Rect& area,
-                           bool selected) { paintRow(context, index, area, selected); };
+                           bool selected)
+    { paintRow(context, index, area, selected); };
 
     list.prepareRow = [this](Text::GlyphAtlas& atlas, std::size_t index)
     {
@@ -103,6 +87,7 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
 
     results.setContent(list);
 
+    addChild(input);
     addChild(results);
 }
 
@@ -125,7 +110,10 @@ void CommandPalette::hide()
 
 void CommandPalette::setQuery(std::string text)
 {
-    queryText = std::move(text);
+    // setText deliberately does not report a change — a caller setting the text
+    // already knows what it set — so the refilter is done here rather than left
+    // to the callback.
+    input.setText(std::move(text));
 
     refilter();
     layout();
@@ -140,7 +128,7 @@ void CommandPalette::refilter()
     {
         const auto& command = registry.commands()[index];
 
-        auto match = fuzzyMatch(queryText, command.title);
+        auto match = fuzzyMatch(input.text(), command.title);
 
         if (!match)
             continue;
@@ -176,8 +164,8 @@ float CommandPalette::resultsHeight() const
     // An empty result set still gets a row, which is what "No matching
     // commands" is drawn in. A box that collapsed to the query field would look
     // like the palette had closed.
-    const auto rows =
-        std::clamp(static_cast<std::size_t>(matches.size()), std::size_t {1}, maxVisibleRows);
+    const auto rows = std::clamp(
+        static_cast<std::size_t>(matches.size()), std::size_t {1}, maxVisibleRows);
 
     return static_cast<float>(rows) * rowHeight;
 }
@@ -211,6 +199,10 @@ Graphics::Rect CommandPalette::resultsBounds() const
 
 void CommandPalette::layout()
 {
+    // The field gets the whole input strip and carries the box's margin as its
+    // own padding, so the text lands where the hand-drawn query used to.
+    input.setBounds(inputBounds());
+
     results.setBounds(resultsBounds());
 
     // Nothing matched, so the message is painted by this widget and the scroll
@@ -220,8 +212,8 @@ void CommandPalette::layout()
 
 void CommandPalette::prepare(Text::GlyphAtlas& atlas, const Graphics::Rect&)
 {
-    UIText::prepare(atlas, queryText.empty() ? placeholder : queryText);
-
+    // The query and its placeholder are the field's to rasterize now; only the
+    // empty-result line is drawn by this widget.
     if (matches.empty())
         UIText::prepare(atlas, emptyMessage);
 }
@@ -241,38 +233,27 @@ void CommandPalette::paint(PaintContext& context)
     // no way to draw. Without either, a dark box on a dimmed dark background
     // has no edge at all.
     context.sprites().fillRect(box.withHeight(borderWidth), theme.paletteBorder);
-    context.sprites().fillRect({box.x, box.bottom() - borderWidth, box.w, borderWidth},
+    context.sprites().fillRect(
+        {box.x, box.bottom() - borderWidth, box.w, borderWidth},
+        theme.paletteBorder);
+    context.sprites().fillRect({box.x, box.y, borderWidth, box.h},
                                theme.paletteBorder);
-    context.sprites().fillRect({box.x, box.y, borderWidth, box.h}, theme.paletteBorder);
-    context.sprites().fillRect({box.right() - borderWidth, box.y, borderWidth, box.h},
-                               theme.paletteBorder);
+    context.sprites().fillRect(
+        {box.right() - borderWidth, box.y, borderWidth, box.h}, theme.paletteBorder);
 
-    const auto input = inputBounds();
-    const auto text = input.inset(padding, 0.f);
-    const auto baseline = UIText::centredBaseline(context.atlas(), input);
+    // The query, its placeholder and the caret are the field's, drawn after this
+    // as a child. What is left here is the rule under it, which belongs to the
+    // box rather than to the text.
+    const auto strip = inputBounds();
 
-    const auto pen =
-        queryText.empty()
-            ? UIText::draw(context, placeholder, text.x, baseline, theme.paletteHintText)
-            : UIText::draw(context, queryText, text.x, baseline, theme.paletteText);
-
-    // Solid rather than blinking: the blink timer belongs to the editor's
-    // caret, and a palette is open for a few seconds at a time.
-    const auto metrics = context.atlas().metrics();
-
-    context.sprites().fillRect({queryText.empty() ? text.x : pen,
-                                baseline - metrics.ascent,
-                                caretWidth,
-                                metrics.ascent + metrics.descent},
-                               theme.paletteText);
-
-    context.sprites().fillRect({input.x, input.bottom() - borderWidth, input.w, borderWidth},
-                               theme.paletteBorder);
+    context.sprites().fillRect(
+        {strip.x, strip.bottom() - borderWidth, strip.w, borderWidth},
+        theme.paletteBorder);
 
     if (matches.empty())
         UIText::draw(context,
                      emptyMessage,
-                     text.x,
+                     strip.x + padding,
                      UIText::centredBaseline(context.atlas(), resultsBounds()),
                      theme.paletteHintText);
 }
@@ -384,6 +365,10 @@ void CommandPalette::mouseDown(const Graphics::MouseEvent& event)
 
 bool CommandPalette::keyDown(const Graphics::KeyEvent& event)
 {
+    // Reached as the query field's parent, for the keys it passes up: typing,
+    // the caret and backspace never get here. TextField deliberately declines
+    // Return, Escape and Tab because what they mean is the owner's to decide,
+    // and here Return runs the highlighted command and Escape dismisses.
     switch (event.keyCode)
     {
         case Graphics::KeyCode::Escape:
@@ -394,29 +379,23 @@ bool CommandPalette::keyDown(const Graphics::KeyEvent& event)
             acceptSelection();
             return true;
 
-        case Graphics::KeyCode::Delete:
-            setQuery(queryText.substr(0, withoutLastCharacter(queryText)));
-            return true;
-
         case Graphics::KeyCode::UpArrow:
         case Graphics::KeyCode::DownArrow:
-        case Graphics::KeyCode::Home:
-        case Graphics::KeyCode::End:
             return list.keyDown(event);
 
         default:
             break;
     }
 
-    if (!isTypedText(event))
-    {
-        // Everything else is swallowed rather than bubbling to the editor
-        // underneath, which is still in the tree and would otherwise be typed
-        // into while the palette is open.
-        return true;
-    }
-
-    setQuery(queryText + event.characters);
+    // Everything else is swallowed rather than bubbling further, since the
+    // palette is modal while it is up.
+    //
+    // Home and End are *not* listed above, and that is the one behaviour this
+    // changed: they used to jump the list to its first and last row, and now the
+    // field takes them and they move the text caret. That is what VSCode does
+    // and what anyone typing into a box expects — and it is not a capability
+    // lost so much as one that never fitted, since the way to reach a distant
+    // command in a fuzzy palette is to type, not to scroll to it.
     return true;
 }
 } // namespace ecode

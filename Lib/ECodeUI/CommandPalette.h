@@ -3,6 +3,7 @@
 #include "Keymap.h"
 #include "ListView.h"
 #include "ScrollView.h"
+#include "TextField.h"
 #include "Theme.h"
 
 #include <ECodeCore/Commands.h>
@@ -43,8 +44,18 @@ public:
     // know about the host, so it cannot restore focus itself.
     std::function<void()> onClosed = [] {};
 
+    // What the application should focus after show(). The palette is a container
+    // now; the thing that takes the keyboard is the query field inside it.
+    //
+    // Focusing the palette itself was the old arrangement, and it is what forced
+    // the palette to reimplement a text box: a widget that owns the keyboard has
+    // to handle every key, so it grew its own caret, its own UTF-8 backspace and
+    // its own idea of what counts as typing — the last of which was wrong, and
+    // put a private-use codepoint into the query on every press of Left.
+    Widget& keyboardTarget() { return input; }
+
     void setQuery(std::string text);
-    const std::string& query() const { return queryText; }
+    const std::string& query() const { return input.text(); }
 
     // One command that survived the filter, with where in its title the query
     // matched so the palette can pick those characters out.
@@ -76,8 +87,12 @@ public:
 
     void layout() override;
 
+    // The backdrop is this widget's, so it takes the clicks that dismiss.
     bool wantsMouse() const override { return true; }
-    bool acceptsFocus() const override { return true; }
+
+    // Not a focus stop of its own — see keyboardTarget(). Keys still reach it,
+    // as the field's parent, for the ones the field passes up.
+    bool acceptsFocus() const override { return false; }
 
     void prepare(eacp::Text::GlyphAtlas& atlas,
                  const eacp::Graphics::Rect& visible) override;
@@ -112,9 +127,9 @@ private:
     const CommandRegistry& registry;
     const Keymap& keymap;
 
-    std::string queryText;
     eacp::Vector<Entry> matches;
 
+    TextField input;
     ScrollView results;
     ListView list;
 };

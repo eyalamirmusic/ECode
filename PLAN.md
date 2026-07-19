@@ -444,7 +444,8 @@ Down and all Drag/Up route to it, which is exactly what splitter dragging and te
 
 Built: widget base + layout pass, focus traversal, scroll view + scrollbar, virtualised list,
 tree view, tab bar, status bar, the command palette — the first overlay — and a reusable
-single-line `TextField` that the find bar uses twice. Still to build:
+single-line `TextField`, used three times over: the find bar's two fields and the palette's
+query. Still to build:
 splitter, in-window context menu
 (`Graphics::Menu` is the native menu bar only — no `popup(at:)`), minimap, tooltip,
 animation/easing, and hover states — no widget tracks the pointer yet, so nothing highlights
@@ -505,7 +506,7 @@ the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasteri
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
-**Done in ECode** (317 tests): `Document` with an incremental line index,
+**Done in ECode** (322 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -514,8 +515,9 @@ loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
 layer, with the chrome drawn by it rather than hardcoded — scroll containers,
 a virtualised list, and a working file tree in the sidebar — and the command
 layer: `CommandRegistry`, `Keymap`, `FuzzyMatch` and a `CommandPalette` that
-reads both — and find/replace: a `Search` model, a `TextField`, a `FindBar`,
-match highlighting in the renderer and grouped undo for replace-all.
+reads both through a shared `TextField` — and find/replace: a `Search` model,
+a `FindBar`, match highlighting in the renderer and grouped undo for
+replace-all.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -800,9 +802,31 @@ Six decisions worth recording:
 - **`TextField` never consumes Return, Escape or Tab.** They mean different
   things per owner — Return runs the command in the palette and finds the next
   hit in the find bar — so the field returns false and whoever owns it decides.
-  That is what lets one field serve both. (The palette has *not* adopted it yet;
-  its query is still bespoke. Worth doing, and deliberately not done in the same
-  change as the feature.)
+  That is what lets one field serve both.
+
+**The palette now uses it too**, which was left for its own change and turned
+out to be the one that mattered. The palette used to *be* the focus target, and
+a widget that owns the keyboard has to handle every key — so it had grown its
+own caret, its own UTF-8 backspace and its own idea of what counts as typing.
+The last of those was wrong: it named Up, Down, Home and End and let everything
+else fall through to "this is text", so **Left and Right put a private-use
+codepoint into the query**, which then matched nothing with no visible cause.
+A test written against the old code confirmed it before the change.
+
+Three things follow from focusing the field rather than the palette:
+
+- The palette is no longer a focus stop (`acceptsFocus()` is false) and exposes
+  `keyboardTarget()`, matching the find bar. Keys still reach it as the field's
+  parent, which is where Return, Escape and the arrows are handled.
+- ⌘A, ⌘C, ⌘V and ⌘X in the palette now mean the query rather than the document,
+  for free, via `Widget::isTextInput()`. Pasting into the palette previously
+  pasted into the file.
+- **Home and End changed meaning**, and deliberately: they used to jump the list
+  to its first and last row, and now the field takes them and they move the text
+  caret. That is what VSCode does and what anyone typing into a box expects; the
+  way to reach a distant command in a fuzzy palette is to type, not to travel.
+  The palette's Home/End branch is now unreachable dead code, so removing it is
+  invisible to any test — which is itself the honest reason for deleting it.
 
 **Verified by rendering the assembled tree off-screen**, not by driving a live
 window: `Tests/FindRenderTests.cpp` builds a real `EditorWidget` and `FindBar`
