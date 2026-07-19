@@ -1,9 +1,10 @@
 # ECode — a GPU-drawn, VSCode-style code editor on eacp
 
 **Status:** a working editor. Opens a file, highlights it with tree-sitter,
-scrolls, and can be typed in — with selection, undo, clipboard and mouse.
-Sections 1–5 are the design and the research behind it; **§6 is where things
-stand and §7 is what to do next.**
+scrolls, can be typed in — with selection, undo, clipboard and mouse — and
+saves, with external-change detection. Next is the widget layer (§7.3); the
+chrome is still hardcoded rectangles. Sections 1–5 are the design and the
+research behind it; **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -236,6 +237,20 @@ keeping permissions and following symlinks) and `File::modificationTime`, which
 together are what saving a file safely needs. 10 tests in
 `Tests/Core/FilesTests.cpp`; the live example is ECode's Cmd+S.
 
+And the y-axis fix, which is the largest correction made upstream so far:
+
+- `Tests/Graphics/RectTests.cpp` — 15 tests. `Rect` had none at all, which is
+  how its splitters stayed y-up in a y-down framework. Covers the splitters,
+  the edge accessors, exact tiling with no gap or overlap, half-open
+  `contains`, and the new `isEmpty`/`intersects`/`intersection`.
+- `Tests/GPU/CoordinateSpaceTests.cpp` — 3 tests, and the ones that matter.
+  They fill slices taken with `removeFromTop`/`Bottom`/`Left` and assert which
+  end of the rendered image each came out at, plus that `setScissorRect` clips
+  the same way up. Arithmetic tests cannot catch a convention error; see §9.
+- `Tests/Graphics/RenderToImageTests.cpp` — one added test pinning that a
+  layer's path space is y-down. The existing layer cases all used full-bounds
+  paths, which are orientation-symmetric and pass either way up.
+
 Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching).
 
 | # | Gap | Why it blocks | Shape of fix |
@@ -416,7 +431,10 @@ base class and nothing else.
 
 Available for free: `Graphics::Rect`'s JUCE-style `removeFromLeft/Right/Top/Bottom`,
 `inset`, `fromLeft` … which suit IDE chrome well (activity bar `removeFromLeft(48)`, status bar
-`removeFromBottom(22)`). Mouse capture already works correctly — `mouseDownTarget` is latched on
+`removeFromBottom(22)`) — and which are only safe to use that way since the
+y-axis fix; before it they returned the opposite edge. `intersection` was added
+for nesting clip regions, since the GPU has one scissor rect and no stack.
+Mouse capture already works correctly — `mouseDownTarget` is latched on
 Down and all Drag/Up route to it, which is exactly what splitter dragging and text selection need.
 `clickCount` is present for double/triple-click word and line selection.
 
@@ -454,12 +472,12 @@ Cmd+C is "c" on any layout) while `characters` is the correct field for text ins
 Everything through M4 is done and verified on screen. Commit hashes are in the
 log; this is the shape of it.
 
-**Done in eacp** (branch `ecode-editor-support`, 583 tests):
+**Done in eacp** (branch `ecode-editor-support`, 602 tests):
 scissor rects, macOS scroll-wheel delivery with precise/momentum plumbing,
 backing-scale notification, texture sub-region upload, `constexpr` colours,
 `ShaderProgram::prepare`'s blend mode, clipboard `getText`/`hasText`, the
 missing key codes, `Files::writeFileAtomically` and `File::modificationTime`,
-and the whole `eacp-text` module — rasterizer/atlas split, per-glyph bearings,
+the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasterizer/atlas split, per-glyph bearings,
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
@@ -516,18 +534,24 @@ than writes through — are what its tests actually pin.
 are the one part of this that no test covers, and the session it was written in
 could not capture the display. Worth a look.
 
-### 7.2 Multi-cursor — decide the data model now, even if the UI waits
+### 7.2 Multi-cursor — deferred, deliberately, with the cost known
 
-This is the one piece of sequencing I would not get wrong. `Editor` holds a
-single `Cursor`, and every operation on it assumes that. The longer the widget
-layer, the palette and find/replace are written against a single cursor, the
-more code has to change when it becomes a set.
+Put aside for now in favour of the widget layer. Recording the trade rather
+than deleting the section, because this plan previously called it the one piece
+of sequencing not to get wrong, and reversing that should be visible.
 
-The change itself is contained — `Cursor` becomes `Vector<Cursor>`, edits apply
-per cursor from the highest offset down so earlier edits do not shift later
-ones, and overlapping cursors merge after each operation. Doing it while
-`Editor` is the only caller is a couple of hours; doing it after M5 is a
-refactor across the app.
+`Editor` holds a single `Cursor` and every operation assumes it. The change
+itself stays contained — `Cursor` becomes `Vector<Cursor>`, edits apply per
+cursor from the highest offset down so earlier edits do not shift later ones,
+and overlapping cursors merge after each operation. What grows is everything
+written against a single cursor in the meantime: the widget layer, find and
+replace, the palette's commands.
+
+The bill comes due when multi-cursor lands, and it is a refactor across the app
+rather than the couple of hours it would be today. What keeps it from getting
+worse: **anything new that touches the cursor should go through `Editor`, not
+reach into `Editor::cursor()`**. Today the renderer takes a `const Cursor*`,
+which becomes a span. Keep that surface as narrow as it is.
 
 ### 7.3 The widget layer — the big one, and the next real design decision
 
@@ -535,6 +559,43 @@ The chrome is still hardcoded rectangles in `drawChrome()`. Everything in 7.4
 depends on this, and eacp deliberately provides none of it: `GPUWidgets` is
 path tessellation, not widgets, and `Graphics::View` is one `NSView` per widget,
 which a 5,000-row file tree cannot use.
+
+**Cleared first, because the widget layer is built on it:** eacp's coordinate
+space is y-down — `isFlipped` backing views, so `View::setBounds` and
+`MouseEvent::pos` measure from the top, and the sprite, glyph and scissor paths
+all put y = 0 at the top. `Graphics::Rect`'s splitters were the lone holdout,
+still y-up from JUCE, which meant `removeFromTop` returned the *bottom* slice.
+ECode had been drawing its tab bar along the bottom edge and its status bar
+along the top since the chrome was written. Fixed upstream rather than worked
+around, since the two conventions were contradicting each other inside one
+framework rather than expressing a choice. `Rect` had no tests at all; it has
+15 now, plus 3 that render slices off-screen and assert which end of the image
+they land on — see §9.
+
+An audit of the rest of eacp found everything else already agrees: the macOS,
+iOS and Windows view backings, `Context` on both platforms, `Path` on Windows
+and in `GPUWidgets`, `Image::at`, `renderToImage`, scissor rects, both GPU
+shaders, `GlyphSlot::offset`, texture regions, camera frames, window
+positioning and mouse position. The places that touch a natively y-up API
+convert explicitly and say so — the off-screen `CGBitmapContext` flip, the
+rasterizer's CoreGraphics conversion, the `CGWarpMouseCursorPosition` call.
+
+**One inference, not an observation.** macOS `Layer::setPosition`/`setBounds`
+is the one spot where the answer comes from AppKit rather than from code here:
+`geometryFlipped` is never set, so nothing in the tree decides it. Two checks
+say y-down — the snapshot path renders an asymmetric layer path against the top
+edge, and `Layer.mm` is shared with iOS where a `(0,0)` anchor is
+unambiguously top-left — and there is now a test pinning it. But it has not
+been confirmed on a real screen, and the session that found it could not
+capture one.
+
+Riding on that: `Apps/Graphics/ComplexGUI/TaskBoard.cpp` positions its labels
+as though layers were y-up (`titleLayer` at `bounds.h - 22`, `descLayer` at
+`bounds.h - 40`), which under the y-down reading puts both near the bottom of
+the card with the title *below* the description. Not fixed — recovering the
+intended spacing needs the text layers' heights and a look at the result. Its
+header band is a separate case that the `Rect` fix moved from the bottom to the
+top, where it was always meant to be.
 
 What it needs: a widget base with a paint that takes the `GlyphRenderer` and
 `SpriteRenderer`, a layout pass (`Rect::removeFrom*` suits IDE chrome well),
@@ -617,6 +678,11 @@ string does.
   Duplicated work has already happened once (clipboard read).
 - **eacp's README and CLAUDE.md predate the GPU stack** and describe it as Core
   Graphics only. Read the tree, not the docs.
+- **`Graphics::Rect` changed meaning.** Its splitters are now y-down, matching
+  the rest of eacp. Nothing in eacp, ECode or CowTerm compensated for the old
+  behaviour, so the fix corrected four call sites rather than breaking any —
+  but the forks (`JamieEACP`, `eacpTest`, `eacp-cleanup`) still carry the y-up
+  version, and merging across that boundary will silently invert layouts.
 - **`if (APPLE)` includes iOS.** It has broken the build once. The guard is
   `if (APPLE AND NOT IOS)`, and the CI invocation is in CLAUDE.md.
 - **No Linux GUI path exists in eacp at all** — the whole `Graphics`/`GPU` tree
@@ -632,6 +698,14 @@ Recorded because each of these cost something to find out.
 - **Verify a new test fails without the change.** A test here passed with the
   feature deleted, because `respondsToSelector:` was satisfied by `NSView`'s
   own inherited implementation.
+- **Arithmetic cannot tell you which way is up.** `Graphics::Rect`'s splitters
+  were y-up in a y-down framework, so `removeFromTop` returned the bottom
+  slice and ECode drew its tab bar along the bottom edge for months. A unit
+  test on `Rect` would not have caught it — it can only confirm the maths
+  agrees with whatever convention the author had in mind, and the author had
+  the wrong one. It took rendering the slices off-screen and asking which end
+  of the *image* they landed on. Anything that is a convention rather than a
+  computation needs a test at the level where the convention is observable.
 - **And check it fails in the direction that costs you something.** The first
   dirty-flag test picked a sequence where the naive implementation happened to
   answer correctly, so it passed against the thing it was written to rule out.
