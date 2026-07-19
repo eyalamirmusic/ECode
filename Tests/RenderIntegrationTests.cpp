@@ -69,7 +69,6 @@ struct EditorTestView final : GPU::GPUView
 
         auto sprites =
             Sprites::SpriteRenderer {{viewWidth, viewHeight}, sampleCount()};
-        sprites.begin(pass);
 
         renderer->prepare(document, area, 0.f);
         atlas->commit();
@@ -79,16 +78,18 @@ struct EditorTestView final : GPU::GPUView
                                 renderer->firstVisibleLine(0.f),
                                 renderer->lastVisibleLine(document, area, 0.f));
 
-        renderer->draw(pass,
-                       sprites,
-                       *glyphs,
+        // The context binds the sprite pipeline on first use and flushes the
+        // glyph batch on destruction, so neither is done by hand here.
+        auto context =
+            PaintContext {pass, sprites, *glyphs, *atlas, area, 1.f};
+
+        renderer->draw(context,
                        document,
                        cursor,
                        cursor != nullptr,
                        highlighter.get(),
                        area,
-                       0.f,
-                       1.f);
+                       0.f);
     }
 
     TextTheme theme;

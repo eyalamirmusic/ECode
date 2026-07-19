@@ -1,6 +1,6 @@
 add_executable(ECode Main.cpp)
 
-target_link_libraries(ECode PRIVATE ECodeCore ECodeRender ECodeSyntax)
+target_link_libraries(ECode PRIVATE ECodeCore ECodeRender ECodeSyntax ECodeUI eacp-sprites)
 
 set(BUNDLE_ID "com.eacp.ecode")
 

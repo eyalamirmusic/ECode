@@ -1,5 +1,7 @@
 #include "TextRenderer.h"
 
+#include <ECodeCore/Utf8.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -15,43 +17,6 @@ constexpr auto tabWidth = 4;
 
 constexpr auto gutterPadding = 12.f;
 constexpr auto textPadding = 8.f;
-
-// Minimal UTF-8 decode. eacp::Strings has no codepoint iteration, so this lives
-// here until it does; multi-byte sequences are rare enough in source that the
-// ASCII path is what matters for speed.
-char32_t nextCodepoint(std::string_view text, std::size_t& index)
-{
-    const auto lead = static_cast<unsigned char>(text[index]);
-
-    if (lead < 0x80)
-        return static_cast<char32_t>(text[index++]);
-
-    auto extra = 0;
-    auto value = char32_t {0};
-
-    if ((lead & 0xe0) == 0xc0)
-    {
-        extra = 1;
-        value = lead & 0x1fu;
-    }
-    else if ((lead & 0xf0) == 0xe0)
-    {
-        extra = 2;
-        value = lead & 0x0fu;
-    }
-    else
-    {
-        extra = 3;
-        value = lead & 0x07u;
-    }
-
-    ++index;
-
-    for (auto i = 0; i < extra && index < text.size(); ++i, ++index)
-        value = (value << 6) | (static_cast<unsigned char>(text[index]) & 0x3fu);
-
-    return value;
-}
 
 std::string lineNumberText(std::size_t line)
 {
@@ -146,7 +111,7 @@ void TextRenderer::prepareLine(std::string_view text)
 {
     for (std::size_t index = 0; index < text.size();)
     {
-        const auto codepoint = nextCodepoint(text, index);
+        const auto codepoint = Utf8::next(text, index);
 
         if (codepoint == U'\t')
             continue;
@@ -186,7 +151,7 @@ void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
     for (std::size_t index = 0; index < text.size();)
     {
         const auto glyphStart = index;
-        const auto codepoint = nextCodepoint(text, index);
+        const auto codepoint = Utf8::next(text, index);
 
         auto glyphColor = color;
 
@@ -234,7 +199,7 @@ float TextRenderer::columnToX(std::string_view text, std::size_t column) const
 
     for (std::size_t index = 0; index < text.size() && index < column;)
     {
-        const auto codepoint = nextCodepoint(text, index);
+        const auto codepoint = Utf8::next(text, index);
 
         if (codepoint == U'\t')
         {
@@ -285,7 +250,7 @@ std::size_t TextRenderer::offsetAtPoint(const Document& document,
             break;
 
         auto next = index;
-        nextCodepoint(text, next);
+        Utf8::next(text, next);
         index = next;
     }
 
@@ -333,28 +298,20 @@ void TextRenderer::drawSelection(Sprites::SpriteRenderer& sprites,
     }
 }
 
-void TextRenderer::draw(GPU::RenderPass& pass,
-                        Sprites::SpriteRenderer& sprites,
-                        Text::GlyphRenderer& glyphs,
+void TextRenderer::draw(PaintContext& context,
                         const Document& document,
                         const Cursor* cursor,
                         bool caretVisible,
                         Highlighter* highlighter,
                         const Graphics::Rect& viewport,
-                        float scrollY,
-                        float backingScale)
+                        float scrollY)
 {
     const auto first = firstVisibleLine(scrollY);
     const auto last = lastVisibleLine(document, viewport, scrollY);
     const auto gutter = gutterWidth(document.lineCount());
 
-    const auto toPixels = [backingScale](const Graphics::Rect& rect)
-    {
-        return Graphics::Rect {rect.x * backingScale,
-                               rect.y * backingScale,
-                               rect.w * backingScale,
-                               rect.h * backingScale};
-    };
+    auto& glyphs = context.glyphs();
+    const auto backingScale = context.backingScale();
 
     // Line numbers are clipped to the gutter and the text to what remains, so
     // neither can spill into the other however long a line is.
@@ -367,7 +324,7 @@ void TextRenderer::draw(GPU::RenderPass& pass,
     // through the sprite renderer before any glyph is queued.
     if (cursor != nullptr)
     {
-        pass.setScissorRect(toPixels(textRect));
+        const auto clip = ClipScope {context, textRect};
 
         const auto caretLine = document.lineAt(cursor->head);
 
@@ -376,82 +333,83 @@ void TextRenderer::draw(GPU::RenderPass& pass,
             const auto y =
                 textRect.y + scrollY + static_cast<float>(caretLine) * height;
 
-            sprites.fillRect({textRect.x, y, textRect.w, height}, theme.currentLine);
+            context.sprites().fillRect({textRect.x, y, textRect.w, height},
+                                       theme.currentLine);
         }
 
-        drawSelection(sprites, document, *cursor, textRect, scrollY, first, last);
+        drawSelection(
+            context.sprites(), document, *cursor, textRect, scrollY, first, last);
     }
 
-    // Scissor is pass state applied when a draw is issued, so each region has to
-    // be flushed under its own rect rather than everything being queued and
-    // submitted once at the end.
-    pass.setScissorRect(toPixels(gutterRect));
-    glyphs.begin();
-
-    for (auto line = first; line < last; ++line)
+    // Each region draws under its own clip. The context flushes the glyph batch
+    // whenever the clip changes, which is what keeps the gutter's numbers from
+    // being cut at the text's edge instead of their own.
     {
-        const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
-        const auto number = lineNumberText(line);
+        const auto clip = ClipScope {context, gutterRect};
 
-        // Right-aligned against the gutter's inner edge.
-        const auto width = static_cast<float>(number.size()) * advance;
-        const auto x = viewport.x + gutter - gutterPadding - width;
-
-        drawLine(
-            glyphs, number, nullptr, x, y + ascent, theme.lineNumber, backingScale);
-    }
-
-    glyphs.flush(pass, atlas);
-
-    pass.setScissorRect(toPixels(textRect));
-    glyphs.begin();
-
-    for (auto line = first; line < last; ++line)
-    {
-        const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
-
-        const auto* spans =
-            highlighter != nullptr ? &highlighter->lineStyle(line) : nullptr;
-
-        drawLine(glyphs,
-                 document.line(line),
-                 spans,
-                 textRect.x + textPadding,
-                 y + ascent,
-                 theme.text,
-                 backingScale);
-    }
-
-    glyphs.flush(pass, atlas);
-    pass.clearScissorRect();
-
-    // The batch left its own pipeline bound, so the sprite renderer has to
-    // rebind before drawing anything else.
-    sprites.begin(pass);
-
-    // The caret goes on top of the text: at a line's end it would otherwise sit
-    // under the glyph that follows it after an edit.
-    if (cursor != nullptr && caretVisible)
-    {
-        const auto caretLine = document.lineAt(cursor->head);
-
-        if (caretLine >= first && caretLine < last)
+        for (auto line = first; line < last; ++line)
         {
-            pass.setScissorRect(toPixels(textRect));
+            const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
+            const auto number = lineNumberText(line);
 
-            const auto column = cursor->head - document.offsetAt(caretLine, 0);
-            const auto x = columnToX(document.line(caretLine), column);
-            const auto y =
-                textRect.y + scrollY + static_cast<float>(caretLine) * height;
+            // Right-aligned against the gutter's inner edge.
+            const auto width = static_cast<float>(number.size()) * advance;
+            const auto x = viewport.x + gutter - gutterPadding - width;
 
-            sprites.fillRect({textRect.x + textPadding + x, y, 2.f, height},
-                             theme.caret);
+            drawLine(glyphs,
+                     number,
+                     nullptr,
+                     x,
+                     y + ascent,
+                     theme.lineNumber,
+                     backingScale);
         }
     }
 
-    pass.clearScissorRect();
+    {
+        const auto clip = ClipScope {context, textRect};
 
-    sprites.fillRect({viewport.x + gutter, viewport.y, 1.f, viewport.h},
-                     theme.gutterEdge);
+        for (auto line = first; line < last; ++line)
+        {
+            const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
+
+            const auto* spans =
+                highlighter != nullptr ? &highlighter->lineStyle(line) : nullptr;
+
+            drawLine(glyphs,
+                     document.line(line),
+                     spans,
+                     textRect.x + textPadding,
+                     y + ascent,
+                     theme.text,
+                     backingScale);
+        }
+
+        // The batch has to reach the GPU before the caret is drawn over it,
+        // rather than at the end of the scope. context.sprites() rebinds after
+        // the flush on its own.
+        context.flushGlyphs();
+
+        // The caret goes on top of the text: at a line's end it would otherwise
+        // sit under the glyph that follows it after an edit.
+        if (cursor != nullptr && caretVisible)
+        {
+            const auto caretLine = document.lineAt(cursor->head);
+
+            if (caretLine >= first && caretLine < last)
+            {
+                const auto column = cursor->head - document.offsetAt(caretLine, 0);
+                const auto x = columnToX(document.line(caretLine), column);
+                const auto y =
+                    textRect.y + scrollY + static_cast<float>(caretLine) * height;
+
+                context.sprites().fillRect(
+                    {textRect.x + textPadding + x, y, 2.f, height}, theme.caret);
+            }
+        }
+    }
+
+    context.sprites().fillRect({viewport.x + gutter, viewport.y, 1.f, viewport.h},
+                               theme.gutterEdge);
 }
 } // namespace ecode

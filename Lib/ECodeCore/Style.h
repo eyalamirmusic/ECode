@@ -5,6 +5,8 @@
 
 namespace ecode
 {
+class Document;
+
 // What a run of text *is*, rather than what colour it should be.
 //
 // Kept deliberately small and vocabulary-level rather than mirroring any one
@@ -52,6 +54,21 @@ class Highlighter
 {
 public:
     virtual ~Highlighter() = default;
+
+    // Makes sure lineStyle() has answers for [firstLine, lastLine). Called with
+    // exactly the lines about to be drawn, which is what keeps the cost of
+    // scrolling proportional to the viewport rather than to the file: a parser
+    // may hold a tree for the whole document, but querying all of it per frame
+    // would put file size back into the frame time.
+    //
+    // Part of the interface rather than of one implementation, so a view can
+    // drive any highlighter without knowing which it has. Defaulted because a
+    // highlighter that computes everything up front has nothing to do here.
+    virtual void update(const Document&, std::size_t firstLine, std::size_t lastLine)
+    {
+        (void) firstLine;
+        (void) lastLine;
+    }
 
     // Spans for one line. Returning empty means "plain text", which is both the
     // correct answer for an unrecognised language and a safe fallback when a

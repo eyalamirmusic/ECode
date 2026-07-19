@@ -44,7 +44,7 @@ public:
     // outside that range returns empty.
     void update(const Document& document,
                 std::size_t firstLine,
-                std::size_t lastLine);
+                std::size_t lastLine) override;
 
     const LineStyle& lineStyle(std::size_t line) override;
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PaintContext.h"
+
 #include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
 #include <ECodeCore/Style.h>
@@ -49,23 +51,23 @@ public:
     TextRenderer(eacp::Text::GlyphAtlas& atlasToUse, const TextTheme& themeToUse);
 
     // Lays out and draws the lines visible in `viewport` at the given scroll
-    // offset. `pass` is needed to clip the text to the viewport, so a long line
-    // stops at the edge instead of running under the chrome.
+    // offset. Clipping goes through the context rather than straight to the
+    // pass: the gutter and the text each need their own clip, and both have to
+    // be intersected with whatever the enclosing widget already narrowed the
+    // scissor to — otherwise an editor inside a scrolling container would draw
+    // outside it.
     //
     // Every glyph the frame needs must already be in the atlas: call
     // prepare() first, then GlyphAtlas::commit(), then this. Uploading in the
     // middle of a pass would mutate a texture the earlier draws have bound.
     // highlighter may be null, in which case everything draws as plain text.
-    void draw(eacp::GPU::RenderPass& pass,
-              eacp::Sprites::SpriteRenderer& sprites,
-              eacp::Text::GlyphRenderer& glyphs,
+    void draw(PaintContext& context,
               const Document& document,
               const Cursor* cursor,
               bool caretVisible,
               Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
-              float scrollY,
-              float backingScale);
+              float scrollY);
 
     // Rasterizes the glyphs the next draw() will need, without drawing.
     void prepare(const Document& document,

@@ -1,0 +1,66 @@
+#pragma once
+
+#include "Widget.h"
+
+namespace ecode
+{
+// Owns the root of a widget tree and routes input into it.
+//
+// Separate from the GPUView on purpose: everything here is plain logic over
+// rectangles, so routing, capture and focus traversal can be tested without a
+// device or an event loop. The view forwards its events and does nothing else.
+class WidgetHost
+{
+public:
+    void setRoot(Widget& newRoot);
+    Widget* root() const { return rootWidget; }
+
+    // Resizes the root, which lays out the tree beneath it.
+    void setBounds(const eacp::Graphics::Rect& bounds);
+
+    void prepare(eacp::Text::GlyphAtlas& atlas);
+    void paint(PaintContext& context);
+
+    // --- input -----------------------------------------------------------
+    //
+    // Down latches the widget under the pointer, and every Drag and Up goes to
+    // it until the button is released — so a selection drag that leaves the
+    // editor keeps extending the selection rather than being handed to whatever
+    // it passed over. This mirrors what eacp already does one level up.
+
+    void mouseDown(const eacp::Graphics::MouseEvent& event);
+    void mouseDragged(const eacp::Graphics::MouseEvent& event);
+    void mouseUp(const eacp::Graphics::MouseEvent& event);
+    void mouseMoved(const eacp::Graphics::MouseEvent& event);
+
+    // Wheel deliberately ignores the capture and goes to the widget under the
+    // pointer, which is what the platform does and what feels right when a
+    // drag is in progress somewhere else. Bubbles to ancestors until consumed.
+    bool mouseWheel(const eacp::Graphics::MouseEvent& event);
+
+    // To the focused widget, then up its ancestors. False when nothing took it,
+    // which lets the caller fall back to application shortcuts.
+    bool keyDown(const eacp::Graphics::KeyEvent& event);
+
+    // --- focus -----------------------------------------------------------
+
+    void setFocus(Widget* widget);
+    Widget* focused() const { return focusedWidget; }
+
+    // Tab traversal, in paint order and cyclic. Skips hidden widgets and any
+    // that do not accept focus.
+    void focusNext();
+    void focusPrevious();
+
+    // Every focusable widget in the tree, in traversal order. Public because it
+    // is the honest way to test the ordering.
+    eacp::Vector<Widget*> focusableWidgets() const;
+
+private:
+    void moveFocus(int direction);
+
+    Widget* rootWidget = nullptr;
+    Widget* capturedWidget = nullptr;
+    Widget* focusedWidget = nullptr;
+};
+} // namespace ecode

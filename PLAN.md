@@ -2,9 +2,10 @@
 
 **Status:** a working editor. Opens a file, highlights it with tree-sitter,
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
-saves, with external-change detection. Next is the widget layer (§7.3); the
-chrome is still hardcoded rectangles. Sections 1–5 are the design and the
-research behind it; **§6 is where things stand and §7 is what to do next.**
+saves, with external-change detection. The chrome is a widget tree now rather
+than hardcoded rectangles; next are scroll containers and the concrete widgets
+built on them (§7.3). Sections 1–5 are the design and the research behind it;
+**§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -59,8 +60,8 @@ ECode/
     ECodeWarnings.cmake
   Lib/
     ECodeCore/              # buffer, edits, undo, selections — no GPU, no platform
-    ECodeUI/                # widget tree, layout, theme
-    ECodeRender/            # instanced glyph renderer, atlas client
+    ECodeRender/            # glyph renderer, atlas client, paint context + clip
+    ECodeUI/                # widget tree, layout, theme (depends on ECodeRender)
   App/
     Main.cpp
     CMakeLists.txt
@@ -481,12 +482,13 @@ the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasteri
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
-**Done in ECode** (124 tests): `Document` with an incremental line index,
+**Done in ECode** (155 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
-loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret — and
-`TextFile`: the file lifecycle, saving included.
+loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
+`TextFile`: the file lifecycle, saving included, and `ECodeUI`: the widget
+layer, with the chrome drawn by it rather than hardcoded.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -530,9 +532,20 @@ that saves anything wants it. The two things a naive temp-plus-rename loses —
 an existing file's permission bits, and a symlink, which it replaces rather
 than writes through — are what its tests actually pin.
 
-**Not verified on screen.** The unsaved dot in the tab and the title-bar text
-are the one part of this that no test covers, and the session it was written in
-could not capture the display. Worth a look.
+**Now verified on screen**, which no test covers and the writing session could
+not capture. Driven with synthesized keystrokes against a scratch file: typing
+lights the tab dot and prefixes the title; ⌘S clears both and the bytes land on
+disk; an external rewrite of a *clean* buffer appears on its own within the
+poll interval and re-highlights; an external rewrite of a *dirty* one turns the
+dot orange, appends "changed on disk. ⌘S again to overwrite" to the title and
+writes nothing; the second ⌘S then writes the buffer. All four behave as
+designed.
+
+One accident worth keeping. An early run showed a stray `®` at offset 0 and a
+lit dirty dot — a stray Option+R reaching the focused window, since `keyDown`
+inserts `event.characters` and Opt+R *is* `®` on macOS. Not a bug, and it
+confirmed the dot from the other direction: it lights exactly when the buffer
+genuinely differs, including when the edit came from somewhere unexpected.
 
 ### 7.2 Multi-cursor — deferred, deliberately, with the cost known
 
@@ -553,12 +566,46 @@ worse: **anything new that touches the cursor should go through `Editor`, not
 reach into `Editor::cursor()`**. Today the renderer takes a `const Cursor*`,
 which becomes a span. Keep that surface as narrow as it is.
 
-### 7.3 The widget layer — the big one, and the next real design decision
+### 7.3 The widget layer — foundation done, concrete widgets next
 
-The chrome is still hardcoded rectangles in `drawChrome()`. Everything in 7.4
-depends on this, and eacp deliberately provides none of it: `GPUWidgets` is
-path tessellation, not widgets, and `Graphics::View` is one `NSView` per widget,
-which a 5,000-row file tree cannot use.
+`ECodeUI` exists and the chrome is drawn by it: `drawChrome()`'s hardcoded
+rectangles are gone, and the tab strip draws the real filename with its
+unsaved dot rather than a bare rectangle. eacp deliberately provides none of
+this — `GPUWidgets` is path tessellation, not widgets, and `Graphics::View` is
+one `NSView` per widget, which a 5,000-row file tree cannot use.
+
+**What shipped:** `Widget` (tree, absolute bounds, paint/prepare walks,
+hit-testing, visibility), `WidgetHost` (mouse capture, wheel routing, focus and
+tab traversal), `PaintContext` + `ClipScope`, and the first widgets — `Panel`,
+`TabBar`, `StatusBar`, `EditorWidget`. `TextRenderer::draw` now takes the
+context instead of a raw pass, so an editor nested in a scrolling container
+will clip correctly rather than drawing over its parent.
+
+Three decisions worth recording, because each went against the obvious version:
+
+- **Bounds are absolute, not parent-relative.** A parent splits *its own*
+  rect with `Rect::removeFrom*` and hands the pieces down. That is what the GPU
+  wants — a scissor rect is absolute and there is exactly one — and it makes
+  hit-testing a plain `contains()` rather than a walk back up the tree
+  accumulating offsets. The cost is that moving a widget relays out its
+  subtree, which is nothing at the scale of IDE chrome.
+- **The clip and the glyph batch are owned by the same object, because they
+  are coupled and the coupling is silent.** `GlyphRenderer` batches between
+  `begin()` and `flush()`, while the scissor is pass state read when a draw is
+  *issued* — so glyphs queued under one clip and flushed under the next are
+  clipped by the next one. `PaintContext` flushes on every clip change. The
+  same object also rebinds the sprite pipeline lazily, since a glyph flush
+  leaves the glyph pipeline bound and the next `fillRect` would otherwise be
+  drawn through a shader that samples an R8 mask.
+- **`Highlighter::update` moved onto the interface.** It was on
+  `SyntaxHighlighter` alone, so a view had to know the concrete type to tell it
+  which lines were about to be drawn — and that call is what keeps scrolling
+  proportional to the viewport rather than to the file.
+
+**Still to build:** scroll containers on top of `ClipScope`, then the concrete
+widgets that need them — scrollbar, virtualised list, tree, splitter, overlay
+panel, context menu. `PaintContext` has no notion of a popup escaping its
+parent's clip yet; an overlay will have to be a child of the root.
 
 **Cleared first, because the widget layer is built on it:** eacp's coordinate
 space is y-down — `isFlipped` backing views, so `View::setBounds` and
@@ -597,13 +644,7 @@ intended spacing needs the text layers' heights and a look at the result. Its
 header band is a separate case that the `Rect` fix moved from the bottom to the
 top, where it was always meant to be.
 
-What it needs: a widget base with a paint that takes the `GlyphRenderer` and
-`SpriteRenderer`, a layout pass (`Rect::removeFrom*` suits IDE chrome well),
-hit-testing, focus with tab traversal, and scroll containers built on
-`setScissorRect`. Then the concrete widgets — scrollbar, virtualised list, tree,
-tab bar, splitter, overlay panel, context menu.
-
-Two things to get right at the start, because both are painful later:
+Two things still to get right, because both are painful later:
 - **Variable line height.** `TextRenderer` places row *n* at `n * lineHeight`.
   Soft wrap, folding, inline diagnostics and image lines all break that
   assumption, and it is the single biggest structural difference between a
@@ -712,6 +753,15 @@ Recorded because each of these cost something to find out.
   A wrong answer has two directions and usually only one of them hurts: here,
   falsely *clean* skips the save and loses the work, while falsely dirty just
   writes a file twice. Aim the test at the expensive one.
+- **A test of the common case cannot see what only the rare case separates.**
+  `ClipScope` intersects a child's clip with its parent's. The first test for
+  it drew a tab title too long for its tab and asserted the strip beyond stayed
+  bare — and it passed with the intersection replaced by a plain assignment,
+  because a tab lies *inside* the tab bar, where narrowing and replacing are the
+  same operation. Nearly every widget fits inside its parent, so nearly every
+  arrangement is blind to the difference. It took a child deliberately laid out
+  four times the size of its parent, asserted on all four sides. When a test
+  covers a fold in the behaviour, build the case that lands on the fold.
 - **Verify the mutation applied.** Two mutation checks silently no-op'd because
   clang-format had reflowed the text the string replace was looking for. Print
   whether the edit landed.
