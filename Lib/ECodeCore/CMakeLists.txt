@@ -5,6 +5,7 @@ add_library(ECodeCore STATIC
         Cursor.cpp
         Document.cpp
         Editor.cpp
+        FileTree.cpp
         TextEdit.cpp
         TextFile.cpp)
 

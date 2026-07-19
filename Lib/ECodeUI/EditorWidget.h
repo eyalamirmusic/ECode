@@ -39,7 +39,8 @@ public:
 
     void layout() override;
 
-    void prepare(eacp::Text::GlyphAtlas& atlas) override;
+    void prepare(eacp::Text::GlyphAtlas& atlas,
+                 const eacp::Graphics::Rect& visible) override;
     void paint(PaintContext& context) override;
 
     void mouseDown(const eacp::Graphics::MouseEvent& event) override;

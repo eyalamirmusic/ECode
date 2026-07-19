@@ -27,6 +27,17 @@ struct ChromeTheme
     // active without relying on the fill alone.
     eacp::Graphics::Color activeTabAccent {0.35f, 0.55f, 0.85f};
 
+    // Scrollbar thumbs. Dim until grabbed — a scrollbar is a status readout
+    // most of the time and a control only briefly.
+    eacp::Graphics::Color scrollThumb {1.f, 1.f, 1.f, 0.16f};
+    eacp::Graphics::Color scrollThumbActive {1.f, 1.f, 1.f, 0.34f};
+
+    // Rows in a list or tree.
+    eacp::Graphics::Color rowText {0.78f, 0.81f, 0.87f};
+    eacp::Graphics::Color rowDirectoryText {0.88f, 0.90f, 0.94f};
+    eacp::Graphics::Color rowSelected {1.f, 1.f, 1.f, 0.09f};
+    eacp::Graphics::Color rowHover {1.f, 1.f, 1.f, 0.05f};
+
     // Unsaved work, and a save that could not happen.
     eacp::Graphics::Color unsaved {0.694f, 0.741f, 0.831f};
     eacp::Graphics::Color conflict {0.898f, 0.541f, 0.310f};

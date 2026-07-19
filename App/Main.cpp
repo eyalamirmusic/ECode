@@ -1,5 +1,6 @@
 #include <ECodeUI/Chrome.h>
 #include <ECodeUI/EditorWidget.h>
+#include <ECodeUI/FileTreeView.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
@@ -46,6 +47,7 @@ struct WindowLayout final : Widget
     {
         addChild(activityBar);
         addChild(sidebar);
+        addChild(files);
         addChild(tabs);
         addChild(status);
         addChild(editor);
@@ -62,7 +64,11 @@ struct WindowLayout final : Widget
         status.setBounds(area.removeFromBottom(statusBarHeight));
 
         activityBar.setBounds(area.removeFromLeft(activityBarWidth));
-        sidebar.setBounds(area.removeFromLeft(sidebarWidth));
+
+        const auto sidebarArea = area.removeFromLeft(sidebarWidth);
+
+        sidebar.setBounds(sidebarArea);
+        files.setBounds(sidebarArea);
 
         // Tabs belong to the editor group, so they start where the sidebar
         // ends rather than spanning the window.
@@ -78,7 +84,11 @@ struct WindowLayout final : Widget
     ChromeTheme theme;
 
     Panel activityBar {theme.activityBar};
+
+    // The sidebar's background is a panel behind the tree rather than the
+    // tree's own fill, so the empty space below the last row is still sidebar.
     Panel sidebar {theme.sidebar};
+    FileTreeView files {theme};
     TabBar tabs {theme};
     StatusBar status {theme};
     EditorWidget editor;
@@ -124,8 +134,23 @@ struct EditorView final : GPU::GPUView
 
         layout.editor.onStateChanged = [this] { updateChrome(); };
 
-        // The editor is the only focusable thing in the window so far, and a
-        // window that opens with no caret reads as broken.
+        // The tree is rooted at the open file's directory, which is the closest
+        // thing to a project until there is a folder-open command.
+        layout.files.setRoot(file.path().parentDirectory());
+
+        layout.files.onFileChosen = [this](const FilePath& path)
+        {
+            openFile(path);
+
+            // Focus follows the open: the point of clicking a file is to type
+            // in it, and leaving focus in the tree means the first keystroke
+            // moves the selection instead.
+            host.setFocus(&layout.editor);
+            repaint();
+        };
+
+        // The editor starts focused; a window that opens with no caret reads
+        // as broken.
         host.setFocus(&layout.editor);
     }
 
@@ -137,7 +162,14 @@ struct EditorView final : GPU::GPUView
             return;
 
         conflicted = false;
+
+        // A fresh document means the highlighter's tree describes text that is
+        // no longer there. setDocument fires onDocumentReplaced, which resets
+        // it — but the editor's scroll offset is this view's to fix.
+        layout.editor.setRenderer(renderer ? &renderer.value() : nullptr);
+
         updateChrome();
+        repaint();
     }
 
     // What the window's title bar should read. A pure function of the file's

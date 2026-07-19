@@ -45,15 +45,29 @@ void Widget::setVisible(bool shouldBeVisible)
     repaint();
 }
 
-void Widget::prepareTree(Text::GlyphAtlas& atlas)
+float Widget::preferredHeight(float) const
+{
+    return area.h;
+}
+
+void Widget::prepareTree(Text::GlyphAtlas& atlas, const Graphics::Rect& clip)
 {
     if (!visible || area.isEmpty())
         return;
 
-    prepare(atlas);
+    // The same narrowing paintTree does, so the two walks agree on what is
+    // visible. A widget scrolled entirely out of its parent rasterizes
+    // nothing, which is what keeps a long list's prepass proportional to the
+    // viewport rather than to the number of rows.
+    const auto narrowed = clip.intersection(area);
+
+    if (narrowed.isEmpty())
+        return;
+
+    prepare(atlas, narrowed);
 
     for (auto* child: childList)
-        child->prepareTree(atlas);
+        child->prepareTree(atlas, narrowed);
 }
 
 void Widget::paintTree(PaintContext& context)

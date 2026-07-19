@@ -59,7 +59,7 @@ int TabBar::tabAt(const Graphics::Point& point) const
     return -1;
 }
 
-void TabBar::prepare(Text::GlyphAtlas& atlas)
+void TabBar::prepare(Text::GlyphAtlas& atlas, const Graphics::Rect&)
 {
     for (const auto& tab: tabs)
         UIText::prepare(atlas, tab.title);
@@ -137,7 +137,7 @@ void StatusBar::setText(std::string left, std::string right)
     repaint();
 }
 
-void StatusBar::prepare(Text::GlyphAtlas& atlas)
+void StatusBar::prepare(Text::GlyphAtlas& atlas, const Graphics::Rect&)
 {
     UIText::prepare(atlas, leftText);
     UIText::prepare(atlas, rightText);

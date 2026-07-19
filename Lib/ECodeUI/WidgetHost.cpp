@@ -50,7 +50,7 @@ void WidgetHost::setBounds(const Graphics::Rect& bounds)
 void WidgetHost::prepare(Text::GlyphAtlas& atlas)
 {
     if (rootWidget != nullptr)
-        rootWidget->prepareTree(atlas);
+        rootWidget->prepareTree(atlas, rootWidget->bounds());
 }
 
 void WidgetHost::paint(PaintContext& context)

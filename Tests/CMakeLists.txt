@@ -7,6 +7,7 @@ nano_add_executable(ECodeCoreTests
             DocumentTests.cpp
             DocumentEditTests.cpp
             EditorTests.cpp
+            FileTreeTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
             TextFileTests.cpp
@@ -15,7 +16,10 @@ nano_add_executable(ECodeCoreTests
 # Layout, hit-testing, capture and focus are plain logic over rectangles, so the
 # widget layer needs no device either — only what PaintContext's header pulls in.
 nano_add_executable(ECodeUITests
-        SOURCES WidgetTests.cpp
+        SOURCES
+            FileTreeViewTests.cpp
+            ScrollTests.cpp
+            WidgetTests.cpp
         TARGETS ECodeUI)
 
 # Highlighting runs a real grammar and a real query, but still needs no GPU: the

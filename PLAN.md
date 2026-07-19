@@ -2,9 +2,9 @@
 
 **Status:** a working editor. Opens a file, highlights it with tree-sitter,
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
-saves, with external-change detection. The chrome is a widget tree now rather
-than hardcoded rectangles; next are scroll containers and the concrete widgets
-built on them (§7.3). Sections 1–5 are the design and the research behind it;
+saves, with external-change detection. The chrome is a widget tree, and the
+sidebar holds a real file tree you can scroll and open files from. Next are the
+remaining widgets — splitter, overlay, context menu — and the palette (§7.4). Sections 1–5 are the design and the research behind it;
 **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
@@ -59,7 +59,7 @@ ECode/
     FindTreeSitter.cmake
     ECodeWarnings.cmake
   Lib/
-    ECodeCore/              # buffer, edits, undo, selections — no GPU, no platform
+    ECodeCore/              # buffer, edits, undo, selections, file tree model
     ECodeRender/            # glyph renderer, atlas client, paint context + clip
     ECodeUI/                # widget tree, layout, theme (depends on ECodeRender)
   App/
@@ -265,7 +265,7 @@ Still open: gap 3 (IME), 7 (cursor shapes), 9 (UTF-8 helpers), 10 (file watching
 | 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
 | 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
 | 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables. | Cursor movement, selection, backspace all operate on graphemes, not bytes. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. |
-| 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially — ECode polls `File::modificationTime` once a second, which is the placeholder this replaces. |
+| 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially. ECode polls `File::modificationTime` once a second for the open file, and enumerates directories through `std::filesystem` behind `eacp::toStdPath`. The seams FSEvents replaces are `TextFile::hasChangedOnDisk` and `FileTreeModel::refresh`. |
 
 **Not a gap, contrary to first impressions:** instanced rendering is first-class —
 `ShaderProgram::instanceInput(&Instance::field, slot)` + `RenderPass::drawInstanced()`, with a
@@ -482,13 +482,14 @@ the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasteri
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
-**Done in ECode** (155 tests): `Document` with an incremental line index,
+**Done in ECode** (188 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
 loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
 `TextFile`: the file lifecycle, saving included, and `ECodeUI`: the widget
-layer, with the chrome drawn by it rather than hardcoded.
+layer, with the chrome drawn by it rather than hardcoded — scroll containers,
+a virtualised list, and a working file tree in the sidebar.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -602,10 +603,18 @@ Three decisions worth recording, because each went against the obvious version:
   which lines were about to be drawn — and that call is what keeps scrolling
   proportional to the viewport rather than to the file.
 
-**Still to build:** scroll containers on top of `ClipScope`, then the concrete
-widgets that need them — scrollbar, virtualised list, tree, splitter, overlay
-panel, context menu. `PaintContext` has no notion of a popup escaping its
-parent's clip yet; an overlay will have to be a child of the root.
+**Since then:** `ScrollView`, `ScrollBar` and `ListView`. Scrolling turned out
+to need no scrolling code path at all — the content is laid out at full height,
+positioned above its parent by the scroll offset, and the `ClipScope` every
+widget already gets in `paintTree` is what cuts it back. The list virtualises
+off `PaintContext::clip()`, which after intersection *is* the visible band in
+the list's own coordinates, so no separate notion of a viewport is kept.
+
+**Still to build:** splitter, overlay panel, context menu. `PaintContext` has no
+notion of a popup escaping its parent's clip, so an overlay has to be a child of
+the root. The editor still scrolls itself rather than living in a `ScrollView`;
+worth reconciling, but its own scrolling works and is tested, so it is not
+urgent.
 
 **Cleared first, because the widget layer is built on it:** eacp's coordinate
 space is y-down — `isFlipped` backing views, so `View::setBounds` and
@@ -655,8 +664,14 @@ Two things still to get right, because both are painful later:
 
 ### 7.4 IDE chrome, on top of the widget layer
 
-File tree, editor tabs, splitters, status bar contents, find/replace, and the
-command palette. CowTerm's `FuzzyMatch.h` (62 lines, header-only) and its
+**Done:** the file tree, editor tabs and status bar contents. The tree is a
+`FileTreeModel` — a directory listing flattened into rows, so row 4,000 is
+answerable without walking 4,000 nodes — drawn through the virtualised
+`ListView`. Only expanded directories are ever read, so an unexpanded `.git` or
+`build` costs nothing, and expansion is remembered by path so a directory that
+disappears and returns comes back open.
+
+**Still to do:** splitters, find/replace, and the command palette. CowTerm's `FuzzyMatch.h` (62 lines, header-only) and its
 `Palette` peek pattern are directly liftable and MIT-licensed — the peek
 behaviour, where navigating the list live-previews the highlighted item and
 Escape restores, maps straight onto file preview.

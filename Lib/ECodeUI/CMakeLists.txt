@@ -4,6 +4,9 @@
 add_library(ECodeUI STATIC
         Chrome.cpp
         EditorWidget.cpp
+        FileTreeView.cpp
+        ListView.cpp
+        ScrollView.cpp
         UIText.cpp
         Widget.cpp
         WidgetHost.cpp)

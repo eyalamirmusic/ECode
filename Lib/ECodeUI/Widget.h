@@ -58,6 +58,12 @@ public:
     // Position children within bounds(). Called whenever the bounds change.
     virtual void layout() {}
 
+    // Natural height for a given width, for a container that lays out by
+    // content rather than by division — a scroll view sizing its range, a list
+    // sizing itself to its rows. Defaults to the height it already has, which
+    // is the right answer for anything positioned by its parent.
+    virtual float preferredHeight(float width) const;
+
     // --- painting --------------------------------------------------------
 
     // Rasterizes every glyph this widget's next paint will need.
@@ -67,7 +73,14 @@ public:
     // the pass have already bound, and the symptom is text from the previous
     // frame appearing in this one. A widget that draws no text needs nothing
     // here.
-    virtual void prepare(eacp::Text::GlyphAtlas&) {}
+    // `visible` is this widget's bounds already intersected with every
+    // ancestor's, so a virtualised list rasterizes the rows it will actually
+    // draw rather than all of them. It is the same rectangle paint() will see
+    // as its clip, and the two agreeing is what the prepass depends on.
+    virtual void prepare(eacp::Text::GlyphAtlas&, const eacp::Graphics::Rect& visible)
+    {
+        (void) visible;
+    }
 
     virtual void paint(PaintContext&) {}
 
@@ -75,7 +88,8 @@ public:
     // paints, so a child cannot draw outside the widget containing it and a
     // long line stops at the viewport edge rather than under the chrome.
     void paintTree(PaintContext& context);
-    void prepareTree(eacp::Text::GlyphAtlas& atlas);
+    void prepareTree(eacp::Text::GlyphAtlas& atlas,
+                     const eacp::Graphics::Rect& clip);
 
     // --- input -----------------------------------------------------------
 

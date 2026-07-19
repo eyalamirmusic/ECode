@@ -117,7 +117,7 @@ std::size_t EditorWidget::caretColumn() const
 
 // The atlas goes unused because TextRenderer holds its own reference to the
 // same one; the parameter is what every other widget needs.
-void EditorWidget::prepare(Text::GlyphAtlas&)
+void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
 {
     if (renderer == nullptr)
         return;
