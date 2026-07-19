@@ -27,9 +27,21 @@ public:
     // case every line reports as plain text and the editor still works.
     bool isValid() const;
 
-    // Re-parses if the document changed, then computes spans for the given line
-    // range. Call before drawing, with the same range the renderer will draw;
-    // lineStyle() outside that range returns empty.
+    // Tells the highlighter the document changed, so the next update reparses
+    // *incrementally* -- tree-sitter reuses the parts of the tree the edit did
+    // not touch, which is the whole reason for using it over a plain lexer.
+    //
+    // `document` is the state *after* the edit. Without this the alternative is
+    // reparsing the file on every keystroke.
+    void applyEdit(const Document& document, const TextEdit& edit);
+
+    // Discards the tree, so the next update parses from scratch. For opening a
+    // file or any change not described by a TextEdit.
+    void reset();
+
+    // Computes spans for the given line range, parsing first if needed. Call
+    // before drawing, with the same range the renderer will draw; lineStyle()
+    // outside that range returns empty.
     void update(const Document& document,
                 std::size_t firstLine,
                 std::size_t lastLine);

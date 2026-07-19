@@ -134,21 +134,93 @@ struct SyntaxHighlighter::Impl
 
     void reparse(const Document& document)
     {
-        const auto& text = document.text();
+        // A safety net, not the mechanism. Callers are expected to report edits
+        // so the reparse can be incremental; a caller that forgets would
+        // otherwise get silently stale highlighting, which is a much worse
+        // failure than a slow one. Comparing lengths is O(1) and catches the
+        // common case of a document swapped out wholesale. Same-length edits
+        // still slip through, which is why reporting them is the contract.
+        // The tree has to be discarded, not reused: reparsing against a tree
+        // that was never told about the change gives tree-sitter a stale
+        // starting point and a wrong result. An unreported change means we do
+        // not know what to tell it, so the only safe answer is to start over.
+        if (tree != nullptr && document.length() != parsedLength)
+        {
+            ts_tree_delete(tree);
+            tree = nullptr;
+            dirty = true;
+        }
 
-        if (tree != nullptr && text == parsedText)
+        if (tree != nullptr && !dirty)
             return;
 
-        if (tree != nullptr)
-            ts_tree_delete(tree);
+        const auto& text = document.text();
+        auto* previous = tree;
 
-        // Full parse: this is the viewer, with no edits yet. When editing lands
-        // this becomes ts_tree_edit on the old tree plus a re-parse against it.
+        // Parsing against the edited tree is what makes this incremental:
+        // tree-sitter reuses every subtree the edit did not touch. Passing
+        // nullptr instead would reparse the file.
         tree = ts_parser_parse_string(
-            parser, nullptr, text.c_str(), static_cast<std::uint32_t>(text.size()));
+            parser, previous, text.c_str(), static_cast<std::uint32_t>(text.size()));
 
-        parsedText = text;
+        if (previous != nullptr)
+            ts_tree_delete(previous);
+
+        dirty = false;
+        parsedLength = text.size();
         lines.clear();
+    }
+
+    // Advances a point over a run of text, for deriving the edit's end points
+    // without walking the document.
+    static TSPoint advance(TSPoint point, std::string_view text)
+    {
+        for (const auto character: text)
+        {
+            if (character == '\n')
+            {
+                ++point.row;
+                point.column = 0;
+            }
+            else
+            {
+                ++point.column;
+            }
+        }
+
+        return point;
+    }
+
+    void applyEdit(const Document& document, const TextEdit& edit)
+    {
+        if (tree == nullptr)
+        {
+            dirty = true;
+            return;
+        }
+
+        // The edit's start is unchanged by the edit, so its position can come
+        // from the document as it is now. The two end points are that start
+        // advanced over the removed and inserted text respectively -- both
+        // small -- so none of this walks the file.
+        const auto startRow = document.lineAt(edit.start);
+        const auto start =
+            TSPoint {static_cast<std::uint32_t>(startRow),
+                     static_cast<std::uint32_t>(document.columnAt(edit.start))};
+
+        auto change = TSInputEdit {};
+        change.start_byte = static_cast<std::uint32_t>(edit.start);
+        change.old_end_byte =
+            static_cast<std::uint32_t>(edit.start + edit.removed.size());
+        change.new_end_byte =
+            static_cast<std::uint32_t>(edit.start + edit.inserted.size());
+        change.start_point = start;
+        change.old_end_point = advance(start, edit.removed);
+        change.new_end_point = advance(start, edit.inserted);
+
+        // Mutates the tree in place, marking the affected range stale.
+        ts_tree_edit(tree, &change);
+        dirty = true;
     }
 
     void highlight(const Document& document,
@@ -259,12 +331,17 @@ struct SyntaxHighlighter::Impl
     TSQueryCursor* cursor = nullptr;
     TSTree* tree = nullptr;
 
-    std::string parsedText;
     std::vector<TokenKind> captureKinds;
     std::vector<std::vector<TokenKind>> paint;
     std::unordered_map<std::size_t, LineStyle> lines;
 
     bool valid = false;
+
+    // Whether the tree needs reparsing before the next query.
+    bool dirty = true;
+
+    // Length of the text the tree was built from, for the sanity check above.
+    std::size_t parsedLength = 0;
 };
 
 SyntaxHighlighter::SyntaxHighlighter()
@@ -277,6 +354,29 @@ SyntaxHighlighter::~SyntaxHighlighter() = default;
 bool SyntaxHighlighter::isValid() const
 {
     return impl->valid;
+}
+
+void SyntaxHighlighter::applyEdit(const Document& document, const TextEdit& edit)
+{
+    if (!impl->valid)
+        return;
+
+    impl->applyEdit(document, edit);
+}
+
+void SyntaxHighlighter::reset()
+{
+    if (!impl->valid)
+        return;
+
+    if (impl->tree != nullptr)
+    {
+        ts_tree_delete(impl->tree);
+        impl->tree = nullptr;
+    }
+
+    impl->dirty = true;
+    impl->lines.clear();
 }
 
 void SyntaxHighlighter::update(const Document& document,

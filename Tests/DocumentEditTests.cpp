@@ -196,3 +196,112 @@ auto tLengthTracksEdits = test("DocumentEdit/lengthTracksEdits") = []
     document.replace(0, 3, "");
     check(document.length() == 3);
 };
+
+// --- the incremental index against a full rebuild ----------------------------
+//
+// replace() repairs the line index around the edit instead of rescanning the
+// file. That is an optimisation, and the way optimisations fail is by being
+// subtly wrong in a case nobody wrote a test for — so rather than guess at the
+// cases, this compares the incremental result against a freshly-built index
+// after every edit in a long, varied sequence.
+
+namespace
+{
+// The oracle: what the index would be if it were rebuilt from scratch.
+bool indexMatchesRebuild(const Document& document)
+{
+    const auto rebuilt = Document::fromText(document.text());
+
+    if (rebuilt.lineCount() != document.lineCount())
+        return false;
+
+    if (rebuilt.widestLine() != document.widestLine())
+        return false;
+
+    for (std::size_t line = 0; line < rebuilt.lineCount(); ++line)
+        if (rebuilt.line(line) != document.line(line))
+            return false;
+
+    return true;
+}
+} // namespace
+
+auto tIncrementalIndexMatchesRebuild =
+    test("DocumentEdit/incrementalIndexAgreesWithAFullRebuild") = []
+{
+    auto document = Document::fromText("alpha\nbeta\ngamma\ndelta\n");
+
+    // A deterministic but irregular walk: insertions and deletions of varying
+    // size, with and without newlines, at the start, middle and end.
+    const struct
+    {
+        std::size_t start;
+        std::size_t end;
+        const char* text;
+    } edits[] = {
+        {0, 0, "x"}, // insert at the very start
+        {3, 3, "\n"}, // split a line
+        {5, 9, ""}, // delete across a line boundary
+        {2, 2, "one\ntwo\n"}, // insert several lines
+        {0, 4, "\n\n"}, // replace with only newlines
+        {8, 8, "tail"}, // plain insertion
+        {1, 12, "collapse"}, // large replacement spanning lines
+        {0, 0, "\n"}, // newline at the very start
+        {40, 60, ""}, // delete past the end (clamped)
+        {5, 5, "é"}, // multi-byte insertion
+    };
+
+    for (const auto& edit: edits)
+    {
+        document.replace(edit.start, edit.end, edit.text);
+        check(indexMatchesRebuild(document));
+    }
+
+    // And the same after undoing every one of them.
+    auto rebuilt = Document::fromText("alpha\nbeta\ngamma\ndelta\n");
+    auto applied = std::vector<TextEdit> {};
+
+    for (const auto& edit: edits)
+        applied.push_back(rebuilt.replace(edit.start, edit.end, edit.text));
+
+    for (auto edit = applied.rbegin(); edit != applied.rend(); ++edit)
+    {
+        rebuilt.apply(edit->inverted());
+        check(indexMatchesRebuild(rebuilt));
+    }
+
+    check(rebuilt.text() == "alpha\nbeta\ngamma\ndelta\n");
+};
+
+// Deleting the whole document and refilling it is the case most likely to leave
+// a stale index behind.
+auto tIncrementalIndexSurvivesEmptying =
+    test("DocumentEdit/incrementalIndexSurvivesEmptying") = []
+{
+    auto document = Document::fromText("one\ntwo\nthree\n");
+
+    document.replace(0, document.length(), "");
+    check(indexMatchesRebuild(document));
+    check(document.lineCount() == 1);
+
+    document.replace(0, 0, "a\nb\nc");
+    check(indexMatchesRebuild(document));
+    check(document.lineCount() == 3);
+};
+
+// Typing one character at a time through a whole document, which is what the
+// editor actually does.
+auto tIncrementalIndexSurvivesTyping =
+    test("DocumentEdit/incrementalIndexSurvivesCharacterByCharacterTyping") = []
+{
+    auto document = Document::fromText("");
+    const auto source = std::string {"first line\nsecond\n\nfourth line here\n"};
+
+    for (std::size_t index = 0; index < source.size(); ++index)
+    {
+        document.replace(index, index, source.substr(index, 1));
+        check(indexMatchesRebuild(document));
+    }
+
+    check(document.text() == source);
+};

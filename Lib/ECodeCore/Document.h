@@ -67,6 +67,12 @@ public:
 
 private:
     void indexLines();
+    void reindexAfterEdit(std::size_t start,
+                          std::size_t removedLength,
+                          std::string_view inserted);
+
+    static std::size_t lineAtIn(const std::vector<std::size_t>& starts,
+                                std::size_t offset);
 
     std::string contents;
 

@@ -4,6 +4,7 @@
 #include "Document.h"
 #include "TextEdit.h"
 
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -86,6 +87,16 @@ public:
     // Bumped on every change, so a view can tell whether it needs to re-run a
     // highlighter or re-measure without comparing the whole text.
     std::uint64_t version() const { return revision; }
+
+    // Called with every edit as it is applied, including the inverses undo and
+    // redo apply. A syntax engine subscribes to reparse incrementally rather
+    // than rebuilding from the whole text. Non-null by default so the editor
+    // can invoke it without a check.
+    std::function<void(const TextEdit&)> onEdit = [](const TextEdit&) {};
+
+    // Called when the document is replaced wholesale, where an incremental
+    // update makes no sense.
+    std::function<void()> onDocumentReplaced = [] {};
 
 private:
     // Applies an edit through the history so it is undoable, and returns where

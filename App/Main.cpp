@@ -54,6 +54,20 @@ struct EditorView final : GPU::GPUView
         // still draws as plain text.
         if (syntax->isValid())
             highlighter = std::move(syntax);
+
+        // Edits go straight to the syntax engine so it reparses the affected
+        // subtree rather than the file.
+        editor.onEdit = [this](const TextEdit& edit)
+        {
+            if (highlighter != nullptr)
+                highlighter->applyEdit(editor.document(), edit);
+        };
+
+        editor.onDocumentReplaced = [this]
+        {
+            if (highlighter != nullptr)
+                highlighter->reset();
+        };
     }
 
     void openFile(const FilePath& path)

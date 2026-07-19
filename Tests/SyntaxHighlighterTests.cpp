@@ -241,9 +241,8 @@ auto tRangeCanMove = test("Syntax/movingTheRangeRecomputes") = []
     check(highlighter.lineStyle(2).empty()); // the old range is gone
 };
 
-// Re-parsing on a changed document, and not re-parsing when it has not changed,
-// both have to work — the second is what keeps scrolling off the parser.
-auto tHandlesDocumentChanges = test("Syntax/reparsesWhenTheDocumentChanges") = []
+// reset() discards the tree, for a document replaced wholesale.
+auto tResetReparsesFromScratch = test("Syntax/resetReparsesANewDocument") = []
 {
     auto highlighter = SyntaxHighlighter {};
 
@@ -255,8 +254,90 @@ auto tHandlesDocumentChanges = test("Syntax/reparsesWhenTheDocumentChanges") = [
     check(kindOf(highlighter, first, 0, "int") == TokenKind::Type);
 
     const auto second = Document::fromText("// now a comment\n");
+    highlighter.reset();
     highlighter.update(second, 0, 1);
     check(kindOf(highlighter, second, 0, "//") == TokenKind::Comment);
+};
+
+// The safety net: a caller that swaps the document without saying so still gets
+// correct highlighting, as long as the length changed. Reporting edits is the
+// contract, but silently stale colours are a worse failure than a slow reparse.
+auto tDetectsAnUnreportedSwap = test("Syntax/detectsAnUnreportedDocumentSwap") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    const auto first = Document::fromText("int a = 1;\n");
+    highlighter.update(first, 0, 1);
+
+    const auto second = Document::fromText("// a comment of a different length\n");
+    highlighter.update(second, 0, 1); // no reset, no applyEdit
+
+    check(kindOf(highlighter, second, 0, "//") == TokenKind::Comment);
+};
+
+// Incremental reparse must agree with a fresh one. The oracle check: the whole
+// point of ts_tree_edit is reusing untouched subtrees, and the way that fails is
+// by producing *almost* the right tree.
+auto tIncrementalMatchesFullParse =
+    test("Syntax/incrementalReparseMatchesAFullParse") = []
+{
+    auto incremental = SyntaxHighlighter {};
+
+    if (!incremental.isValid())
+        return;
+
+    auto document = Document::fromText("int value = 1;\n"
+                                       "// a comment\n"
+                                       "void run() { return; }\n");
+
+    incremental.update(document, 0, document.lineCount());
+
+    // A varied sequence: inside a token, at a boundary, adding and removing a
+    // line, and turning code into a comment.
+    const struct
+    {
+        std::size_t start;
+        std::size_t end;
+        const char* text;
+    } edits[] = {
+        {4, 9, "counter"}, // rename an identifier
+        {0, 3, "double"}, // change the type
+        {0, 0, "// lead\n"}, // insert a line at the top
+        {0, 8, ""}, // and take it away again
+        {0, 0, "/*"}, // open a block comment: a big tree change
+        {2, 2, "*/"}, // and close it
+    };
+
+    for (const auto& edit: edits)
+    {
+        const auto applied = document.replace(edit.start, edit.end, edit.text);
+        incremental.applyEdit(document, applied);
+        incremental.update(document, 0, document.lineCount());
+
+        // A highlighter that has never seen an edit, parsing the same text.
+        auto fresh = SyntaxHighlighter {};
+        fresh.update(document, 0, document.lineCount());
+
+        for (std::size_t line = 0; line < document.lineCount(); ++line)
+        {
+            const auto& incrementalSpans = incremental.lineStyle(line);
+            const auto& freshSpans = fresh.lineStyle(line);
+
+            check(incrementalSpans.size() == freshSpans.size());
+
+            for (std::size_t span = 0;
+                 span < incrementalSpans.size() && span < freshSpans.size();
+                 ++span)
+            {
+                check(incrementalSpans[span].start == freshSpans[span].start);
+                check(incrementalSpans[span].length == freshSpans[span].length);
+                check(incrementalSpans[span].kind == freshSpans[span].kind);
+            }
+        }
+    }
 };
 
 auto tEmptyDocumentIsSafe = test("Syntax/emptyDocumentProducesNoSpans") = []

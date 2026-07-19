@@ -10,6 +10,8 @@ void Editor::setDocument(Document documentToUse)
     caret = {};
     history.clear();
     ++revision;
+
+    onDocumentReplaced();
 }
 
 std::size_t
@@ -19,6 +21,8 @@ std::size_t
 
     history.record(edit);
     ++revision;
+
+    onEdit(edit);
 
     return edit.insertedEnd();
 }
@@ -106,7 +110,10 @@ void Editor::undo()
         return;
 
     for (const auto& edit: edits)
+    {
         doc.apply(edit);
+        onEdit(edit);
+    }
 
     // Land where the change was, so undoing scrolls back to what it changed
     // rather than leaving the caret somewhere unrelated.
@@ -122,7 +129,10 @@ void Editor::redo()
         return;
 
     for (const auto& edit: edits)
+    {
         doc.apply(edit);
+        onEdit(edit);
+    }
 
     caret.moveTo(std::min(edits.back().insertedEnd(), doc.length()));
     ++revision;
