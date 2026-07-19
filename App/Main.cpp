@@ -201,11 +201,6 @@ struct EditorView final : GPU::GPUView
 
         registerCommands();
         bindKeys();
-
-        // After both, since every item takes its title from the registry and
-        // its shortcut from the keymap.
-        installMenuBar();
-
         connectFindBar();
 
         layout.palette.onClosed = [this]
@@ -838,7 +833,13 @@ struct EditorView final : GPU::GPUView
         repaint();
     }
 
-    void installMenuBar()
+    // Built here and installed by App, which is the half that owns a window.
+    //
+    // The split is not bookkeeping: a menu bar belongs to a window on Windows
+    // and to the application on macOS, so eacp takes a window either way — and
+    // this view has the registry and the keymap the menus are made of but no
+    // window at all. It says what the menus are; App says where they go.
+    Graphics::MenuBar menuBar()
     {
         const auto menus = defaultMenus();
 
@@ -862,7 +863,7 @@ struct EditorView final : GPU::GPUView
                  .menus)
             bar.add(std::move(menu));
 
-        Graphics::setApplicationMenuBar(bar);
+        return bar;
     }
 
     // The chords that belong to the window rather than to whatever has focus.
@@ -1044,6 +1045,10 @@ struct App
     App()
     {
         window.setContentView(view);
+
+        // After the window exists, because that is what the menu bar attaches
+        // to on the platforms that own menus per window.
+        Graphics::setApplicationMenuBar(view.menuBar(), window);
 
         view.onTitleChanged = [this](const std::string& text)
         { window.setTitle(text); };

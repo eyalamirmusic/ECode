@@ -502,12 +502,13 @@ contradict each other on any non-QWERTY layout.
 Everything through M4 is done and verified on screen. Commit hashes are in the
 log; this is the shape of it.
 
-**Done in eacp** (552 tests): scissor rects, macOS scroll-wheel delivery with
+**Done in eacp** (571 tests): scissor rects, macOS scroll-wheel delivery with
 precise/momentum plumbing, backing-scale notification, texture sub-region
 upload, `constexpr` colours, `ShaderProgram::prepare`'s blend mode, clipboard
 `getText`/`hasText`, the missing key codes, `Files::writeFileAtomically` and
 `File::modificationTime`, the y-down fix to `Graphics::Rect`, **menu-item
-enablement**, **cursor shapes**, and the whole `eacp-text` module — rasterizer/atlas split,
+enablement**, **cursor shapes**, **the Windows menu bar**, and the whole
+`eacp-text` module — rasterizer/atlas split,
 per-glyph bearings, R8 mask + RGBA colour atlases, growth over eviction,
 incremental upload, and `Text::GlyphRenderer`.
 
@@ -553,6 +554,81 @@ plumbing — including an end-to-end check of the enum-to-`NSCursor` mapping via
 `NSCursor.currentCursor`, and that no two shapes collapse onto the same cursor.
 `Apps/Graphics/CursorShapes` is the live example: five bands in one view, the
 shape following the pointer across them. Confirmed red without the change.
+
+**The Windows menu bar**, which had never existed: `setApplicationMenuBar` was
+an empty function body there, so ECode built its whole bar and handed it to
+something that discarded it. macOS was the only backend that ever did anything.
+
+The API now takes a window, and that is what made it implementable. macOS has an
+*application* menu bar shown for whichever window is active, so the argument is
+ignored there; Windows has no such thing — a menu belongs to an HWND and is drawn
+in that window's frame — so it has to be told which one.
+
+**The interesting part is how much of it is testable.** Win32 identifies menu
+items by integer command id, so the implementation splits into a table (ids,
+labels, accelerator text, id → action) and a thin shell of `CreateMenu` /
+`AppendMenuW` / `SetMenu` calls. The table is portable, lives in
+`MenuCommands.h`, and is tested on macOS by 16 tests; only the shell is
+unverifiable from here. That split is `App-Windows-FilePicker.h`'s trick, which
+this repo already used for the same reason — an untestable modal with testable
+logic around it.
+
+The property those tests really pin is one no single function owns: the builder
+walks the tree assigning ids as it appends, and `flattenCommands` walks it again
+assigning ids as it collects. Neither knows about the other — they agree only
+because they agree on the *order*. Separators, submenu headers and
+responder-selector items all have to be skipped identically by both, and an
+off-by-one there means the menu silently runs the wrong command.
+
+Two other things worth recording:
+
+- **Greying happens on `WM_INITMENUPOPUP`**, which is where Win32 asks the
+  question `validateMenuItem:` answers on macOS. `EnableMenuItem` with
+  `MF_BYCOMMAND` searches from the root, so every item updates without tracking
+  which popup is opening — and the app still installs its bar once.
+- **`standardEditMenu` cannot be the same menu on both platforms.** The macOS
+  one routes Cut/Copy/Paste down the responder chain with selectors, which
+  Windows has no equivalent for. The Windows version carries labels and
+  accelerators but no actions, and an app wanting working entries builds them
+  from its own commands — which is what ECode does.
+
+**Not verified on Windows.** No machine here can compile it — `Menu-Windows.cpp`
+and the `WndProc` routing are `if (WIN32)` and the macOS and iOS builds never
+touch them. So it went through an adversarial read instead, which found no
+compile errors but seven real behaviour bugs. Six are fixed; the ones worth
+recording:
+
+- **`SetMenu` steals the client area.** The window is sized before it has a
+  menu (`AdjustWindowRectExForDpi` with `bMenu = FALSE`, correctly, at creation
+  time), and adding the bar takes its height straight out of the client rect —
+  so the content came up a menu-bar shorter than it asked for, with the bottom
+  clipped until the first resize. Measured and given back rather than
+  calculated: the bar wraps to two rows on a narrow window and `SM_CYMENU` only
+  ever describes one.
+- **`HIWORD(wParam) == 0` is not "this came from a menu".** For a control
+  notification that is the notification code, and `BN_CLICKED` is also 0. The
+  documented test is `lParam == 0`, and eacp does host child HWNDs.
+- **`&` in a title is a mnemonic prefix**, so "Find & Replace" drew as
+  "Find _Replace". Escaped on the Win32 path only — macOS wants the raw string
+  and the same `MenuBar` is built for both.
+- **Two walks assigning the same ids is a bad shape**, and it had already gone
+  wrong: the builder asked "separator?" first and `flattenCommands` asked
+  "submenu?" first, so an item carrying both flags consumed no ids in one walk
+  and gave ids to a whole subtree in the other — every id after it naming a
+  different command. Both now switch on one `classifyMenuEntry`, so they agree
+  structurally rather than by having been written to match. The comment claiming
+  the tests covered that agreement was, before this, simply false.
+
+**What the review also found is that a whole file was unnecessary**:
+`Window::getHandle()` was already public and already returned the HWND, so the
+friend-access seam invented for this was deleted along with the change to
+`Window.h`.
+
+Left undone, and the reason: **Alt+F does not open the File menu.** Win32
+assigns no mnemonics — a title needs an explicit `&` — and separately
+`takePendingCharacters` drains `WM_SYSCHAR` before `DefWindowProc` can match
+one. That is pre-existing keyboard plumbing rather than menu work, and guessing
+at it blind is how the other six bugs would have got in.
 
 **Done in ECode** (405 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
@@ -1043,7 +1119,9 @@ string does.
 ### 7.7 Carried over, not forgotten
 
 - **Windows renders no text.** `GlyphRasterizer-Windows.cpp` is a documented
-  stub returning `isValid() == false`. The porting notes are in its header.
+  stub returning `isValid() == false`. The porting notes are in its header, and
+  this is the first thing standing between ECode and Windows — ahead of the menu
+  bar, which now exists.
 - **Gamma-correct blending.** Planned in M2 and not done. This is the difference
   between "looks native" and "looks slightly off", worst on light-on-dark. It
   needs the per-cell background colour plumbed into the glyph shader, which is
@@ -1052,6 +1130,15 @@ string does.
   Fira Code's `=>` needs CoreText/DirectWrite line shaping behind the existing
   seam, plus a run cache — Ghostty measured shaping at 96% of frame time before
   adding one.
+- **`command` is the Windows key on Windows.** `Keyboard::isCommandPressed`
+  reports `VK_LWIN`/`VK_RWIN`, so every ECode binding — all of which are
+  `cmd+…` — needs Win+S rather than Ctrl+S there. The menu bar prints "Ctrl+S",
+  because that is the convention and Win32 accelerator text is decorative
+  either way, so the two currently disagree. The fix is to make `command` mean
+  the platform's primary accelerator modifier (Ctrl on Windows), which is what
+  every cross-platform toolkit does — but it changes keyboard semantics
+  framework-wide, touching `GlobalHotKey` and `TextInput`, so it is a decision
+  rather than a patch.
 - **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
   diagnostics, completion and go-to-definition after the chrome exists.
 - **macOS injects items into menus it recognises by name.** The Edit menu comes
