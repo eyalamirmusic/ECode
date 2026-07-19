@@ -35,6 +35,11 @@ public:
     // wiring testable without a device.
     const FileTreeModel& treeModel() const { return model; }
 
+    // What inside the tree takes the keyboard. A scroll view is not itself a
+    // focus stop — what the arrow keys drive is the list inside it — so a
+    // focus-the-explorer command needs to be pointed at that rather than here.
+    Widget& keyboardTarget() { return list; }
+
 private:
     void rowClicked(std::size_t index);
     void paintRow(PaintContext& context,

@@ -2,9 +2,11 @@
 
 **Status:** a working editor. Opens a file, highlights it with tree-sitter,
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
-saves, with external-change detection. The chrome is a widget tree, and the
-sidebar holds a real file tree you can scroll and open files from. Next are the
-remaining widgets — splitter, overlay, context menu — and the palette (§7.4). Sections 1–5 are the design and the research behind it;
+saves, with external-change detection. The chrome is a widget tree, the sidebar
+holds a real file tree you can scroll and open files from, and every command is
+named in a registry that a keymap and a fuzzy-matching command palette both read
+from. Next are the remaining widgets — splitter and context menu — and find /
+replace (§7.4). Sections 1–5 are the design and the research behind it;
 **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
@@ -440,15 +442,18 @@ Down and all Drag/Up route to it, which is exactly what splitter dragging and te
 `clickCount` is present for double/triple-click word and line selection.
 
 Built: widget base + layout pass, focus traversal, scroll view + scrollbar, virtualised list,
-tree view, tab bar, status bar. Still to build: splitter, popup/overlay, in-window context menu
+tree view, tab bar, status bar, and the command palette — the first overlay. Still to build:
+splitter, in-window context menu
 (`Graphics::Menu` is the native menu bar only — no `popup(at:)`), minimap, tooltip,
 animation/easing, and hover states — no widget tracks the pointer yet, so nothing highlights
 under it.
 
-Lift from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer) and `Palette` — a command
-palette almost for free. Its **peek** pattern (navigating the list live-switches the background
-view, Enter commits, Esc restores) maps directly onto file-preview-on-highlight.
-`SessionView`'s recursive split-pane tree maps onto editor groups.
+Lifted from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer), now returning matched
+positions as well as a score so the palette can tint the characters the query hit. Its **peek**
+pattern (navigating the list live-switches the background view, Enter commits, Esc restores) was
+*not* taken — it means nothing for a list of commands, but maps directly onto
+file-preview-on-highlight and is still worth having there. `SessionView`'s recursive split-pane
+tree maps onto editor groups.
 
 ### Config and theming
 
@@ -465,8 +470,20 @@ to name a command. Do not inherit this. Build a **command registry** plus a keym
 (`{"keys": "cmd+shift+p", "command": "workbench.showPalette", "when": "editorFocus"}`) from day
 one; the palette then enumerates the registry for free.
 
+**Done** — `CommandRegistry` in `ECodeCore` and `Keymap` in `ECodeUI`, split
+there because a keymap has to speak `Graphics::KeyEvent` and the registry is
+pure model. Bindings hold command *ids* rather than callables, so a binding for
+a command that does not exist is a dead entry rather than a dangling reference,
+and the same table can be read from a config file before the registry is
+populated. `when` clauses are the one piece not built; see §7.4 for what stands
+in for them.
+
 Steal one detail: `charactersIgnoringModifiers` is the correct field for matching shortcuts (so
 Cmd+C is "c" on any layout) while `characters` is the correct field for text insertion.
+
+That is right for letters and digits and wrong for everything else, which took a
+test to find out — §7.4 has the correction and why the two halves of it
+contradict each other on any non-QWERTY layout.
 
 ---
 
@@ -484,14 +501,16 @@ the y-down fix to `Graphics::Rect`, and the whole `eacp-text` module — rasteri
 R8 mask + RGBA colour atlases, growth over eviction, incremental upload, and
 `Text::GlyphRenderer`.
 
-**Done in ECode** (188 tests): `Document` with an incremental line index,
+**Done in ECode** (245 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
 loop — keys, mouse, selection, undo, clipboard, blink, scroll-to-caret —
-`TextFile`: the file lifecycle, saving included, and `ECodeUI`: the widget
+`TextFile`: the file lifecycle, saving included, `ECodeUI`: the widget
 layer, with the chrome drawn by it rather than hardcoded — scroll containers,
-a virtualised list, and a working file tree in the sidebar.
+a virtualised list, and a working file tree in the sidebar — and the command
+layer: `CommandRegistry`, `Keymap`, `FuzzyMatch` and a `CommandPalette` that
+reads both.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -619,11 +638,12 @@ widget already gets in `paintTree` is what cuts it back. The list virtualises
 off `PaintContext::clip()`, which after intersection *is* the visible band in
 the list's own coordinates, so no separate notion of a viewport is kept.
 
-**Still to build:** splitter, overlay panel, context menu. `PaintContext` has no
-notion of a popup escaping its parent's clip, so an overlay has to be a child of
-the root. The editor still scrolls itself rather than living in a `ScrollView`;
-worth reconciling, but its own scrolling works and is tested, so it is not
-urgent.
+**Still to build:** splitter and context menu. The overlay is done — the
+command palette is one, and `ListView::setFocusable` came out of it: a list
+inside something that owns the keyboard itself must not be a focus stop, or
+clicking a row moves focus off its owner and the next keystroke goes nowhere.
+The editor still scrolls itself rather than living in a `ScrollView`; worth
+reconciling, but its own scrolling works and is tested, so it is not urgent.
 
 **Cleared first, because the widget layer is built on it:** eacp's coordinate
 space is y-down — `isFlipped` backing views, so `View::setBounds` and
@@ -684,15 +704,59 @@ answerable without walking 4,000 nodes — drawn through the virtualised
 `build` costs nothing, and expansion is remembered by path so a directory that
 disappears and returns comes back open.
 
-**Still to do:** splitters, find/replace, and the command palette. CowTerm's `FuzzyMatch.h` (62 lines, header-only) and its
-`Palette` peek pattern are directly liftable and MIT-licensed — the peek
-behaviour, where navigating the list live-previews the highlighted item and
-Escape restores, maps straight onto file preview.
+**Also done: the command layer and the palette.** The registry did come with
+the palette rather than after it, which was the right call — ⌘⇧P works because
+the palette enumerates `CommandRegistry` and prints what `Keymap::chordFor`
+says runs each entry, and neither holds a list anyone maintains by hand.
+`Main.cpp`'s if-chain of Cmd chords is gone: `registerCommands()` names twelve
+commands and `bindKeys()` is a table of ten bindings.
 
-A command registry should come with the palette rather than after it: bindings
-name commands (`{"keys": "cmd+shift+p", "command": "workbench.showPalette"}`),
-the palette enumerates the registry, and neither needs a hand-maintained list.
-CowTerm's three unrelated keybinding mechanisms are the counter-example.
+CowTerm's `FuzzyMatch.h` was lifted as planned, with one addition — it returns
+*where* it matched, so the palette tints the characters the query hit rather
+than the whole row. Its `Palette` peek pattern was not taken: peek live-swaps
+the background view, which is worth having for file preview and means nothing
+for a list of commands.
+
+Four decisions worth recording:
+
+- **A chord is identified by what the key produced, not by which key it was.**
+  The plan said match on `charactersIgnoringModifiers`, and eacp's own
+  `KeyCode` header says the opposite for punctuation — a character is wrong
+  there, since `Cmd+Shift+/` arrives as "?" and no binding written `/` matches
+  it. Both are right, and they collide on any layout where a key at a
+  punctuation *position* types a letter, which is most of the non-QWERTY ones.
+  Asking what came out settles it: a letter or digit identifies itself, and
+  anything else defers to the code. A test written for the Dvorak case is what
+  forced this — it went red against a first version that checked the code
+  first, and the failure it describes is silent, since a binding that never
+  matches simply does nothing.
+- **Shift is folded out of the character.** macOS delivers `Cmd+Shift+P` as
+  "P", so a chord that kept it would have two spellings and only one would
+  match. It lives in the modifiers alone.
+- **A shortcut that has been rebound is not printed.** `chordFor` checks that
+  the binding it found is still the one that wins, because the alternative is
+  the palette telling someone to press a key that now does something else.
+- **The palette is modal while open, and that is a special case rather than a
+  mechanism.** Everything except a command chord reaches it before the keymap
+  does, so a binding without a modifier would be typed into the query rather
+  than fired. This is the job a VSCode `when` clause does; contexts belong with
+  the config file, and one overlay did not justify inventing them early.
+
+**Verified off-screen, not on a real screen** — and the distinction matters
+here, because §7.1's file-lifecycle work was driven with synthesized keystrokes
+against a live window and this was not. `Tests/PaletteRenderTests.cpp` renders
+the palette through the real widget host and reads the pixels back, which is
+what answers the two questions logic tests cannot: the backdrop dims rather
+than covers, and the matched characters come out tinted. What that leaves
+unconfirmed is the part only a person can judge — whether ⌘⇧P *feels* right,
+whether the box sits at a sensible height, whether the dimming is too strong.
+Worth ten seconds in the running app.
+
+**Still to do here:** splitters, find/replace, and an in-window context menu.
+The palette is the first overlay, and it confirms the shape the others want: a
+child of the root laid out over the whole window, because `PaintContext` has no
+notion of a layer escaping its parent's clip and covering the window is also
+what makes a click outside dismiss it.
 
 ### 7.5 IME — the largest remaining framework gap
 
@@ -810,5 +874,27 @@ Recorded because each of these cost something to find out.
 - **GPU state with no CPU-side observable is tested by drawing.** Scissor rects,
   blend modes and glyph colour all return nothing queryable; render off-screen
   with `renderToImage` and assert on pixels.
+- **An 8-bit drawable makes "slightly" free, so never assert on "slightly".**
+  The palette's backdrop is meant to *dim* what is behind it, and the test for
+  it asked whether the pixel came back darker than the panel underneath. It
+  passed with the backdrop deleted outright: `0.102f` written into an 8-bit
+  target reads back as `0.10196`, so a plain `<` holds on rounding alone. The
+  fix is to demand a margin the effect comfortably clears and quantisation
+  cannot — the backdrop is 45% black, so a fifth is not close to either. The
+  general form: when a test compares a rendered value against the value that
+  was written, the round trip is not lossless, and a strict inequality is
+  satisfied by the loss.
+- **A whole-row highlight swallows an ink count.** Counting pixels that differ
+  from a region's background says nothing about the region if something already
+  covers all of it — the palette's selected row is tinted edge to edge, so
+  "more ink with the shortcut than without" came out equal. Two renders
+  compared against *each other* over the column in question answered it, plus
+  the complementary check that the rest of the row is byte-identical, so the
+  difference is a shortcut appearing rather than the row shifting.
+- **A sort of equal elements cannot be caught being unstable.** libc++ leaves
+  an all-equal range where it found it, so a stability test built from
+  identically-scoring commands passes against `std::sort` at any length. It
+  takes two score classes interleaved, so the ties genuinely have to be carried
+  past each other.
 - **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
   shader — passed every test that existed and was obvious in one screenshot.

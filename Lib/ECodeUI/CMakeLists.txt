@@ -3,8 +3,10 @@
 # and the glyph batch live.
 add_library(ECodeUI STATIC
         Chrome.cpp
+        CommandPalette.cpp
         EditorWidget.cpp
         FileTreeView.cpp
+        Keymap.cpp
         ListView.cpp
         ScrollView.cpp
         UIText.cpp

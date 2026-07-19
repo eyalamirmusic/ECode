@@ -2,6 +2,7 @@
 # testable without a window, and so the buffer can be swapped for a rope later
 # without the renderer noticing.
 add_library(ECodeCore STATIC
+        Commands.cpp
         Cursor.cpp
         Document.cpp
         Editor.cpp

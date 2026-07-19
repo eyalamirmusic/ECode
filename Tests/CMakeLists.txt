@@ -4,6 +4,7 @@ find_package(NanoTest REQUIRED)
 
 nano_add_executable(ECodeCoreTests
         SOURCES
+            CommandTests.cpp
             DocumentTests.cpp
             DocumentEditTests.cpp
             EditorTests.cpp
@@ -17,7 +18,9 @@ nano_add_executable(ECodeCoreTests
 # widget layer needs no device either — only what PaintContext's header pulls in.
 nano_add_executable(ECodeUITests
         SOURCES
+            CommandPaletteTests.cpp
             FileTreeViewTests.cpp
+            KeymapTests.cpp
             ScrollTests.cpp
             WidgetTests.cpp
         TARGETS ECodeUI)
@@ -35,6 +38,7 @@ nano_add_executable(ECodeRenderTests
         NO_MAIN
         SOURCES
             ChromeRenderTests.cpp
+            PaletteRenderTests.cpp
             RenderIntegrationTests.cpp
             TestMain.cpp
         TARGETS ECodeSyntax ECodeUI)   # ECodeUI links ECodeRender publicly

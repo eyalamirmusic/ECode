@@ -60,10 +60,16 @@ public:
     // scrolling out of view. -1 when the selection was cleared.
     std::function<void(int row)> onSelectionChanged = [](int) {};
 
+    // A list inside something that owns the keyboard itself opts out of focus:
+    // in the command palette the query field is what has focus and the list
+    // only follows it, so a click on a row must not move focus off the owner
+    // and leave the next keystroke going nowhere.
+    void setFocusable(bool shouldTakeFocus) { focusable = shouldTakeFocus; }
+
     float preferredHeight(float width) const override;
 
     bool wantsMouse() const override { return true; }
-    bool acceptsFocus() const override { return true; }
+    bool acceptsFocus() const override { return focusable; }
 
     void prepare(eacp::Text::GlyphAtlas& atlas,
                  const eacp::Graphics::Rect& visible) override;
@@ -76,5 +82,6 @@ private:
     std::size_t rows = 0;
     float height = 22.f;
     int selected = -1;
+    bool focusable = true;
 };
 } // namespace ecode

@@ -1,6 +1,8 @@
 #include <ECodeUI/Chrome.h>
+#include <ECodeUI/CommandPalette.h>
 #include <ECodeUI/EditorWidget.h>
 #include <ECodeUI/FileTreeView.h>
+#include <ECodeUI/Keymap.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
@@ -42,8 +44,11 @@ FilePath fileToOpen()
 // are y-down.
 struct WindowLayout final : Widget
 {
-    explicit WindowLayout(TextFile& file)
+    WindowLayout(TextFile& file,
+                 const CommandRegistry& commands,
+                 const Keymap& keymap)
         : editor(file)
+        , palette(theme, commands, keymap)
     {
         addChild(activityBar);
         addChild(sidebar);
@@ -51,10 +56,19 @@ struct WindowLayout final : Widget
         addChild(tabs);
         addChild(status);
         addChild(editor);
+
+        // Last, so it paints over everything and widgetAt finds it first.
+        addChild(palette);
     }
 
     void layout() override
     {
+        // The palette is laid *over* the window rather than given a slice of
+        // it: it is an overlay, and covering the whole window is what makes a
+        // click anywhere outside its box dismiss it without a second widget to
+        // catch those clicks.
+        palette.setBounds(bounds());
+
         auto area = bounds();
 
         // The status bar comes off first so it spans the whole window, under
@@ -92,6 +106,7 @@ struct WindowLayout final : Widget
     TabBar tabs {theme};
     StatusBar status {theme};
     EditorWidget editor;
+    CommandPalette palette;
 };
 
 struct EditorView final : GPU::GPUView
@@ -106,6 +121,19 @@ struct EditorView final : GPU::GPUView
 
         host.setRoot(layout);
         layout.onRepaintNeeded = [this] { repaint(); };
+
+        registerCommands();
+        bindKeys();
+
+        layout.palette.onClosed = [this]
+        {
+            // Back to whatever was being worked in. Falling back to the editor
+            // rather than to nothing: a window with focus nowhere swallows the
+            // next keystroke silently.
+            host.setFocus(focusBeforePalette != nullptr ? focusBeforePalette
+                                                        : &layout.editor);
+            repaint();
+        };
 
         openFile(fileToOpen());
 
@@ -155,6 +183,136 @@ struct EditorView final : GPU::GPUView
     }
 
     Editor& editor() { return file.editor(); }
+
+    // Everything the editor can be asked to do, named once. The keymap points
+    // at these ids and the palette lists them, so a command added here shows up
+    // in both without either holding a list of its own — which is the whole
+    // reason the registry exists rather than the if-chain this replaced.
+    //
+    // Registration order is the palette's order for an empty query, so it runs
+    // most-reached-for first rather than alphabetically.
+    void registerCommands()
+    {
+        commands.add({"workbench.showPalette",
+                      "Show All Commands",
+                      [this] { togglePalette(); }});
+
+        commands.add({"file.save", "File: Save", [this] { saveFile(); }});
+
+        commands.add({"file.revert",
+                      "File: Revert File",
+                      [this] { revertFile(); },
+                      [this] { return file.isDirty(); }});
+
+        commands.add({"edit.undo",
+                      "Edit: Undo",
+                      [this] { editor().undo(); },
+                      [this] { return editor().canUndo(); }});
+
+        commands.add({"edit.redo",
+                      "Edit: Redo",
+                      [this] { editor().redo(); },
+                      [this] { return editor().canRedo(); }});
+
+        commands.add({"edit.cut",
+                      "Edit: Cut",
+                      [this] { cutOrCopy(true); },
+                      [this] { return !editor().selectedText().empty(); }});
+
+        commands.add({"edit.copy",
+                      "Edit: Copy",
+                      [this] { cutOrCopy(false); },
+                      [this] { return !editor().selectedText().empty(); }});
+
+        commands.add({"edit.paste",
+                      "Edit: Paste",
+                      [this] { paste(); },
+                      [] { return Clipboard::hasText(); }});
+
+        commands.add({"edit.selectAll",
+                      "Edit: Select All",
+                      [this] { editor().selectAll(); }});
+
+        commands.add({"view.focusEditor",
+                      "View: Focus Editor",
+                      [this] { host.setFocus(&layout.editor); }});
+
+        commands.add({"view.focusExplorer",
+                      "View: Focus Explorer",
+                      [this] { host.setFocus(&layout.files.keyboardTarget()); }});
+
+        commands.add({"view.refreshExplorer",
+                      "View: Refresh Explorer",
+                      [this] { layout.files.refresh(); }});
+    }
+
+    // The default keymap. A table rather than a chain of ifs, and the shape a
+    // config file will be read into — which is why bindings name commands by id
+    // instead of holding the callable.
+    void bindKeys()
+    {
+        keymap.bind("cmd+shift+p", "workbench.showPalette");
+        keymap.bind("cmd+s", "file.save");
+        keymap.bind("cmd+z", "edit.undo");
+        keymap.bind("cmd+shift+z", "edit.redo");
+        keymap.bind("cmd+x", "edit.cut");
+        keymap.bind("cmd+c", "edit.copy");
+        keymap.bind("cmd+v", "edit.paste");
+        keymap.bind("cmd+a", "edit.selectAll");
+        keymap.bind("cmd+1", "view.focusEditor");
+        keymap.bind("cmd+shift+e", "view.focusExplorer");
+    }
+
+    void togglePalette()
+    {
+        if (layout.palette.isOpen())
+        {
+            layout.palette.hide();
+            return;
+        }
+
+        focusBeforePalette = host.focused();
+
+        layout.palette.show();
+        host.setFocus(&layout.palette);
+
+        repaint();
+    }
+
+    void cutOrCopy(bool removeSelection)
+    {
+        const auto selected = editor().selectedText();
+
+        if (selected.empty())
+            return;
+
+        Clipboard::copyText(selected);
+
+        if (removeSelection)
+            editor().backspace();
+    }
+
+    void paste()
+    {
+        if (!Clipboard::hasText())
+            return;
+
+        // A paste is one undo step whatever it contains, so it never merges
+        // with typing either side of it.
+        editor().breakUndoStep();
+        editor().insert(Clipboard::getText());
+        editor().breakUndoStep();
+    }
+
+    void revertFile()
+    {
+        file.reload();
+
+        conflicted = false;
+
+        updateChrome();
+        repaint();
+    }
 
     void openFile(const FilePath& path)
     {
@@ -317,65 +475,33 @@ struct EditorView final : GPU::GPUView
     }
 
     // The chords that belong to the window rather than to whatever has focus.
-    // Matched on charactersIgnoringModifiers so Cmd+C is "c" on any layout.
     bool handleShortcut(const Graphics::KeyEvent& event)
     {
-        if (!event.modifiers.command)
-            return false;
-
-        const auto& key = event.charactersIgnoringModifiers;
-
-        if (key == "z")
+        if (const auto id = keymap.commandFor(event); !id.empty())
         {
-            event.modifiers.shift ? editor().redo() : editor().undo();
-            return true;
-        }
-
-        if (key == "a")
-        {
-            editor().selectAll();
-            return true;
-        }
-
-        if (key == "s")
-        {
-            saveFile();
-            return true;
-        }
-
-        if (key == "c" || key == "x")
-        {
-            if (const auto selected = editor().selectedText(); !selected.empty())
-            {
-                Clipboard::copyText(selected);
-
-                if (key == "x")
-                    editor().backspace();
-            }
-
-            return true;
-        }
-
-        if (key == "v")
-        {
-            if (Clipboard::hasText())
-            {
-                // A paste is one undo step whatever it contains, so it never
-                // merges with typing either side of it.
-                editor().breakUndoStep();
-                editor().insert(Clipboard::getText());
-                editor().breakUndoStep();
-            }
-
+            // Consumed whether or not the command could run: a disabled undo
+            // must not fall through and arrive in the document as a "z".
+            commands.run(id);
             return true;
         }
 
         // Any other Cmd chord is swallowed rather than typed as text.
-        return true;
+        return event.modifiers.command;
     }
 
     void keyDown(const Graphics::KeyEvent& event) override
     {
+        // The palette is modal while it is open, so everything except a command
+        // chord reaches it before the keymap does — otherwise a binding without
+        // a modifier would fire instead of being typed into the query. This is
+        // the job a keymap `when` clause does in VSCode; until contexts exist,
+        // one overlay is a special case rather than a mechanism.
+        if (layout.palette.isOpen() && !event.modifiers.command)
+        {
+            host.keyDown(event);
+            return;
+        }
+
         if (handleShortcut(event))
         {
             layout.editor.wake();
@@ -435,8 +561,17 @@ struct EditorView final : GPU::GPUView
     TextTheme textTheme;
 
     TextFile file;
-    WindowLayout layout {file};
+
+    // Ahead of the layout, which holds the palette that reads both of them.
+    CommandRegistry commands;
+    Keymap keymap;
+
+    WindowLayout layout {file, commands, keymap};
     WidgetHost host;
+
+    // Where focus was when the palette opened, so closing it puts the keyboard
+    // back rather than always in the editor.
+    Widget* focusBeforePalette = nullptr;
 
     std::function<void(const std::string&)> onTitleChanged =
         [](const std::string&) {};
