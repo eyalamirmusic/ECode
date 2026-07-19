@@ -4,11 +4,13 @@
 scrolls, can be typed in — with selection, undo, clipboard and mouse — and
 saves, with external-change detection. The chrome is a widget tree, the sidebar
 holds a real file tree you can scroll and open files from, every command is
-named in a registry that a keymap, a fuzzy-matching command palette and a native
-menu bar all read from, ⌘O and ⇧⌘O open a file or a project folder, and ⌘F finds
-and replaces with the hits lit up in the file. Next are the remaining widgets —
-splitter and context menu (§7.4). Sections 1–5 are the design and the research
-behind it; **§6 is where things stand and §7 is what to do next.**
+named in a registry that a keymap, a fuzzy-matching command palette, a native
+menu bar and a right-click context menu all read from, ⌘O and ⇧⌘O open a file or
+a project folder, and ⌘F finds and replaces with the hits lit up in the file.
+The splitter is the last of the planned widgets (§7.4), and it is the one that
+wants eacp's cursor-shape gap closed first (gap 7). Sections 1–5 are the design
+and the research behind it; **§6 is where things stand and §7 is what to do
+next.**
 
 ## Decisions taken
 
@@ -521,7 +523,7 @@ is the `respondsToSelector:` check — unlike the `scrollWheel:` case, `NSObject
 does not implement `validateMenuItem:` itself, so inheritance does not satisfy
 it for free.
 
-**Done in ECode** (347 tests): `Document` with an incremental line index,
+**Done in ECode** (383 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -902,7 +904,47 @@ live window also meant fighting other applications for the screen, and two
 captures came back showing the wrong app entirely. The menus were worth checking
 live; almost nothing else is.
 
-**Still to do here:** splitters and an in-window context menu. The palette is
+**Also done: the in-window context menu.** Right-click in the editor gives
+Cut/Copy/Paste, Select All, Undo/Redo and Find, greyed from the same predicates
+the menu bar reads. `Graphics::Menu` is the native menu bar and nothing else —
+no platform eacp supports has a `popup(at:)` — so this is drawn by us, and it
+took the shape the palette established: a child of the root covering the window,
+because covering it is what catches the click that dismisses.
+
+Right-click needed no framework work, which was the surprise. `rightMouseDown:`
+is already registered on the macOS backing view and routed to the same handler
+with `button = Right` — but *nothing in ECode had ever read `MouseEvent::button`*,
+so a right-click had until now been an ordinary click that moved the caret.
+
+Five decisions worth recording:
+
+- **A right-click inside the selection leaves it alone.** Collapsing it first
+  would mean the Copy directly below the pointer copied nothing. Outside it, the
+  caret moves first, so the menu refers to where the person pointed.
+- **The release chooses, not the press.** That is what makes press-drag-release
+  work, which is how a menu opened by holding the button behaves — and releasing
+  outside cancels, which is how anyone backs out of one opened by mistake.
+- **A menu with nothing to offer does not open.** Unknown ids are dropped and
+  separators collapse, so a menu can resolve to nothing; a popup appearing empty
+  under the pointer reads as a glitch rather than as an answer.
+- **It opens with nothing highlighted.** The pointer is at the box's corner, not
+  on a row, and pre-selecting the first item would mean a stray Return ran
+  something nobody pointed at.
+- **The choice is dispatched, not run.** Same reason the menu bar's items are: a
+  focused text box may claim it. Both menus and the keymap now arrive at
+  `dispatchCommand`.
+
+This is also the first thing in the app that **tracks the pointer** — the theme
+said "no hover colour: nothing tracks the pointer yet", and `mouseMoved` was
+never forwarded from the GPU view because nothing wanted it. Both are now true
+only of everything else.
+
+And it makes the palette's modal special case a **pattern rather than a case**:
+two overlays now want every non-chord key. `modalOverlay()` names them in one
+place. Still not worth inventing `when` contexts for two — worth recording that
+a third would be the moment.
+
+**Still to do here:** splitters. The palette is
 the first overlay, and it confirms the shape those want: a child of the root
 laid out over the whole window, because `PaintContext` has no notion of a layer
 escaping its parent's clip and covering the window is also what makes a click
@@ -1088,9 +1130,26 @@ Recorded because each of these cost something to find out.
   through System Events opens them, and opening them ran a command — the file
   tree jumped to a different root and focus moved, which read as a bug in the
   new code for a while. Driving a live window also means competing for the
-  screen: two screen captures came back showing an entirely different
-  application. Both are the same lesson §9 already ends on, met from the other
-  side.
+  screen: three captures came back showing an entirely different application,
+  and in the end ECode simply would not come to the front at all. Both are the
+  same lesson §9 already ends on, met from the other side. **`renderToImage` is
+  the answer to "let me look at it", not just to "let me assert on it"** — dump
+  the snapshot to a file and open it. No focus, no stolen screen, and the same
+  picture.
+- **A region assertion is only as good as its region.** The separator test asked
+  whether the band holding the rule was brighter than an empty strip, and it
+  passed with the rule deleted: the band spanned the box's full width, so the
+  *border* supplied the peak. Inset past the border it fails properly. The
+  general form — when a test samples an area, check nothing else bright lives in
+  that area, or it will answer about the wrong thing.
+- **Looking is still worth it after the tests are green.** The context menu had
+  38 passing tests, two of them mutation-checked, and rendering one to a file
+  showed two things immediately that none of them asked about: the highlight bar
+  painted over the box's border, breaking the outline along the row the eye was
+  on, and a disabled row printed its shortcut *brighter* than its own greyed
+  title, because the shortcut colour is lighter than the disabled one. Both are
+  now pinned by tests that fail without the fix. Tests answer the questions you
+  thought to ask.
 
 - **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
   shader — passed every test that existed and was obvious in one screenshot.

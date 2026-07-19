@@ -36,6 +36,17 @@ public:
     TextFile& textFile() { return file; }
     Editor& editor() { return file.editor(); }
     const Editor& editor() const { return file.editor(); }
+
+    // Half-open, matching Cursor's own range: an offset at the very end of a
+    // selection is past it, which is where a click lands when someone aims just
+    // beyond the last selected character.
+    bool isInsideSelection(std::size_t offset) const
+    {
+        const auto& caret = editor().cursor();
+
+        return caret.hasSelection() && offset >= caret.start()
+               && offset < caret.end();
+    }
     const Document& document() const { return file.document(); }
 
     // --- find and replace ------------------------------------------------
@@ -78,6 +89,12 @@ public:
     void prepare(eacp::Text::GlyphAtlas& atlas,
                  const eacp::Graphics::Rect& visible) override;
     void paint(PaintContext& context) override;
+
+    // A right-click, after the caret has been moved to it. The widget does not
+    // own the menu — the commands it offers belong to the application, and a
+    // widget that popped its own would need the registry to build one.
+    std::function<void(const eacp::Graphics::Point&)> onContextMenuRequested =
+        [](const eacp::Graphics::Point&) {};
 
     void mouseDown(const eacp::Graphics::MouseEvent& event) override;
     void mouseDragged(const eacp::Graphics::MouseEvent& event) override;

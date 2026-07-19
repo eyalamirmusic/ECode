@@ -4,6 +4,7 @@
 add_library(ECodeUI STATIC
         Chrome.cpp
         CommandPalette.cpp
+        ContextMenu.cpp
         EditorWidget.cpp
         FileTreeView.cpp
         FindBar.cpp

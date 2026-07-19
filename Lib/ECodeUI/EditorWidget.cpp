@@ -290,6 +290,21 @@ void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
     const auto offset =
         renderer->offsetAtPoint(document(), event.pos, bounds(), scrollY);
 
+    if (event.button == Graphics::MouseButton::Right)
+    {
+        // A right-click inside the selection leaves it alone, because the menu
+        // that follows is about to act on it and collapsing it first would mean
+        // Copy quietly copied nothing. Outside it, the caret moves first, so
+        // the menu refers to where the person actually pointed.
+        if (!isInsideSelection(offset))
+            editor().placeCaret(offset, false);
+
+        wake();
+        onContextMenuRequested(event.pos);
+
+        return;
+    }
+
     if (event.clickCount >= 3)
         editor().selectLineAt(offset);
     else if (event.clickCount == 2)

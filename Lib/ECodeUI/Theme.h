@@ -66,6 +66,28 @@ struct ChromeTheme
     // is harder to understand than one that is visibly unavailable.
     eacp::Graphics::Color paletteDisabledText {0.42f, 0.44f, 0.50f};
 
+    // The in-window context menu. `Graphics::Menu` is the native menu bar and
+    // has no popup, so this one is drawn by us like everything else inside the
+    // GPU view.
+    //
+    // Deliberately its own set rather than borrowed from the palette's, even
+    // though the two are the same material today: the palette is a modal panel
+    // and a context menu is a transient popup, and the first time either grows
+    // a shadow or a translucency the other will not want it.
+    eacp::Graphics::Color menuBackground {0.145f, 0.157f, 0.184f};
+    eacp::Graphics::Color menuBorder {1.f, 1.f, 1.f, 0.13f};
+
+    // The row under the pointer or the arrow keys. A context menu is the first
+    // thing here that tracks the pointer at all — every other widget ignores it
+    // — so this is the first hover colour in the theme.
+    eacp::Graphics::Color menuHighlight {0.24f, 0.42f, 0.68f};
+    eacp::Graphics::Color menuHighlightText {0.96f, 0.97f, 0.99f};
+
+    eacp::Graphics::Color menuText {0.88f, 0.90f, 0.94f};
+    eacp::Graphics::Color menuShortcutText {0.50f, 0.53f, 0.60f};
+    eacp::Graphics::Color menuDisabledText {0.42f, 0.44f, 0.50f};
+    eacp::Graphics::Color menuSeparator {1.f, 1.f, 1.f, 0.10f};
+
     // The find bar. Opaque, unlike the palette's backdrop: it sits over the text
     // it is searching and stays there while the person works, so anything
     // showing through would be the very lines they are trying to read.

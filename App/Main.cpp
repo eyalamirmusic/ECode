@@ -1,5 +1,6 @@
 #include <ECodeUI/Chrome.h>
 #include <ECodeUI/CommandPalette.h>
+#include <ECodeUI/ContextMenu.h>
 #include <ECodeUI/EditorWidget.h>
 #include <ECodeUI/FileTreeView.h>
 #include <ECodeUI/FindBar.h>
@@ -52,6 +53,7 @@ struct WindowLayout final : Widget
                  const Keymap& keymap)
         : editor(file)
         , palette(theme, commands, keymap)
+        , contextMenu(theme, commands, keymap)
     {
         addChild(activityBar);
         addChild(sidebar);
@@ -63,8 +65,11 @@ struct WindowLayout final : Widget
         // After the editor, so it draws over the text it is searching.
         addChild(find);
 
-        // Last, so it paints over everything and widgetAt finds it first.
         addChild(palette);
+
+        // Last of all: a context menu can be opened over the palette, so it has
+        // to paint above it and be found before it.
+        addChild(contextMenu);
     }
 
     void layout() override
@@ -74,6 +79,10 @@ struct WindowLayout final : Widget
         // click anywhere outside its box dismiss it without a second widget to
         // catch those clicks.
         palette.setBounds(bounds());
+
+        // Same reasoning as the palette: laid over the window rather than sized
+        // to its own box, so a click anywhere outside the box dismisses it.
+        contextMenu.setBounds(bounds());
 
         auto area = bounds();
 
@@ -131,6 +140,7 @@ struct WindowLayout final : Widget
     EditorWidget editor;
     FindBar find {theme};
     CommandPalette palette;
+    ContextMenu contextMenu;
 };
 
 struct EditorView final : GPU::GPUView
@@ -207,6 +217,8 @@ struct EditorView final : GPU::GPUView
             repaint();
         };
 
+        connectContextMenu();
+
         // The editor starts focused; a window that opens with no caret reads
         // as broken.
         host.setFocus(&layout.editor);
@@ -278,6 +290,70 @@ struct EditorView final : GPU::GPUView
             layout.layout();
             repaint();
         };
+    }
+
+    // The editor's own menu. Ordered the way VSCode's is — the clipboard first,
+    // because that is what a right-click is nearly always for.
+    static eacp::Vector<std::string> editorMenuCommands()
+    {
+        return {commands::editCut,
+                commands::editCopy,
+                commands::editPaste,
+                {},
+                commands::editSelectAll,
+                {},
+                "edit.undo",
+                "edit.redo",
+                {},
+                "find.show"};
+    }
+
+    void connectContextMenu()
+    {
+        layout.editor.onContextMenuRequested = [this](const Graphics::Point& at)
+        {
+            // Focus moves to the menu, so the caret stops blinking under it and
+            // the arrow keys drive the menu rather than the document.
+            focusBeforeMenu = host.focused();
+
+            layout.contextMenu.show(at, editorMenuCommands());
+
+            if (layout.contextMenu.isOpen())
+                host.setFocus(&layout.contextMenu);
+
+            repaint();
+        };
+
+        // Through the dispatcher, exactly like the menu bar: the command may
+        // belong to a focused text box rather than to the document.
+        layout.contextMenu.onCommandChosen = [this](std::string_view id)
+        { dispatchCommand(id); };
+
+        layout.contextMenu.onClosed = [this]
+        {
+            host.setFocus(focusBeforeMenu != nullptr ? focusBeforeMenu
+                                                     : &layout.editor);
+            repaint();
+        };
+    }
+
+    // The overlay that owns the keyboard right now, or null.
+    //
+    // Two of these exist now — the palette and the context menu — and both want
+    // every non-chord key rather than letting a binding without a modifier fire
+    // underneath them. That is the job a VSCode `when` clause does, and two
+    // cases is the point at which writing them by hand starts to look like the
+    // thing contexts replace. Still not worth inventing them for two; worth
+    // noting that a third would be.
+    Widget* modalOverlay()
+    {
+        if (layout.contextMenu.isOpen())
+            return &layout.contextMenu;
+
+        if (layout.palette.isOpen())
+            return &layout.palette;
+
+        return nullptr;
     }
 
     void updateFindCount()
@@ -763,12 +839,11 @@ struct EditorView final : GPU::GPUView
 
     void keyDown(const Graphics::KeyEvent& event) override
     {
-        // The palette is modal while it is open, so everything except a command
-        // chord reaches it before the keymap does — otherwise a binding without
-        // a modifier would fire instead of being typed into the query. This is
-        // the job a keymap `when` clause does in VSCode; until contexts exist,
-        // one overlay is a special case rather than a mechanism.
-        if (layout.palette.isOpen() && !event.modifiers.command)
+        // An open overlay is modal, so everything except a command chord reaches
+        // it before the keymap does — otherwise a binding without a modifier
+        // would fire instead of being typed into the palette's query or moving
+        // the context menu's highlight. See modalOverlay.
+        if (modalOverlay() != nullptr && !event.modifiers.command)
         {
             host.keyDown(event);
             return;
@@ -807,6 +882,13 @@ struct EditorView final : GPU::GPUView
     }
 
     void mouseUp(const Graphics::MouseEvent& event) override { host.mouseUp(event); }
+
+    // Forwarded only now that something tracks the pointer: the context menu
+    // highlights the row under it, which is the first hover state in the app.
+    void mouseMoved(const Graphics::MouseEvent& event) override
+    {
+        host.mouseMoved(event);
+    }
 
     void mouseWheel(const Graphics::MouseEvent& event) override
     {
@@ -850,6 +932,11 @@ struct EditorView final : GPU::GPUView
     // Where focus was when the palette opened, so closing it puts the keyboard
     // back rather than always in the editor.
     Widget* focusBeforePalette = nullptr;
+
+    // The same, for the context menu. Kept separate because a menu can be
+    // opened while the palette is up, and one field would then lose the
+    // palette's answer.
+    Widget* focusBeforeMenu = nullptr;
 
     // Where the caret was when the find bar opened. An as-you-type search runs
     // from here rather than from the caret as it stands, which would otherwise
