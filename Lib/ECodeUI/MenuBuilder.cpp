@@ -115,15 +115,23 @@ Vector<std::string> unknownCommandIds(const Vector<MenuSpec>& specs,
     return missing;
 }
 
-Vector<MenuSpec> defaultMenus()
+Vector<MenuSpec> defaultMenus(bool withExit)
 {
     const auto separator = MenuSpec::separator();
 
     auto menus = Vector<MenuSpec> {};
 
-    menus.add(
-        {"File",
-         {"file.open", "file.openFolder", separator, "file.save", "file.revert"}});
+    auto file = Vector<std::string> {
+        "file.open", "file.openFolder", separator, "file.save", "file.revert"};
+
+    // Below a separator and last, which is where Windows puts it.
+    if (withExit)
+    {
+        file.add(separator);
+        file.add("file.exit");
+    }
+
+    menus.add({"File", std::move(file)});
 
     menus.add({"Edit",
                {"edit.undo",

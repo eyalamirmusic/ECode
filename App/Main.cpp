@@ -471,6 +471,12 @@ struct EditorView final : GPU::GPUView
                       [this] { revertFile(); },
                       [this] { return file.isDirty(); }});
 
+        // Registered everywhere even though only Windows shows it in a menu:
+        // the registry is what the editor can do, and the menu spec decides
+        // where it appears. On macOS the palette is the one that offers it,
+        // alongside the application menu's ⌘Q. See defaultMenus.
+        commands.add({"file.exit", "File: Exit", [] { Apps::quit(); }});
+
         commands.add({"edit.undo",
                       "Edit: Undo",
                       [this] { editor().undo(); },

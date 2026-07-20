@@ -69,6 +69,15 @@ const Graphics::MenuItem* itemNamed(const Graphics::Menu& menu,
 
     return nullptr;
 }
+
+bool hasCommand(const MenuSpec& spec, std::string_view id)
+{
+    for (const auto& candidate: spec.commandIds)
+        if (candidate == id)
+            return true;
+
+    return false;
+}
 } // namespace
 
 // --- key equivalents --------------------------------------------------------
@@ -339,6 +348,40 @@ auto tDefaultMenusAreOrdered = test("MenuBuilder/defaultMenusAreOrdered") = []
     check(menus[1].title == "Edit");
     check(menus[2].title == "Find");
     check(menus[3].title == "View");
+};
+
+// Windows has no application menu to carry Quit — eacp's standardApplicationMenu
+// is empty there and the empty menu is dropped from the bar — so the File menu
+// is the only way out of the app and Exit has to be in it.
+auto tExitIsLastInFileMenu = test("MenuBuilder/exitIsLastInFileMenu") = []
+{
+    const auto file = defaultMenus(true)[0];
+
+    check(file.commandIds.back() == "file.exit");
+
+    // Set off from the file operations above it, the way Windows separates it.
+    check(file.commandIds[file.commandIds.size() - 2] == MenuSpec::separator());
+};
+
+// And is absent otherwise, rather than shown everywhere. macOS already has Quit
+// in the application menu, so a File ▸ Exit beside it would be a second and
+// non-standard way to do the identical thing.
+auto tExitIsOmittedWithoutIt = test("MenuBuilder/exitIsOmittedWithoutIt") = []
+{
+    const auto menus = defaultMenus(false);
+
+    check(!hasCommand(menus[0], "file.exit"));
+
+    // Nowhere else either — this is the only menu it belongs in.
+    for (const auto& menu: menus)
+        check(!hasCommand(menu, "file.exit"));
+};
+
+// The default is the platform's, which is the whole point of the parameter
+// having one: App calls defaultMenus() with no argument.
+auto tExitDefaultsToWindows = test("MenuBuilder/exitDefaultsToWindows") = []
+{
+    check(hasCommand(defaultMenus()[0], "file.exit") == Platform::isWindows());
 };
 
 // The four the Edit menu offers are exactly the four a focused text box claims,

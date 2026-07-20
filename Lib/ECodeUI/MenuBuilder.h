@@ -5,6 +5,7 @@
 #include <ECodeCore/Commands.h>
 
 #include <eacp/Core/Core.h>
+#include <eacp/Core/Platform/Platform.h>
 #include <eacp/Graphics/Graphics.h>
 
 #include <functional>
@@ -69,5 +70,16 @@ eacp::Vector<std::string> unknownCommandIds(const eacp::Vector<MenuSpec>& specs,
 // Here rather than in the application because it is the list a test can check
 // against the registry, and because the ids are the only thing binding the two
 // together.
-eacp::Vector<MenuSpec> defaultMenus();
+//
+// `withExit` puts Exit at the foot of the File menu, and defaults to the one
+// platform that has nowhere else to put it. macOS gets Quit from the
+// application menu standardApplicationMenu builds, so an Exit in File as well
+// would be a second, non-standard way to do the same thing. Windows has no
+// application menu at all — eacp's standardApplicationMenu returns an empty one
+// there and installWin32MenuBar drops empty menus from the bar — so without
+// this the menu bar offers no way out of the app.
+//
+// A parameter rather than the platform check inside, so a test can build either
+// arrangement whatever host it runs on.
+eacp::Vector<MenuSpec> defaultMenus(bool withExit = eacp::Platform::isWindows());
 } // namespace ecode
