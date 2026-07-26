@@ -1553,8 +1553,26 @@ So the answer to "when does a file make it hurt" is: **not at 10 MB, and at
 100 MB it is one millisecond** — real, but not the thing standing between ECode
 and a large file.
 
-**Because tree-sitter is, by two orders of magnitude.** The same three files
-through the actual editing path, with the highlighter in the loop:
+**And the rope has a sibling, which is worth knowing before it is built.**
+`LineMap`'s `rowStarts` is the same shape as `Document`'s line index — a flat
+vector of absolute positions, repaired incrementally, shifted in full past every
+edit — so soft wrap doubles the cost above and adds a rebuild of its own:
+
+| wrap on, ~80 columns | 1 MB | 10 MB | 100 MB |
+|---|---|---|---|
+| `LineMap::rebuild` (⌥Z, or a resize) | 0.98 ms | 9.8 ms | **102 ms** |
+| keystroke, wrapped | 0.017 ms | 0.18 ms | **2.03 ms** |
+| the same keystroke, unwrapped | 0.010 ms | 0.11 ms | 1.04 ms |
+
+None of it is urgent — wrapping is off by default and a rebuild only happens on
+⌥Z or a resize — but whatever replaces the flat line index should replace this
+too, or the rope buys back a millisecond that soft wrap immediately spends. The
+mapping API is as narrow as `Document`'s (§7.3 keeps only per-line row *counts*),
+so the same argument for deferring applies to both.
+
+**What actually stands between ECode and a large file is tree-sitter, by two
+orders of magnitude.** The same three files through the actual editing path, with
+the highlighter in the loop:
 
 | | 1 MB | 10 MB | 100 MB |
 |---|---|---|---|
@@ -2228,6 +2246,15 @@ Recorded because each of these cost something to find out.
   0.058. What *is* tested is its precondition — that a cached row's glyphs are
   still in the atlas — which is the atlas generation in the cache's stamp. When a
   skip cannot be observed, test the thing that makes it safe.
+- **A setter that early-returns turns a benchmark into a measurement of nothing,
+  and "best of N" is what hides it.** `setWrapColumns` returns immediately when
+  the width has not changed, so timing it three times at 80 columns timed one
+  rebuild and two early returns — and taking the *minimum*, which is the right
+  reducer for filtering out whatever else the machine is doing, is exactly the
+  wrong one here: it reports the no-op. Soft wrap on a 100 MB file came back as
+  0.000 ms and was believed, because a fast rebuild is not obviously absurd. It
+  is 102 ms. Vary the input so every iteration does the work, and treat a
+  benchmark reading exactly zero as a bug in the harness until shown otherwise.
 - **Timing a live window measures what the window server allowed, not what the
   code costs.** Instrumenting the running app gave 0.5 ms a frame at 1200×800 and
   then *less* at 2500×1350, which is not how bigger windows work. An occluded
