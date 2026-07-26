@@ -25,6 +25,12 @@ void EditorGroupView::setAtlas(Text::GlyphAtlas* atlasToUse,
                                const TextTheme& textTheme,
                                float scale)
 {
+    // Asked before the old renderer goes, because it is the only thing that can
+    // turn the scroll offset back into a line. An atlas arrives here at a new
+    // font size as well as on a new display, and both change the row height the
+    // offset was measured against. See EditorWidget::topVisibleLine.
+    const auto topLine = text.topVisibleLine();
+
     // Let go of the old renderer through the widget before it is destroyed,
     // rather than relying on the two statements being adjacent: emplace() runs
     // the destructor of whatever was there, and the widget would be holding a
@@ -39,6 +45,7 @@ void EditorGroupView::setAtlas(Text::GlyphAtlas* atlasToUse,
 
     renderer.emplace(*atlasToUse, textTheme, scale);
     text.setRenderer(&renderer.value());
+    text.scrollToTopLine(topLine);
 }
 
 void EditorGroupView::refresh()

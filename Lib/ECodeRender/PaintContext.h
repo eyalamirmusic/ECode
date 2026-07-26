@@ -38,7 +38,10 @@ public:
 
     eacp::GPU::RenderPass& pass() const { return renderPass; }
     eacp::Text::GlyphRenderer& glyphs() const { return glyphRenderer; }
-    eacp::Text::GlyphAtlas& atlas() const { return glyphAtlas; }
+
+    // The atlas glyphs are being drawn from right now, which is the chrome's
+    // unless an AtlasScope is open.
+    eacp::Text::GlyphAtlas& atlas() const { return *glyphAtlas; }
 
     // Rebinds the sprite pipeline if a glyph flush has clobbered it since the
     // last call, which is the second half of the same coupling: flushing text
@@ -61,13 +64,18 @@ public:
 
 private:
     friend class ClipScope;
+    friend class AtlasScope;
 
     void setClip(const eacp::Graphics::Rect& area);
+    void setAtlas(eacp::Text::GlyphAtlas& atlasToDrawFrom);
 
     eacp::GPU::RenderPass& renderPass;
     eacp::Sprites::SpriteRenderer& spriteRenderer;
     eacp::Text::GlyphRenderer& glyphRenderer;
-    eacp::Text::GlyphAtlas& glyphAtlas;
+
+    // Never null: a context is constructed with one and an AtlasScope only ever
+    // swaps it for another.
+    eacp::Text::GlyphAtlas* glyphAtlas;
 
     eacp::Graphics::Rect currentClip;
     float scale = 1.f;
@@ -100,5 +108,32 @@ private:
     PaintContext& context;
     eacp::Graphics::Rect previous;
     bool empty = false;
+};
+
+// Draws glyphs from a different atlas for the lifetime of the scope.
+//
+// The same coupling ClipScope exists for, one step further down. GlyphRenderer
+// batches until a flush, and the flush is what names the texture to sample from
+// — so glyphs queued against one atlas and flushed against another are drawn
+// from whatever texels happen to sit at those coordinates in the other, which
+// is a screenful of the wrong letters rather than anything that looks like a
+// bug in the switching. Every change flushes first.
+//
+// There are two atlases because the editor's font size is settable and the
+// chrome's is not: ⌘+ makes the code bigger and leaves the tabs, the tree and
+// the status bar where they are. A GlyphAtlas is one face at one size by
+// construction, so two sizes is two atlases.
+class AtlasScope
+{
+public:
+    AtlasScope(PaintContext& contextToUse, eacp::Text::GlyphAtlas& atlas);
+    ~AtlasScope();
+
+    AtlasScope(const AtlasScope&) = delete;
+    AtlasScope& operator=(const AtlasScope&) = delete;
+
+private:
+    PaintContext& context;
+    eacp::Text::GlyphAtlas& previous;
 };
 } // namespace ecode

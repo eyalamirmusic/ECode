@@ -29,6 +29,12 @@ void EditorWidget::setFile(OpenFile& fileToEdit)
 
     open = &fileToEdit;
 
+    // Before anything can wake: the numbers left over describe the file that
+    // was open a moment ago, and comparing against them would count the switch
+    // itself as the caret moving — scrolling away the offset this file was left
+    // at, which is the one thing a tab switch is supposed to keep.
+    rememberCaret();
+
     // The incoming file's line map was last given the wrap width of whatever
     // viewport it was in, which is not necessarily this one.
     updateWrapWidth();
@@ -112,6 +118,26 @@ void EditorWidget::scrollToRow(std::size_t row)
     clampScroll();
 }
 
+std::size_t EditorWidget::topVisibleLine() const
+{
+    if (renderer == nullptr)
+        return 0;
+
+    const auto row = renderer->firstVisibleRow(open->scrollY);
+
+    return editor().lineMap().row(document(), row).line;
+}
+
+void EditorWidget::scrollToTopLine(std::size_t line)
+{
+    if (renderer == nullptr)
+        return;
+
+    open->scrollY = -renderer->rowTop(editor().lineMap().firstRowOfLine(line));
+
+    clampScroll();
+}
+
 void EditorWidget::scrollToCaret()
 {
     if (renderer == nullptr)
@@ -142,12 +168,38 @@ int EditorWidget::visibleRows() const
     return std::max(1, static_cast<int>(bounds().h / renderer->rowHeight()) - 1);
 }
 
+bool EditorWidget::caretHasMoved() const
+{
+    return editor().version() != wokeAtVersion
+           || editor().cursor().head != wokeAtCaret;
+}
+
+void EditorWidget::rememberCaret()
+{
+    wokeAtVersion = editor().version();
+    wokeAtCaret = editor().cursor().head;
+}
+
 void EditorWidget::wake()
 {
     caretVisible = true;
     blinkPhase = 0;
 
-    scrollToCaret();
+    // The caret is followed only when it could have moved. This runs after
+    // every *command* as well as after every keystroke — see
+    // EditorView::dispatchCommand, which cannot know which commands touch the
+    // document — so a command that changed neither the text nor the cursors
+    // would otherwise drag the view back to the caret from wherever it had been
+    // scrolled to.
+    //
+    // Found by running it: ⌘+ zoomed the font and jumped a screenful, because
+    // the caret was above the part of the file being read.
+    if (caretHasMoved())
+    {
+        rememberCaret();
+        scrollToCaret();
+    }
+
     onStateChanged();
     repaint();
 }

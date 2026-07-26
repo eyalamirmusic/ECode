@@ -28,6 +28,7 @@ nano_add_executable(ECodeUITests
             ContextMenuTests.cpp
             FileTreeViewTests.cpp
             FindBarTests.cpp
+            FontSettingsTests.cpp
             KeymapTests.cpp
             MenuBuilderTests.cpp
             ScrollTests.cpp
@@ -57,6 +58,7 @@ nano_add_executable(ECodeRenderTests
             DamageTests.cpp
             EditorGroupRenderTests.cpp
             FindRenderTests.cpp
+            FontRenderTests.cpp
             MultiCursorRenderTests.cpp
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp

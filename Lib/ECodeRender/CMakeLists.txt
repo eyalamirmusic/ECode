@@ -1,6 +1,7 @@
 # GPU text drawing: turns a Document plus a viewport into quads, and carries the
 # clip stack the GPU does not have.
 add_library(ECodeRender STATIC
+        FontSettings.cpp
         PaintContext.cpp
         RowCache.cpp
         TextRenderer.cpp)

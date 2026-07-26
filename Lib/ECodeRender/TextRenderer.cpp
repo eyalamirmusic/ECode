@@ -521,6 +521,12 @@ void TextRenderer::draw(PaintContext& context,
     const auto& document = view.document;
     const auto* cursors = overlay.cursors;
 
+    // The document is drawn through this renderer's own atlas rather than the
+    // chrome's, which is what lets the two be different sizes. Held open across
+    // the whole of the draw, so the caret flush in the middle of it lands on the
+    // right texture too.
+    const auto glyphSource = AtlasScope {context, atlas};
+
     const auto first = firstVisibleRow(scrollY);
     const auto last = lastVisibleRow(view, viewport, scrollY);
     const auto gutter = gutterWidth(document.lineCount());

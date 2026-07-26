@@ -11,6 +11,7 @@
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeCore/EditorGroups.h>
+#include <ECodeRender/FontSettings.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <eacp/Core/App/App.h>
@@ -480,7 +481,7 @@ struct EditorView final : GPU::GPUView
         host.forgetTargets();
 
         layout.rebuildGroups();
-        layout.setAtlas(atlas.get(), textTheme, builtAtScale);
+        layout.setAtlas(editorAtlas.get(), textTheme, builtAtScale);
 
         connectGroups();
 
@@ -887,6 +888,30 @@ struct EditorView final : GPU::GPUView
                       "View: Refresh Explorer",
                       [this] { layout.files.refresh(); }});
 
+        // --- the editor font ------------------------------------------------
+        //
+        // The document's size, not the window's: the tabs, the tree and the
+        // status bar stay where they are. That is what `editor.fontSize` means
+        // in VSCode rather than what its ⌘+ does, and it is the one people
+        // reach for — the chrome is not what anybody is trying to read.
+        //
+        // Listed but unavailable at the ends of the range, like every other
+        // command here: a ⌘+ that has stopped working is worth saying out loud.
+        commands.add({"view.increaseFontSize",
+                      "View: Increase Font Size",
+                      [this] { zoomEditorFont(1); },
+                      [this] { return font.canZoom(1); }});
+
+        commands.add({"view.decreaseFontSize",
+                      "View: Decrease Font Size",
+                      [this] { zoomEditorFont(-1); },
+                      [this] { return font.canZoom(-1); }});
+
+        commands.add({"view.resetFontSize",
+                      "View: Reset Font Size",
+                      [this] { resetEditorFontZoom(); },
+                      [this] { return font.zoom != 0.f; }});
+
         commands.add({"view.toggleWordWrap",
                       "View: Toggle Word Wrap",
                       [this]
@@ -968,6 +993,20 @@ struct EditorView final : GPU::GPUView
         keymap.bind("cmd+alt+left", "view.focusPreviousGroup");
         keymap.bind("cmd+alt+shift+right", "view.moveEditorToNextGroup");
         keymap.bind("cmd+alt+shift+left", "view.moveEditorToPreviousGroup");
+
+        // ⌘+ is ⇧⌘= on a US layout, and people press it both ways — with the
+        // shift because that is what the key is labelled, and without it
+        // because that is what the key *is*. Both, in that order: the later
+        // binding is the one chordFor hands back, so the menu and the palette
+        // print ⌘= rather than the shifted spelling of the same thing.
+        //
+        // Named by their unshifted keys, which is what Chord::fromEvent matches
+        // punctuation on — ⇧⌘= arrives as "+" and would match no binding at all
+        // if these were written by the character.
+        keymap.bind("cmd+shift+=", "view.increaseFontSize");
+        keymap.bind("cmd+=", "view.increaseFontSize");
+        keymap.bind("cmd+-", "view.decreaseFontSize");
+        keymap.bind("cmd+0", "view.resetFontSize");
 
         // VSCode's chord, and the one place a binding without Command matters:
         // handleShortcut runs before the editor sees the key, so ⌥Z toggles
@@ -1216,39 +1255,72 @@ struct EditorView final : GPU::GPUView
         onTitleChanged(shownTitle);
     }
 
-    // The atlas rasterizes at the display's real scale, so it cannot be built
-    // until the view is on a display — and must be rebuilt if it moves to one
-    // with a different scale.
+    // An atlas rasterizes at the display's real scale, so neither can be built
+    // until the view is on a display — and both must be rebuilt if it moves to
+    // one with a different scale.
     //
-    // One atlas for the window and one TextRenderer per pane. The atlas is
-    // shared because a glyph is a glyph wherever it is drawn and the whole point
-    // of it is that it is uploaded once; the renderers are not, because each
+    // Two of them, at two sizes: the document's is whatever the font is set to
+    // and the chrome's is fixed, which is what makes ⌘+ enlarge the code without
+    // moving the tab strip. Each is shared by everything drawing at its size,
+    // because a glyph is a glyph wherever it appears and the whole point of an
+    // atlas is that it is uploaded once. The TextRenderers are not shared: each
     // owns a RowCache of the rows *its own* pane is showing. See
     // EditorGroupView.
     void ensureRenderer()
     {
         const auto scale = backingScale();
 
-        if (atlas && builtAtScale == scale)
+        if (uiAtlas && editorAtlas && builtAtScale == scale && builtFont == font)
             return;
 
-        auto request = Text::FontRequest {};
-        request.family = "Menlo";
-        request.pointSize = 13.f;
-        request.scale = scale;
+        if (!uiAtlas || builtAtScale != scale)
+        {
+            auto built = makeGlyphAtlas(chromeFont, scale);
 
-        auto rasterizer = makeOwned<Text::GlyphRasterizer>(request);
+            if (!built)
+                return;
 
-        if (!rasterizer->isValid())
+            uiAtlas = std::move(built);
+
+            // Independent of either atlas — the atlas is named at flush time —
+            // but it needs a device, so it is made when there is one.
+            glyphs.emplace();
+        }
+
+        auto built = makeGlyphAtlas(font, scale);
+
+        if (!built)
             return;
 
-        atlas = makeOwned<Text::GlyphAtlas>(
-            OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 4096);
+        editorAtlas = std::move(built);
 
-        glyphs.emplace();
+        builtFont = font;
         builtAtScale = scale;
 
-        layout.setAtlas(atlas.get(), textTheme, scale);
+        // Each pane gets a fresh TextRenderer: the row height, the advance and
+        // every laid-out row it was holding all belong to the old size.
+        layout.setAtlas(editorAtlas.get(), textTheme, scale);
+    }
+
+    // A step of the editor's font size, from ⌘+ or ⌘-.
+    //
+    // Nothing is rasterized here. ensureRenderer already owns the decision of
+    // when an atlas is stale, and it is the one place that knows the display's
+    // scale — so this changes the setting and the next frame builds what the
+    // setting now asks for.
+    void zoomEditorFont(int steps)
+    {
+        if (!font.canZoom(steps))
+            return;
+
+        font.zoomBy(steps);
+        repaint();
+    }
+
+    void resetEditorFontZoom()
+    {
+        font.resetZoom();
+        repaint();
     }
 
     void resized() override
@@ -1496,7 +1568,7 @@ struct EditorView final : GPU::GPUView
 
         auto pass = frame.beginPass({textTheme.background});
 
-        if (!sprites || !atlas || !glyphs)
+        if (!sprites || !uiAtlas || !editorAtlas || !glyphs)
             return;
 
         glyphs->setViewportSize({getLocalBounds().w, getLocalBounds().h});
@@ -1504,11 +1576,19 @@ struct EditorView final : GPU::GPUView
         // Every glyph the frame needs is rasterized before the first draw, then
         // uploaded once. Uploading mid-pass would mutate a texture the earlier
         // draws have already bound.
-        host.prepare(*atlas);
-        atlas->commit();
+        //
+        // The walk is handed the chrome's atlas; the editor widgets ignore it
+        // and prepare through their own renderer, which holds the document's.
+        // Both are committed here for the same reason: neither may be touched
+        // again once the pass has bound it.
+        host.prepare(*uiAtlas);
+        uiAtlas->commit();
+        editorAtlas->commit();
 
+        // Opened on the chrome's atlas, because that is what everything outside
+        // a document draws from. TextRenderer switches to its own and back.
         auto context = PaintContext {
-            pass, *sprites, *glyphs, *atlas, getLocalBounds(), builtAtScale};
+            pass, *sprites, *glyphs, *uiAtlas, getLocalBounds(), builtAtScale};
 
         host.paint(context);
     }
@@ -1563,11 +1643,27 @@ struct EditorView final : GPU::GPUView
     std::function<void(const std::string&)> onTitleChanged =
         [](const std::string&) {};
 
-    // The atlas and the glyph batch are the window's; the renderers belong to
+    // What the document is drawn in, and the only place its size is decided.
+    // Changed by the zoom commands; PLAN.md §5's config file is what will set
+    // the family and the size it zooms from.
+    FontSettings font;
+
+    // The chrome's, deliberately not settable: a tab strip that grew with the
+    // font would take a slice out of the text every time someone zoomed in to
+    // read something.
+    FontSettings chromeFont;
+
+    // The atlases and the glyph batch are the window's; the renderers belong to
     // the panes, since each keeps a cache of the rows it is showing.
     std::optional<Sprites::SpriteRenderer> sprites;
-    OwningPointer<Text::GlyphAtlas> atlas;
+    OwningPointer<Text::GlyphAtlas> uiAtlas;
+    OwningPointer<Text::GlyphAtlas> editorAtlas;
     std::optional<Text::GlyphRenderer> glyphs;
+
+    // What the editor's atlas was rasterized for, so a frame can tell whether
+    // the font has moved since. Compared whole rather than by size: an atlas
+    // answers for one family at one size, and the two are only right together.
+    FontSettings builtFont;
 
     float builtAtScale = 1.f;
 

@@ -48,6 +48,18 @@ public:
     // for the tests that check a switch does not lose it.
     float scrollOffset() const { return open->scrollY; }
 
+    // The document line at the top of the viewport, and putting one back there.
+    //
+    // A pair, because a change of font size invalidates the offset above: it is
+    // in points, and the row height it was measured against has just moved, so
+    // holding it fixed slides the file under whoever is reading it. The line
+    // rather than the row, since the wrap width moves with the font too and a
+    // row index taken before the change names different text after it.
+    //
+    // Line 0 before there is a renderer, which is also the right answer then.
+    std::size_t topVisibleLine() const;
+    void scrollToTopLine(std::size_t line);
+
     // Inside *any* selection, half-open, matching Cursor's own range: an offset
     // at the very end of a selection is past it, which is where a click lands
     // when someone aims just beyond the last selected character.
@@ -143,6 +155,9 @@ public:
     // Any interaction restarts the blink, so the caret is solid while working
     // and only pulses when idle — one that blinks out mid-keystroke reads as
     // dropped input.
+    //
+    // Brings the caret into view as well, but only when it could have moved
+    // since the last call. See the definition for why that condition is there.
     void wake();
 
     // Line and column of the caret, 1-based, for the status bar.
@@ -163,6 +178,13 @@ private:
 
     void clampScroll();
     void scrollToCaret();
+
+    // Whether the text or the primary caret has changed since the last wake,
+    // which is what decides whether the view follows it. The document's
+    // revision as well as the offset, because an edit that leaves the caret
+    // where it was still moves what is under it.
+    bool caretHasMoved() const;
+    void rememberCaret();
     void scrollToRow(std::size_t row);
     int visibleRows() const;
 
@@ -190,5 +212,11 @@ private:
 
     bool caretVisible = true;
     int blinkPhase = 0;
+
+    // What the view last followed the caret to. Refreshed on a file switch as
+    // well, or the first wake in an incoming tab would compare against the
+    // outgoing file's numbers and scroll away the offset the switch restored.
+    std::uint64_t wokeAtVersion = 0;
+    std::size_t wokeAtCaret = 0;
 };
 } // namespace ecode

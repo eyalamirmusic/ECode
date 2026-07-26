@@ -13,7 +13,7 @@ PaintContext::PaintContext(GPU::RenderPass& passToUse,
     : renderPass(passToUse)
     , spriteRenderer(spritesToUse)
     , glyphRenderer(glyphsToUse)
-    , glyphAtlas(atlasToUse)
+    , glyphAtlas(&atlasToUse)
     , currentClip(surface)
     , scale(backingScaleToUse)
 {
@@ -45,10 +45,21 @@ void PaintContext::flushGlyphs()
     if (glyphRenderer.queuedGlyphs() == 0)
         return;
 
-    glyphRenderer.flush(renderPass, glyphAtlas);
+    glyphRenderer.flush(renderPass, *glyphAtlas);
 
     // The flush left the glyph pipeline bound; the next sprite draw rebinds.
     spritesNeedRebind = true;
+}
+
+void PaintContext::setAtlas(Text::GlyphAtlas& atlasToDrawFrom)
+{
+    if (&atlasToDrawFrom == glyphAtlas)
+        return;
+
+    // Anything already queued names texels in the atlas it was queued against.
+    flushGlyphs();
+
+    glyphAtlas = &atlasToDrawFrom;
 }
 
 void PaintContext::setClip(const Graphics::Rect& area)
@@ -83,5 +94,17 @@ ClipScope::ClipScope(PaintContext& contextToUse, const Graphics::Rect& area)
 ClipScope::~ClipScope()
 {
     context.setClip(previous);
+}
+
+AtlasScope::AtlasScope(PaintContext& contextToUse, Text::GlyphAtlas& atlas)
+    : context(contextToUse)
+    , previous(contextToUse.atlas())
+{
+    context.setAtlas(atlas);
+}
+
+AtlasScope::~AtlasScope()
+{
+    context.setAtlas(previous);
 }
 } // namespace ecode

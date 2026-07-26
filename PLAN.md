@@ -75,7 +75,8 @@ Lib/ECodeSyntax/   tree-sitter behind Style.h's interface
 Lib/ECodeRender/   the glyph pipeline
   TextRenderer      lays out and draws the visible rows
   RowCache          the rows on screen, kept until something changes them
-  PaintContext      sprites + glyph batch + the clip stack
+  PaintContext      sprites + glyph batch + the clip and atlas stacks
+  FontSettings      family and size, and the atlas they ask for
 
 Lib/ECodeUI/       the widget tree inside the single GPUView
   Widget/WidgetHost layout, hit-testing, capture, focus, hover
@@ -101,8 +102,10 @@ App/Main.cpp       the shell: GPU resources, the window layout, the commands
   `TextRenderer` and therefore its own `RowCache`, which is a window of laid-out
   rows keyed by row index — two panes sharing one would invalidate each other
   every frame and draw the identical picture doing it.
-- **The atlas is shared.** A glyph is a glyph wherever it is drawn, and uploading
-  it once is the whole point.
+- **An atlas is shared by everything drawing at its size.** A glyph is a glyph
+  wherever it is drawn and uploading it once is the whole point — but a
+  `GlyphAtlas` is one face at one size, so a settable editor font means two of
+  them, the document's and the chrome's. See §4.
 - **Anything that touches the cursor goes through `Editor`, not through
   `Editor::cursor()`.** That rule is why multi-cursor cost two lines outside the
   editor: `cursor()` had seven callers and every one genuinely wanted the primary.
@@ -148,6 +151,12 @@ Beyond the numbered gaps:
   Code's `=>` needs CoreText/DirectWrite line shaping behind the existing
   `GlyphSource` seam, plus a run cache — Ghostty measured shaping at 96% of frame
   time before adding one.
+- **A family cannot be checked.** `CTFontCreateWithName` substitutes for a name
+  it does not know, so `GlyphRasterizer::isValid()` is true for a misspelt family
+  and the app draws in a face nobody asked for. Comparing
+  `CTFontCopyFamilyName` against the request would report it; enumerating the
+  installed monospace families is the same seam and is what a font picker needs.
+  Until then `FontSettings::family` is set in code and believed.
 - **Atlas eviction.** The atlas doubles up to a cap keeping every placement, and
   only at the cap does it clear and tick `generation()`. That is what Ghostty
   does and it is fine; LRU with stable handles can wait for a profile that asks.
@@ -167,6 +176,18 @@ Beyond the numbered gaps:
 so layout is per-glyph rather than a fixed cell grid; the mask atlas is `R8Unorm`
 with colour emoji on a second RGBA8 page; the rasterizer sits behind a
 `GlyphSource` interface so the atlas is driven by a stub in tests.
+
+**Two atlases, one per size.** A `GlyphAtlas` is one face at one size, so the
+settable editor font and the fixed chrome font are two of them: ⌘+ enlarges the
+code and leaves the tab strip, the tree and the status bar where they are. The
+cost is one rule, and it is the same rule the clip stack already lives by —
+`GlyphRenderer` batches until a flush and the flush names the texture, so a batch
+queued against one atlas and flushed against another draws whatever texels sit at
+those coordinates in the other. `PaintContext` owns which atlas is current and
+flushes on every change; `AtlasScope` is how `TextRenderer` switches to its own
+for the length of a document draw. `FontRenderTests` pins it by drawing the same
+text at the same size through one atlas and through two and demanding the same
+pixels.
 
 Settled and worth not relitigating, read from the Ghostty and Alacritty source
 trees rather than from blog posts:
@@ -259,6 +280,13 @@ keys ignored and missing keys defaulted, five lines total. Two changes from
 CowTerm: **themes as data** (`ChromeTheme` and `TextTheme` are hardcoded structs
 today) and **file watching for reload** (CowTerm reads config once at
 construction).
+
+`FontSettings` is the first struct waiting for it, and the shape the rest should
+follow: family and point size in one place with the zoom held separately, so
+Reset means the configured size rather than a constant. Choosing the *family*
+from inside the app waits on eacp — CoreText substitutes silently for a name it
+does not know and there is no way to ask which face it picked, so a picker today
+could only offer a list and hope. §3 is where that gap belongs.
 
 **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
 diagnostics, completion and go-to-definition after the chrome settles.
@@ -489,6 +517,14 @@ worth trusting, and they keep coming back — several were learned twice.
   found only by reading the class in order to add a second exit from it. Ask what
   your change lets happen for the first time, and when you add a route out of a
   class, read every existing one.
+- **A hook that runs after *every* command is a claim about commands that do not
+  exist yet.** `dispatchCommand` wakes the editor, and waking it brought the caret
+  into view — right for the paste, undo and cut it was written for, and wrong the
+  moment a command changed nothing about the document. ⌘+ zoomed the font and
+  threw the file back to wherever the caret happened to be, defeating the
+  top-line preservation the zoom had just done. The fix is a condition rather
+  than a flag at each call site: follow the caret only when the text or the
+  cursor has actually moved, so a command added later cannot forget to say so.
 - **An invariant a class states in prose is a test you have not written.**
   `Document`'s header said "a genuinely empty document still has a single line to
   put the caret on" while `= default` left it with none.
