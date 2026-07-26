@@ -73,7 +73,22 @@ public:
     // Longest line in characters, for sizing a horizontal scroll range. Counted
     // in bytes, so it over-estimates for non-ASCII — good enough to scroll
     // with, and cheaper than a full UTF-8 pass over the file.
-    std::size_t widestLine() const { return widest; }
+    //
+    // Derived on demand rather than maintained on every edit. Recomputing it
+    // eagerly is a scan of the whole line index, which measured at 4.7 ms of a
+    // 6.7 ms keystroke on a 100 MB file — more than the flat string and the flat
+    // index cost put together, and paid by a document nothing was asking. See
+    // PLAN.md §7.6.
+    std::size_t widestLine() const;
+
+    // How many times the answer above had to be rebuilt from scratch.
+    //
+    // Exposed for tests, in the shape LineMap::rebuildCount() established: the
+    // oracle that compares this document's index against a freshly built one
+    // agrees whether the maximum was carried across the edit or rescanned, so
+    // the counter is the only thing that can tell them apart. PLAN.md §9 — an
+    // oracle proves the answer, never the path.
+    std::uint64_t widestRescans() const { return rescans; }
 
     // Changes whenever the text does, so anything caching work derived from it
     // can tell in one comparison rather than by re-reading the file.
@@ -93,6 +108,15 @@ private:
                           std::size_t removedLength,
                           std::string_view inserted);
 
+    // Carries the longest line across an edit when it can be done without
+    // touching every line, and gives up otherwise. Called with the index
+    // already repaired.
+    void updateWidestAfterEdit(std::size_t start,
+                               std::size_t oldEnd,
+                               std::string_view inserted);
+
+    void rescanWidest() const;
+
     static std::size_t lineAtIn(const std::vector<std::size_t>& starts,
                                 std::size_t offset);
 
@@ -101,7 +125,21 @@ private:
     // Byte offset of each line's first character.
     std::vector<std::size_t> lineStarts;
 
-    std::size_t widest = 0;
+    // The longest line, and where it begins.
+    //
+    // Held as an offset rather than a line index because an offset shifts the
+    // same way the line index around it does — one addition, no reasoning about
+    // how many entries the edit erased or inserted. It is then *checked* against
+    // the repaired index, so a mistake in that arithmetic makes the record stale
+    // rather than wrong: the fallback is a full rescan, which is the answer this
+    // is an optimisation of.
+    mutable std::size_t widest = 0;
+    mutable std::size_t widestStart = 0;
+
+    // Whether the two above still describe this text.
+    mutable bool widestKnown = true;
+
+    mutable std::uint64_t rescans = 0;
 
     std::uint64_t currentRevision = nextRevision();
 };

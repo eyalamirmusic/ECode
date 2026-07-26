@@ -20,8 +20,14 @@ in two directions at once (§7.3). The cold open is closed too, and measuring
 keystroke had been reparsing the whole file (§7.9). And **multi-cursor** is in —
 ⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L — the last piece of sequencing this plan had called the
 one not to get wrong, and the third time running that the estimate written down
-here turned out not to survive contact (§7.2). Sections 1–5 are the design and
-the research behind it; **§6 is where things stand and §7 is what to do next.**
+here turned out not to survive contact (§7.2). And a **100 MB file** has finally
+been measured, which was the cheapest thing left to learn and duly found the plan
+wrong a fourth time: neither of §7.6's two candidates bit first — two thirds of a
+keystroke went into recomputing a number nothing reads — and once that and the
+open were fixed, the thing standing between ECode and a large file turned out not
+to be the rope at all but tree-sitter, by two orders of magnitude (§7.6).
+Sections 1–5 are the design and the research behind it; **§6 is where things
+stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -659,7 +665,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (568 tests): `Document` with an incremental line index,
+**Done in ECode** (577 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -686,7 +692,13 @@ running, which takes a keystroke on an 8,000-line file from 9.6 ms to 0.24 and a
 twenty-file launch from 295 ms to 11.8 (§7.9) — and **multi-cursor**: a
 `CursorSet` that owns the sorted, non-overlapping, never-empty invariant, every
 edit and movement applied at N cursors as one thing to undo, N carets and N
-selections drawn, with ⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L and Escape (§7.2).
+selections drawn, with ⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L and Escape (§7.2) — and **the
+100 MB file**, which turned out to be a measurement rather than a rope: the
+longest line is derived on demand and carried across an edit instead of rebuilt
+over the whole file on every keystroke, and the line index is scanned with
+`memchr`, together taking a keystroke from 5.4 ms to 1.0 and an open from 107 ms
+to 30, with the rope still unbuilt and tree-sitter now the thing in the way
+(§7.6).
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -725,10 +737,19 @@ sequence:
   them side by side. `SessionView`'s recursive split-pane tree in CowTerm is the
   shape. What it collides with is named in §7.8: one `TextRenderer` and one
   `RowCache` for the app, which two visible editors would thrash.
-- **A 100 MB file**, which nothing here has ever measured — §7.6 defers the rope
-  until one hurts and §7.9 could not say when that is. The two candidates are
-  `Document`'s flat string and its line index, and which bites first is a
-  measurement rather than an argument. The cheapest real thing left to learn.
+- ~~**A 100 MB file.**~~ — **done, and for the fourth time the plan named the
+  wrong candidate. See §7.6.** Neither the flat string nor the flat line index
+  bit first: two thirds of a keystroke was spent recomputing the longest line in
+  the file, a number `widestLine()` returns and nothing outside its own tests
+  reads. A keystroke at 100 MB is 5.4 ms → 1.0 and an open 107 ms → 30. What the
+  measurement then found is that the rope is not what stands between ECode and a
+  large file — **tree-sitter is**, at 208 ms a keystroke against `Document`'s 1.1.
+- **A size threshold on the highlighter**, which §7.6 makes the next obvious thing
+  rather than an idea. Above some size, do not parse and draw the file plain: the
+  budget, `hasPendingWork` and a `Highlighter` interface that a null
+  implementation already satisfies are all in place, so what is actually being
+  decided is the number and what the person is told. The knee is between 4 MB and
+  8 MB. The cheapest real thing left, now that the 100 MB file has been looked at.
 - **The first ⌃Tab onto a large tab**, the 8.6 ms §7.9 leaves behind. Nothing
   parses a file until it is looked at, so the cost lands on the switch; starting
   it at open in 2 ms slices off the same budget would move it somewhere nobody is
@@ -1454,17 +1475,109 @@ mattered there stayed small because it went through `Editor` rather than around
 it, and marked text can be held to the same rule. It is a range on the
 `CursorSet`, not a second thing views reach into.
 
-### 7.6 The rope, when files get big
+### 7.6 The rope — measured at last, and it is still not the rope
 
-`Document` is a `std::string` with a flat line index. The index is now repaired
-incrementally, but it is still linear in line count per edit, and the string
-itself makes every insert move the tail.
+This section said to defer the rope "until a real file makes it hurt", and §7
+called measuring one "the cheapest real thing left to learn". It was. The
+measurement says the rope is *still* not the thing to build, and that the two
+candidates named here were the wrong two.
 
-Deliberately deferred, and cheap to defer: the mutation API is only
-`replace(start, end, text)` plus `line(i)`, so the storage can change without
-the renderer or the highlighter noticing. Do it when a real file makes it hurt,
-not before — and measure first, because the line index may bite sooner than the
-string does.
+**What a keystroke on a 100 MB file is actually made of**, at `-O2`, off-screen
+so no window server is in the way (§9), on a generated 100 MB C++ file of 4.83
+million lines:
+
+| | before | after |
+|---|---|---|
+| `Document::fromText` — read and index | 106.7 ms | **30.0 ms** |
+| one keystroke at the END of the file | 4.72 ms | **0.000 ms** |
+| one keystroke in the MIDDLE | 5.71 ms | **1.02 ms** |
+| one keystroke at the START | 6.70 ms | **2.18 ms** |
+| undo | 5.48 ms | **1.04 ms** |
+| drawing a screenful — 73 rows of accessors | 0.002 ms | 0.003 ms |
+
+**Where the edit lands is what decomposes the cost, and that is the whole method
+here.** An edit at the very end of the file moves almost no bytes and shifts
+almost no line starts, so whatever it costs is what an edit pays *regardless of
+position*. That was 4.72 ms of the 6.70 — and it is now 0.000, which is the
+direct evidence that all of it was one thing rather than a subtraction claiming
+so. The two reference numbers say what the rest is: a memmove of the whole 100 MB
+string is 1.53 ms and shifting every line start is 0.53 ms, against a measured
+2.18 ms for an edit at the start. Nothing else is left over.
+
+**That one thing was `widest`, which this plan never mentioned and nothing
+reads.** `reindexAfterEdit` finished by recomputing the longest line over every
+line in the file, and `widestLine()`'s only callers are its own tests — the
+horizontal scroll range it exists to size has not been built. Two thirds of a
+keystroke on a large file went into deriving a number nobody had asked for.
+
+So the fix is again not the one this section named: **derive it on demand, and
+carry it across an edit.** Decisions worth recording, because each went against
+the obvious version:
+
+- **Opening a file does not work it out either.** The scan in `indexLines` passes
+  every line and could compute it for free, which is what it used to do. Leaving
+  it unknown is what makes the property true in one sentence: a document nothing
+  asks about never pays. The counter in the tests is what pins that.
+- **The record is held as a byte offset, not a line index.** An offset shifts the
+  same way the line starts around it just did — one addition — where an index has
+  to be reasoned about against how many entries the edit erased and inserted, and
+  the trailing-newline fixup can move it by one more. That reasoning is exactly
+  where this class has been wrong before.
+- **And the shift is checked rather than trusted.** The offset has to still name a
+  line start, and that line has to still be the length being claimed for it.
+  Dropping the record is always available and always correct — `widestLine()`
+  rescans — so a slip in the geometry makes the answer *slow*, never *wrong*.
+  That is the property worth having in a class this arithmetic-heavy.
+- **A longer touched line wins outright, with no look at the rest of the file.**
+  Every line the edit did not touch still has the length it had, so a maximum
+  found among the touched ones that beats the old record is the new record. Only
+  *shortening* the record forces a rescan, and typing is almost never on the
+  longest line in a large file.
+- **The `reserve` on the line index was measured and removed.** An estimate of one
+  line per 32 bytes looked obviously right and buys nothing — 29.6 ms against
+  30.0, inside the noise, because the vector's doubling is memcpy over integers
+  and disappears next to the scan. It would have over-allocated 25 MB on a 100 MB
+  file that turned out to be one long line. The 3.5× on the open is `memchr`
+  alone.
+
+**What is left is the rope's, and it is now the whole of what a keystroke costs:**
+1.02 ms in the middle of a 100 MB file, being the string's memmove and the line
+index's shift in roughly a 3:1 ratio. At 10 MB it is 0.10 ms and at 1 MB 0.01 ms.
+So the answer to "when does a file make it hurt" is: **not at 10 MB, and at
+100 MB it is one millisecond** — real, but not the thing standing between ECode
+and a large file.
+
+**Because tree-sitter is, by two orders of magnitude.** The same three files
+through the actual editing path, with the highlighter in the loop:
+
+| | 1 MB | 10 MB | 100 MB |
+|---|---|---|---|
+| first sight coloured | 85 ms / 43 frames | 836 ms / 410 frames | **8.3 s / 4061 frames** |
+| one keystroke, reparsed | 1.42 ms | 18.4 ms | **208 ms** |
+| the same keystroke, no highlighter | 0.013 ms | 0.109 ms | **1.11 ms** |
+
+The reparse is linear at ~1.7 ms per MB and crosses a 60 Hz frame at around
+10 MB. It is not a regression: `fullParses()` reads 1 at every size, so §7.9's
+incremental path is running and 208 ms is what tree-sitter costs to repair a
+5.2-million-line tree. Nor is it the query — that is memoised (§7.3) and the
+counter reads 11 for the whole run.
+
+**The app was run on both files and stays up**: 100 MB opens and holds at 599 MB
+RSS, on-demand rendering leaving it near-idle once the frames stop. The file is
+readable and scrollable immediately, which is §7.9's budgeted parse working as
+designed — it is only *colouring* that takes 8 seconds.
+
+**So the next number here is a size threshold on the highlighter, not a rope**,
+and it is a policy decision rather than a data structure: above some size, do not
+parse at all and draw the file plain. Everything needed for it exists — the
+budget, `hasPendingWork`, and a `Highlighter` interface a null implementation
+already satisfies. What has to be decided is the number and what the person is
+told. On these measurements the knee is between 4 MB and 8 MB.
+
+The deferral itself was still right, and for the reason given: the mutation API
+is only `replace(start, end, text)` plus `line(i)`, so the storage can change
+without the renderer or the highlighter noticing. That is as true now as it was,
+and it is why this could wait for a measurement instead of a guess.
 
 ### 7.7 Carried over, not forgotten
 
@@ -2084,6 +2197,55 @@ Recorded because each of these cost something to find out.
   by brightness, test the hue. Antialiasing turns every colour into a ramp
   towards the background, and a single-channel threshold reads a point on that
   ramp.
+- **Vary the input along the axis you want to attribute, and the subtraction
+  stops being a guess.** A keystroke on a 100 MB file cost 6.7 ms and the
+  question was how much of that was the string's memmove, how much the line
+  index's shift, and how much something else. Timing it at the *end* of the file
+  answers it with no instrumentation at all: there is nothing to move and nothing
+  to shift there, so what remains is whatever an edit pays wherever it lands —
+  4.72 ms of the 6.70, which is now 0.000. §7.9 said a number is not a
+  measurement until it is broken down; the cheapest way to break one down is
+  often to pick an input where the part you are trying to isolate goes to zero.
+- **The profile can name a cost that has no consumer.** Two thirds of a keystroke
+  on a large file went into recomputing `Document::widestLine()`, which is
+  called by nothing outside its own tests — the horizontal scroll range it sizes
+  does not exist yet. Nothing about the code looked wrong, and no test could have
+  failed: it was computing the right answer, eagerly, for nobody. Before
+  optimising a number, grep for who reads it; "nobody" is a legitimate and very
+  cheap answer.
+- **A pessimistic fallback turns arithmetic bugs into slow paths.** Carrying the
+  longest line across an edit means shifting an offset by the edit's delta, which
+  is exactly the geometry `reindexAfterEdit` has been wrong about before. So the
+  shift is *checked* — the offset must still name a line start, and that line must
+  still be the length claimed for it — and a failed check drops the record, which
+  costs a rescan and cannot cost a wrong answer. Worth designing in wherever the
+  slow path is the thing being optimised: it makes every branch free to be too
+  cautious and none of them free to be wrong.
+- **Two guards, and the mutation predicts which one is load-bearing.** The check
+  above has three conditions and only the last can change the answer: what makes
+  the record valid is that *some* line still has that length, not which one. That
+  was predicted, then confirmed — the length condition takes three tests red
+  including the oracle, and the exact-hit condition survives deletion. §9 already
+  recorded that a surviving mutation can be information about the design rather
+  than about the tests; the improvement is to write down *which* half a test can
+  see, in the code, before the next reader has to rediscover it from a green run.
+- **An obviously-right optimisation that measures as noise is worse than none.**
+  A `reserve` on the line index from an estimated bytes-per-line looked free and
+  is: 29.6 ms against 30.0, because the vector's doubling is memcpy over integers
+  and vanishes next to the scan it sits beside. It would have over-allocated
+  25 MB on a 100 MB file that turned out to be one long line. The whole 3.5× came
+  from `memchr`. A/B the parts of a change that "obviously" help, or you keep the
+  cost of the one that did nothing.
+- **A harness that gets a sign wrong looks exactly like the bug you were hunting.**
+  The first off-screen frame of a large file at a deep scroll offset came back
+  entirely blank, which read as the line index failing a quarter of a million
+  lines in — the precise thing being tested. `scrollY` in this codebase is
+  *negative*: the content is positioned above the viewport and the clip cuts it
+  back (§7.3). `firstVisibleRow` returning 0 for every offset was the tell, and it
+  was in the first diagnostic printed. When a "look at it" comes back empty, check
+  what the harness asked for before believing what it shows — §9 already says the
+  automation can be the thing that changed the state, and this is the same lesson
+  for the thing that never looked.
 - **§9's own lessons come back.** The multi-cursor frames were dumped at 2× while
   the harness passed 1.f to `PaintContext`, and the right half of every row went
   missing — exactly the entry three bullets up, reproduced within an hour of

@@ -305,3 +305,177 @@ auto tIncrementalIndexSurvivesTyping =
 
     check(document.text() == source);
 };
+
+// --- the widest line, carried across an edit rather than recomputed ----------
+//
+// It used to be rebuilt over every line on every edit, which measured at 4.7 ms
+// of a 6.7 ms keystroke on a 100 MB file — more than the flat string and the
+// flat line index cost put together. PLAN.md §7.6.
+//
+// The oracle above already compares widestLine() against a freshly built index
+// after every one of its edits, so the *answer* is covered by it. What it cannot
+// see is whether the answer was carried or rescanned, because a rescan agrees
+// with a rescan. That is what widestRescans() is for.
+
+auto tOpeningDoesNotScanForTheWidest =
+    test("DocumentEdit/openingAFileDoesNotLookForItsWidestLine") = []
+{
+    const auto document = Document::fromText("ab\nabcdef\nabc");
+
+    // Nothing has asked, so nothing has been worked out.
+    check(document.widestRescans() == 0);
+
+    check(document.widestLine() == 6);
+    check(document.widestRescans() == 1);
+
+    // And having been worked out once, it is not worked out again.
+    check(document.widestLine() == 6);
+    check(document.widestRescans() == 1);
+};
+
+auto tAnEditElsewhereCarriesTheWidest =
+    test("DocumentEdit/anEditElsewhereCarriesTheWidestLine") = []
+{
+    auto document = Document::fromText("ab\nabcdef\nabc\n");
+
+    check(document.widestLine() == 6);
+
+    const auto before = document.widestRescans();
+
+    // One edit before the record's line and one after it, which are the two
+    // directions its offset has to survive.
+    document.replace(0, 0, "x");
+    check(document.widestLine() == 6);
+
+    document.replace(document.length(), document.length(), "y");
+    check(document.widestLine() == 6);
+
+    check(document.widestRescans() == before);
+};
+
+// Every line the edit did not touch still has the length it had, so a longer one
+// among the touched lines is the new maximum outright — no need to consult the
+// rest of the file.
+auto tALongerLineTakesOverWithoutARescan =
+    test("DocumentEdit/aLongerLineTakesOverWithoutARescan") = []
+{
+    auto document = Document::fromText("ab\nabcdef\nabc\n");
+
+    check(document.widestLine() == 6);
+
+    const auto before = document.widestRescans();
+
+    document.replace(2, 2, "cdefghij");
+
+    check(document.line(0) == "abcdefghij");
+    check(document.widestLine() == 10);
+    check(document.widestRescans() == before);
+};
+
+// The one case that genuinely cannot be carried, and the reason the flag exists:
+// shortening the record leaves the new maximum on some other line, and which one
+// is exactly the question a rescan answers.
+//
+// Aimed at the expensive direction, per §9: reporting the *old* record would be
+// an over-estimate that never recovers, so the check is that the number comes
+// down.
+auto tShorteningTheWidestRescans =
+    test("DocumentEdit/shorteningTheWidestLineRescansAndComesDown") = []
+{
+    auto document = Document::fromText("ab\nabcdef\nabcd\n");
+
+    check(document.widestLine() == 6);
+
+    const auto before = document.widestRescans();
+
+    document.replace(3, 8, "");
+
+    check(document.line(1) == "f");
+    check(document.widestLine() == 4);
+    check(document.widestRescans() == before + 1);
+};
+
+// Deleting a newline makes one line out of two, and the merged line is longer
+// than either. The touched scan has to look at what the edit produced rather
+// than at what went into it.
+auto tMergingTwoLinesFindsTheLongerResult =
+    test("DocumentEdit/mergingTwoLinesFindsTheMergedLength") = []
+{
+    auto document = Document::fromText("abcd\nefgh\nij\n");
+
+    check(document.widestLine() == 4);
+
+    const auto before = document.widestRescans();
+
+    document.replace(4, 5, "");
+
+    check(document.text() == "abcdefgh\nij\n");
+    check(document.widestLine() == 8);
+    check(document.widestRescans() == before);
+};
+
+// A paste of several lines: the new maximum is inside the inserted text, so the
+// touched range has to span all of it rather than just the line the edit began
+// on.
+auto tAMultiLinePasteScansAllOfIt =
+    test("DocumentEdit/aMultiLinePasteScansEveryLineItAdded") = []
+{
+    auto document = Document::fromText("ab\ncd\n");
+
+    check(document.widestLine() == 2);
+
+    const auto before = document.widestRescans();
+
+    document.replace(3, 3, "one\ntwo\nthe longest of them\nfour\n");
+
+    check(document.widestLine() == 19);
+    check(document.widestRescans() == before);
+};
+
+// The run the carry actually exists for: a hundred keystrokes in one place, none
+// of them anywhere near the longest line. This is the shape a person produces,
+// and the counter is the only thing that can see it staying off the rescan.
+auto tTypingNeverRescans = test("DocumentEdit/aRunOfTypingNeverRescans") = []
+{
+    auto source =
+        std::string {"a very long line that holds this document's record\n"};
+
+    for (auto line = 0; line < 200; ++line)
+        source += "short\n";
+
+    auto document = Document::fromText(source);
+
+    const auto record = document.widestLine();
+    const auto keystrokes = std::size_t {20};
+
+    // The typing must stay shorter than the record, or it becomes the record and
+    // the test stops being about carrying one.
+    check(record > keystrokes + 5);
+
+    const auto before = document.widestRescans();
+    const auto at = document.offsetAt(100, 0);
+
+    for (std::size_t index = 0; index < keystrokes; ++index)
+    {
+        document.replace(at + index, at + index, "x");
+        check(document.widestLine() == record);
+    }
+
+    check(document.widestRescans() == before);
+};
+
+// Undo is an edit like any other, and it runs through apply() rather than
+// replace() — a separate entry point into the same repair.
+auto tUndoCarriesTheWidestToo = test("DocumentEdit/undoCarriesTheWidestLine") = []
+{
+    auto document = Document::fromText("ab\nabcdef\nabc\n");
+
+    check(document.widestLine() == 6);
+
+    const auto edit = document.replace(2, 2, "cdefghij");
+    check(document.widestLine() == 10);
+
+    document.apply(edit.inverted());
+    check(document.widestLine() == 6);
+    check(indexMatchesRebuild(document));
+};

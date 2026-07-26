@@ -1,6 +1,7 @@
 #include "Document.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace ecode
 {
@@ -37,27 +38,78 @@ Document Document::fromFile(const eacp::FilePath& path)
 void Document::indexLines()
 {
     lineStarts.clear();
-    widest = 0;
+
+    // Deliberately not reserved from an estimated bytes-per-line. Measured, it
+    // saves nothing — the vector's doubling is memcpy over trivially-copyable
+    // integers, and next to the scan below it does not register — while a guess
+    // of one line per 32 bytes over-allocates 25 MB on a 100 MB file that turns
+    // out to be one long line.
 
     // Even an empty document has one line, so there is somewhere to put a caret.
     lineStarts.push_back(0);
 
-    for (std::size_t index = 0; index < contents.size(); ++index)
-    {
-        if (contents[index] != '\n')
-            continue;
+    // memchr rather than a byte loop: it is the one part of opening a file that
+    // is proportional to its bytes rather than to its lines, and the library's
+    // version is vectorised where a `!= '\n'` loop is not.
+    const auto* const base = contents.data();
+    const auto* at = base;
+    const auto* const end = base + contents.size();
 
-        const auto lineLength = index - lineStarts.back();
-        widest = std::max(widest, lineLength);
+    while (at != end)
+    {
+        const auto* const newline =
+            static_cast<const char*>(std::memchr(at, '\n', std::size_t(end - at)));
+
+        if (newline == nullptr)
+            break;
+
+        const auto offset = std::size_t(newline - base);
 
         // A newline at the very end terminates the last line rather than
         // starting an empty one after it.
-        if (index + 1 < contents.size())
-            lineStarts.push_back(index + 1);
+        if (offset + 1 < contents.size())
+            lineStarts.push_back(offset + 1);
+
+        at = newline + 1;
     }
 
-    if (!contents.empty() && contents.back() != '\n')
-        widest = std::max(widest, contents.size() - lineStarts.back());
+    // Not computed here, though the scan above passes every line and could.
+    // Opening a file is the one moment a large document is definitely going to
+    // be looked at, and the longest line is wanted by a horizontal scroll range
+    // that may never be asked for. Leaving it unknown makes the open pay for
+    // what it is actually doing.
+    widestKnown = false;
+}
+
+// The whole answer, from the index alone — no byte scanning, since a line's
+// length is the gap between two adjacent starts.
+void Document::rescanWidest() const
+{
+    ++rescans;
+
+    widest = 0;
+    widestStart = 0;
+
+    for (std::size_t index = 0; index < lineStarts.size(); ++index)
+    {
+        const auto length = line(index).size();
+
+        if (length > widest)
+        {
+            widest = length;
+            widestStart = lineStarts[index];
+        }
+    }
+
+    widestKnown = true;
+}
+
+std::size_t Document::widestLine() const
+{
+    if (!widestKnown)
+        rescanWidest();
+
+    return widest;
 }
 
 TextEdit Document::replace(std::size_t start, std::size_t end, std::string_view text)
@@ -162,11 +214,90 @@ void Document::reindexAfterEdit(std::size_t start,
     while (lineStarts.size() > 1 && lineStarts.back() >= contents.size())
         lineStarts.pop_back();
 
-    // Line lengths come from the index alone, so this costs no byte scanning.
-    widest = 0;
+    updateWidestAfterEdit(start, oldEnd, inserted);
+}
 
-    for (std::size_t index = 0; index < lineStarts.size(); ++index)
-        widest = std::max(widest, line(index).size());
+// Keeps the longest line across an edit, in work proportional to the edit rather
+// than to the file.
+//
+// Two facts do all of it. Every line the edit did not touch still has the length
+// it had, so a maximum found among the touched ones that beats the old record is
+// the new record outright. And if it does not beat it, the old record still
+// stands provided its own line survived the edit unchanged — which is a question
+// about one line, not about all of them.
+//
+// The pessimistic answer is "stale", and stale is correct: widestLine() rescans.
+// So every branch here may only ever be too cautious.
+void Document::updateWidestAfterEdit(std::size_t start,
+                                     std::size_t oldEnd,
+                                     std::string_view inserted)
+{
+    if (!widestKnown)
+        return;
+
+    // The lines the edit's text now occupies. Derived from offsets against the
+    // repaired index rather than from how many entries were erased and inserted
+    // above: a deletion that merges two lines, an insertion of a thousand, and a
+    // replacement that does both are all just "the lines spanning this range".
+    const auto firstTouched = lineAt(start);
+    const auto lastTouched = lineAt(start + inserted.size());
+
+    auto touchedMax = line(firstTouched).size();
+    auto touchedStart = lineStarts[firstTouched];
+
+    for (auto index = firstTouched + 1; index <= lastTouched; ++index)
+    {
+        const auto length = line(index).size();
+
+        if (length > touchedMax)
+        {
+            touchedMax = length;
+            touchedStart = lineStarts[index];
+        }
+    }
+
+    if (touchedMax >= widest)
+    {
+        widest = touchedMax;
+        widestStart = touchedStart;
+
+        return;
+    }
+
+    // The record is elsewhere in the file, so it survives if its line does.
+    // Shifting its offset is the same arithmetic the line starts after the edit
+    // just got; an offset inside the replaced span has no answer.
+    if (widestStart >= oldEnd)
+        widestStart =
+            static_cast<std::size_t>(static_cast<std::ptrdiff_t>(widestStart)
+                                     + static_cast<std::ptrdiff_t>(inserted.size())
+                                     - static_cast<std::ptrdiff_t>(oldEnd - start));
+    else if (widestStart > start)
+        widestKnown = false;
+
+    if (!widestKnown)
+        return;
+
+    // And then it is checked rather than trusted. The shift above reasons about
+    // an edit's geometry, which is where this class has been wrong before; a
+    // slip there must not be able to report a maximum that no line has. Dropping
+    // the record is always available and always correct, so the check is free to
+    // be strict.
+    //
+    // Only the last of the three conditions can change the answer, and that is
+    // worth writing down rather than leaving for the next reader to discover
+    // from a green mutation (PLAN.md §9). What makes `widest` right is that some
+    // line still has that length — nothing above depends on *which* line. The
+    // first two keep the anchor honest so that a later edit shifts a real line
+    // start rather than drifting; they are a statement about the next edit, not
+    // about this answer.
+    const auto at =
+        std::lower_bound(lineStarts.begin(), lineStarts.end(), widestStart);
+    const auto index =
+        static_cast<std::size_t>(std::distance(lineStarts.begin(), at));
+
+    if (at == lineStarts.end() || *at != widestStart || line(index).size() != widest)
+        widestKnown = false;
 }
 
 std::size_t Document::offsetAt(std::size_t line, std::size_t column) const
