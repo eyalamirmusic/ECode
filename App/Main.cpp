@@ -1173,11 +1173,18 @@ struct EditorView final : GPU::GPUView
     // Ahead of the layout, which is constructed against the active file.
     //
     // One highlighter per open file rather than one for the workspace: a shared
-    // one would have to reparse from scratch on every switch, which is the
-    // ~40 ms cold open PLAN.md §7 measures, paid on a ⌃Tab.
+    // one would have to reparse from scratch on every switch, which is the cold
+    // open PLAN.md §7 measures, paid on a ⌃Tab.
+    //
+    // Budgeted, because this is the caller that owns a frame. An 8,000-line file
+    // is 10 ms of tree-sitter next to 0.06 ms for the frame around it, so a
+    // highlighter allowed to finish decides when the window first appears; given
+    // 2 ms it hands the frame back and the text is on screen and scrollable
+    // immediately, with the colours arriving over the next few frames.
     Workspace workspace {[]
                          {
-                             auto syntax = makeOwned<SyntaxHighlighter>();
+                             auto syntax = makeOwned<SyntaxHighlighter>(
+                                 SyntaxHighlighter::frameParseBudget);
 
                              // A grammar that failed to load leaves this null,
                              // and everything draws as plain text.

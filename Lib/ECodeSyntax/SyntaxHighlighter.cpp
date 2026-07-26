@@ -1,84 +1,81 @@
 #include "SyntaxHighlighter.h"
 
+#include "SyntaxLanguage.h"
+
 #include <tree_sitter/api.h>
 
 #include <algorithm>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-extern "C" const TSLanguage* tree_sitter_cpp(void);
-
 namespace ecode
 {
-// Generated from the two grammars' highlights.scm by FindTreeSitter.cmake.
-extern const char* const cppHighlightQuery;
-
 namespace
 {
-// tree-sitter capture names -> the vocabulary the theme understands.
-//
-// `variable` is deliberately Text: C's query opens with a catch-all
-// `(identifier) @variable`, so treating it as styled would colour every
-// identifier in the file and drown out the captures that actually mean
-// something.
-TokenKind kindForCapture(std::string_view capture)
+using Clock = std::chrono::steady_clock;
+
+// What the progress callback below is handed. tree-sitter asks it periodically
+// during a parse and stops if it answers true.
+struct ParseDeadline
 {
-    // Names are hierarchical (`function.special`); match on the root so
-    // unrecognised refinements fall back to their family rather than to Text.
-    if (const auto dot = capture.find('.'); dot != std::string_view::npos)
-        capture = capture.substr(0, dot);
+    Clock::time_point limit;
+};
 
-    if (capture == "keyword")
-        return TokenKind::Keyword;
-    if (capture == "string" || capture == "character")
-        return TokenKind::String;
-    if (capture == "comment")
-        return TokenKind::Comment;
-    if (capture == "number")
-        return TokenKind::Number;
-    if (capture == "function")
-        return TokenKind::Function;
-    if (capture == "type")
-        return TokenKind::Type;
-    if (capture == "constant")
-        return TokenKind::Constant;
-    if (capture == "operator")
-        return TokenKind::Operator;
-    if (capture == "delimiter" || capture == "punctuation")
-        return TokenKind::Punctuation;
-    if (capture == "preproc")
-        return TokenKind::Preprocessor;
+bool pastDeadline(TSParseState* state)
+{
+    const auto& deadline = *static_cast<const ParseDeadline*>(state->payload);
 
-    return TokenKind::Text;
+    return Clock::now() > deadline.limit;
+}
+
+// Reading the whole remainder in one go, since a Document's text is one
+// contiguous string. The callback form is only needed because the options
+// overload of ts_parser_parse takes a TSInput and there is no _string variant of
+// it — the parse is not incremental in its *input*, only in its work.
+const char* readFrom(void* payload,
+                     std::uint32_t byteIndex,
+                     TSPoint,
+                     std::uint32_t* bytesRead)
+{
+    const auto& text = *static_cast<const std::string*>(payload);
+
+    if (byteIndex >= text.size())
+    {
+        *bytesRead = 0;
+        return "";
+    }
+
+    *bytesRead = static_cast<std::uint32_t>(text.size() - byteIndex);
+
+    return text.data() + byteIndex;
+}
+
+TSInput inputOver(const std::string& text)
+{
+    auto input = TSInput {};
+
+    input.payload = const_cast<std::string*>(&text);
+    input.read = readFrom;
+    input.encoding = TSInputEncodingUTF8;
+
+    return input;
 }
 } // namespace
 
 struct SyntaxHighlighter::Impl
 {
-    Impl()
+    explicit Impl(std::chrono::microseconds budget)
+        : parseBudget(budget)
+        , language(SyntaxLanguage::cpp())
     {
+        if (language == nullptr)
+            return; // grammar ABI out of range, or the query did not compile
+
         parser = ts_parser_new();
 
-        if (!ts_parser_set_language(parser, tree_sitter_cpp()))
-            return; // grammar ABI outside the runtime's supported range
-
-        auto errorOffset = std::uint32_t {0};
-        auto errorType = TSQueryError {};
-
-        query =
-            ts_query_new(tree_sitter_cpp(),
-                         cppHighlightQuery,
-                         static_cast<std::uint32_t>(std::strlen(cppHighlightQuery)),
-                         &errorOffset,
-                         &errorType);
-
-        if (query == nullptr)
+        if (!ts_parser_set_language(parser, language->grammar()))
             return;
-
-        disablePredicatedPatterns();
-        cacheCaptureKinds();
 
         cursor = ts_query_cursor_new();
         valid = true;
@@ -88,49 +85,31 @@ struct SyntaxHighlighter::Impl
     {
         if (cursor != nullptr)
             ts_query_cursor_delete(cursor);
-        if (query != nullptr)
-            ts_query_delete(query);
         if (tree != nullptr)
             ts_tree_delete(tree);
         if (parser != nullptr)
             ts_parser_delete(parser);
     }
 
-    // libtree-sitter parses `#match?` predicates but never evaluates them, so a
-    // pattern that relies on one fires unconditionally: C's ALL-CAPS rule tags
-    // every lowercase identifier as @constant, and C++'s namespace rule tags
-    // lowercase namespaces as @type. Wrong highlighting is worse than none, and
-    // the alternative — reimplementing the regexes here — buys two patterns out
-    // of seventy-seven. Disable them instead.
-    void disablePredicatedPatterns()
+    // Runs the parser for at most the budget, or to completion if there is none.
+    // Null means the budget ran out with the tree unfinished; the parser keeps
+    // its place and the next call resumes from there.
+    TSTree* parseWithin(const std::string& text)
     {
-        const auto patterns = ts_query_pattern_count(query);
+        if (parseBudget <= std::chrono::microseconds {0})
+            return ts_parser_parse_string(
+                parser, tree, text.c_str(), static_cast<std::uint32_t>(text.size()));
 
-        for (auto index = std::uint32_t {0}; index < patterns; ++index)
-        {
-            auto count = std::uint32_t {0};
-            ts_query_predicates_for_pattern(query, index, &count);
+        auto deadline = ParseDeadline {Clock::now() + parseBudget};
 
-            if (count > 0)
-                ts_query_disable_pattern(query, index);
-        }
-    }
+        auto options = TSParseOptions {};
+        options.payload = &deadline;
+        options.progress_callback = pastDeadline;
 
-    // A capture's index is stable for the query's lifetime, so the name lookup
-    // happens once here rather than per capture per frame.
-    void cacheCaptureKinds()
-    {
-        const auto captures = ts_query_capture_count(query);
-        captureKinds.resize(captures, TokenKind::Text);
-
-        for (auto index = std::uint32_t {0}; index < captures; ++index)
-        {
-            auto length = std::uint32_t {0};
-            const auto* name = ts_query_capture_name_for_id(query, index, &length);
-
-            if (name != nullptr)
-                captureKinds[index] = kindForCapture({name, length});
-        }
+        // Progress is guaranteed however small the budget: tree-sitter asks the
+        // callback between units of work rather than before starting one, so a
+        // deadline already past still leaves the parse further along than it was.
+        return ts_parser_parse_with_options(parser, tree, inputOver(text), options);
     }
 
     void reparse(const Document& document)
@@ -156,17 +135,50 @@ struct SyntaxHighlighter::Impl
             return;
 
         const auto& text = document.text();
-        auto* previous = tree;
+
+        // An edit that lands while a budgeted parse is still running leaves the
+        // parser holding a position in text that no longer exists, and resuming
+        // from it would build a tree describing neither version. ts_parser_reset
+        // is what throws that half-done work away; without it the resumed parse
+        // walks off the end of the shorter string or stops short of the longer
+        // one, and either way the tree is wrong rather than merely stale.
+        if (parsing && parsingRevision != document.revision())
+        {
+            ts_parser_reset(parser);
+            parsing = false;
+            ++restartCount;
+        }
+
+        if (!parsing)
+        {
+            parsingRevision = document.revision();
+
+            // Counted where a parse *begins*, not where one runs: a budgeted
+            // parse comes back through here once per frame until it finishes, and
+            // all of those are the same parse.
+            if (tree == nullptr)
+                ++fullParseCount;
+        }
 
         // Parsing against the edited tree is what makes this incremental:
-        // tree-sitter reuses every subtree the edit did not touch. Passing
-        // nullptr instead would reparse the file.
-        tree = ts_parser_parse_string(
-            parser, previous, text.c_str(), static_cast<std::uint32_t>(text.size()));
+        // tree-sitter reuses every subtree the edit did not touch. It also has to
+        // survive an unfinished parse, which is why the old tree is not replaced
+        // until a new one actually arrives — a resumed parse is handed the same
+        // `tree` again as its starting point, and a caller mid-parse keeps
+        // drawing from the spans the old one gave rather than flashing to plain.
+        auto* fresh = parseWithin(text);
 
-        if (previous != nullptr)
-            ts_tree_delete(previous);
+        if (fresh == nullptr)
+        {
+            parsing = true;
+            return;
+        }
 
+        if (tree != nullptr)
+            ts_tree_delete(tree);
+
+        tree = fresh;
+        parsing = false;
         dirty = false;
         parsedLength = text.size();
 
@@ -256,6 +268,21 @@ struct SyntaxHighlighter::Impl
         // Mutates the tree in place, marking the affected range stale.
         ts_tree_edit(tree, &change);
         dirty = true;
+
+        // The tree has now been told about text of the new length, so reparse()'s
+        // sanity check must not read this as a change nobody reported.
+        //
+        // Without this line the check fired on every edit that moved the length —
+        // which is very nearly every edit — and threw the tree away, so the
+        // incremental reparse this whole method exists for never ran. Typing one
+        // character into an 8,000-line file cost a full parse, 9.6 ms against the
+        // 0.24 ms it costs now; the only edits that ever reached the fast path
+        // were the same-length ones, which are exactly the ones the check cannot
+        // catch. Invisible to every test, because they compare the spans against a
+        // fresh parse and a fresh parse is what the slow path does: PLAN.md §9, an
+        // oracle proves the answer, never the path. fullParses() is the counter
+        // that makes it visible.
+        parsedLength = document.length();
     }
 
     void highlight(const Document& document,
@@ -280,7 +307,7 @@ struct SyntaxHighlighter::Impl
         const auto end = TSPoint {static_cast<std::uint32_t>(lastLine), 0};
 
         ts_query_cursor_set_point_range(cursor, start, end);
-        ts_query_cursor_exec(cursor, query, ts_tree_root_node(tree));
+        ts_query_cursor_exec(cursor, language->query(), ts_tree_root_node(tree));
 
         // One TokenKind per byte of each visible line, painted in delivery
         // order. Captures overlap constantly — C's catch-all @variable covers
@@ -311,9 +338,7 @@ struct SyntaxHighlighter::Impl
                 continue;
 
             const auto& capture = match.captures[captureIndex];
-            const auto kind = capture.index < captureKinds.size()
-                                  ? captureKinds[capture.index]
-                                  : TokenKind::Text;
+            const auto kind = language->kindOfCapture(capture.index);
 
             if (kind == TokenKind::Text)
                 continue;
@@ -367,12 +392,15 @@ struct SyntaxHighlighter::Impl
         }
     }
 
+    std::chrono::microseconds parseBudget;
+
+    // Shared, immutable, and outlives every highlighter; see SyntaxLanguage.
+    const SyntaxLanguage* language = nullptr;
+
     TSParser* parser = nullptr;
-    TSQuery* query = nullptr;
     TSQueryCursor* cursor = nullptr;
     TSTree* tree = nullptr;
 
-    std::vector<TokenKind> captureKinds;
     std::vector<std::vector<TokenKind>> paint;
     std::unordered_map<std::size_t, LineStyle> lines;
 
@@ -380,6 +408,13 @@ struct SyntaxHighlighter::Impl
 
     // Whether the tree needs reparsing before the next query.
     bool dirty = true;
+
+    // Whether a parse ran out of budget partway and is waiting to be resumed.
+    bool parsing = false;
+
+    // Which document state the unfinished parse is reading, so an edit arriving
+    // mid-parse is noticed rather than resumed over.
+    std::uint64_t parsingRevision = 0;
 
     // Length of the text the tree was built from, for the sanity check above.
     std::size_t parsedLength = 0;
@@ -393,12 +428,15 @@ struct SyntaxHighlighter::Impl
 
     std::uint64_t styleVersion = 1;
 
-    // Only the tests read this; see SyntaxHighlighter::queries.
+    // Only the tests read these; see SyntaxHighlighter::queries and
+    // parseRestarts.
     std::uint64_t queryCount = 0;
+    std::uint64_t restartCount = 0;
+    std::uint64_t fullParseCount = 0;
 };
 
-SyntaxHighlighter::SyntaxHighlighter()
-    : impl(std::make_unique<Impl>())
+SyntaxHighlighter::SyntaxHighlighter(std::chrono::microseconds parseBudget)
+    : impl(std::make_unique<Impl>(parseBudget))
 {
 }
 
@@ -428,6 +466,15 @@ void SyntaxHighlighter::reset()
         impl->tree = nullptr;
     }
 
+    // A parse in flight was reading the document this reset is throwing away, so
+    // its position means nothing now.
+    if (impl->parsing)
+    {
+        ts_parser_reset(impl->parser);
+        impl->parsing = false;
+        ++impl->restartCount;
+    }
+
     impl->dirty = true;
     impl->forgetQuery();
 
@@ -444,6 +491,15 @@ void SyntaxHighlighter::update(const Document& document,
     // Reparsing first, because it is what decides whether the answers already
     // held are still about this text: a reparse forgets them.
     impl->reparse(document);
+
+    // A parse still in flight means the tree does not describe this text yet.
+    // Querying it anyway would spend the frame's most expensive call on spans
+    // that are about to be thrown away — and on the first sight of a file there
+    // is no tree to query at all. So whatever is held stays held: nothing on the
+    // first parse, which draws as plain text, and the previous colouring on a
+    // reparse, which is what stops an edit flashing the file to plain.
+    if (impl->parsing)
+        return;
 
     // An editor sitting still asks for the same lines of the same document on
     // every frame — a caret blink, a hover, a scrollbar. Running the query
@@ -465,6 +521,11 @@ void SyntaxHighlighter::update(const Document& document,
     impl->highlight(document, from, std::max(to, lastLine));
 }
 
+bool SyntaxHighlighter::hasPendingWork() const
+{
+    return impl->parsing;
+}
+
 std::uint64_t SyntaxHighlighter::version() const
 {
     return impl->styleVersion;
@@ -473,6 +534,16 @@ std::uint64_t SyntaxHighlighter::version() const
 std::uint64_t SyntaxHighlighter::queries() const
 {
     return impl->queryCount;
+}
+
+std::uint64_t SyntaxHighlighter::parseRestarts() const
+{
+    return impl->restartCount;
+}
+
+std::uint64_t SyntaxHighlighter::fullParses() const
+{
+    return impl->fullParseCount;
 }
 
 const LineStyle& SyntaxHighlighter::lineStyle(std::size_t line)

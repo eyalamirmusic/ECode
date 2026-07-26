@@ -15,8 +15,11 @@ mapping that the renderer, the cursor and the scroll offset all now go through �
 the larger of the two structural debts §7.3 named. **Both of those debts are now
 closed**: an idle frame no longer works out what it already knows, which took
 measuring the frame before building anything and finding the plan's premise wrong
-in two directions at once (§7.3). Sections 1–5 are the design and the research
-behind it; **§6 is where things stand and §7 is what to do next.**
+in two directions at once (§7.3). The cold open is closed too, and measuring
+*that* found the premise wrong again and turned up a worse bug behind it — every
+keystroke had been reparsing the whole file (§7.9). Sections 1–5 are the design
+and the research behind it; **§6 is where things stand and §7 is what to do
+next.**
 
 ## Decisions taken
 
@@ -652,7 +655,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (465 tests): `Document` with an incremental line index,
+**Done in ECode** (523 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -672,7 +675,11 @@ take an idle frame from 0.32 ms to 0.058 — and **more than one file open at
 once**: a `Workspace` of `OpenFile`s, each with its own highlighter, undo
 history and scroll offset, behind a tab strip that closes, shrinks, overflows
 and scrolls, with ⌘N, ⌘W, ⌃Tab and ⇧⌘S, and untitled buffers that now have
-somewhere to save to (§7.8).
+somewhere to save to (§7.8) — and the cold open: a `SyntaxLanguage` shared by
+every highlighter, a parse budgeted across frames so a large file is on screen
+immediately, and the incremental reparse `applyEdit` was written for actually
+running, which takes a keystroke on an 8,000-line file from 9.6 ms to 0.24 and a
+twenty-file launch from 295 ms to 11.8 (§7.9).
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -685,18 +692,15 @@ real rather than a rearrangement, and it exposed two genuine gaps —
 
 Ordered by what unblocks the most, with the reasoning rather than just the list.
 
-**Where the front line is now that 7.1, 7.3, 7.4 and 7.8 are done.** Nothing here
-is blocked on anything else, so this is a choice rather than a sequence:
+**Where the front line is now that 7.1, 7.3, 7.4, 7.8 and 7.9 are done.** Nothing
+here is blocked on anything else, so this is a choice rather than a sequence:
 
-- **The cold open.** Opening an 8,000-line file spends ~40 ms parsing it before
-  the first frame, which after §7.3 is the largest number left in the renderer by
-  two orders of magnitude. tree-sitter parses the whole file whether or not any
-  of it is on screen; the fix is to let the first frame draw unhighlighted and
-  parse behind it, which needs `Highlighter::version` to mean what §7.3 already
-  made it mean. Measure a 100 MB file before deciding how much this matters.
-  **This got worse, and deliberately**: §7.8 gives every open file its own
-  highlighter, so `ECode *.cpp` pays the parse once per file at launch. The fix
-  is the same one and it is now worth more.
+- ~~**The cold open.**~~ — **done, and the plan had the wrong half of it. See
+  §7.9.** The 40 ms was not the parse: it was 14 ms of compiling the highlight
+  query plus 10 ms of parsing, and it is the *query* that §7.8 multiplied by the
+  number of open files. The parse was already lazy. Measuring it also turned up a
+  bug worth more than the cold open itself — every keystroke was reparsing the
+  whole file.
 - **Multi-cursor (§7.2).** Deferred "in favour of the widget layer", and the
   widget layer is finished — so the stated reason has expired, and §7.2 is
   explicit that the bill grows with everything written against a single cursor
@@ -712,6 +716,14 @@ is blocked on anything else, so this is a choice rather than a sequence:
   them side by side. `SessionView`'s recursive split-pane tree in CowTerm is the
   shape. What it collides with is named in §7.8: one `TextRenderer` and one
   `RowCache` for the app, which two visible editors would thrash.
+- **A 100 MB file**, which nothing here has ever measured — §7.6 defers the rope
+  until one hurts and §7.9 could not say when that is. The two candidates are
+  `Document`'s flat string and its line index, and which bites first is a
+  measurement rather than an argument. The cheapest real thing left to learn.
+- **The first ⌃Tab onto a large tab**, the 8.6 ms §7.9 leaves behind. Nothing
+  parses a file until it is looked at, so the cost lands on the switch; starting
+  it at open in 2 ms slices off the same budget would move it somewhere nobody is
+  waiting. Smaller than either item above, and the machinery already exists.
 
 ### 7.1 ~~Save and the file lifecycle~~ — done
 
@@ -1002,6 +1014,13 @@ Two pieces, and the smaller one was the bigger win:
 The first frame is unchanged at ~40 ms for an 8,000-line file, essentially all of
 it tree-sitter's initial parse. That is now by far the largest number in the
 renderer and the only one worth looking at next.
+
+**Both halves of that last paragraph were wrong, and §7.9 has the numbers.** It
+is ~24 ms of real work for 8,000 lines, not 40; and rather than "essentially all
+of it" the parse is 10 ms of it, against 14 ms spent compiling the highlight
+query, which has nothing to do with the file at all. Written down here as it
+stood because it is the same mistake §7.3 opens by admitting: a number was
+attributed rather than measured.
 
 Decisions worth recording, because each went against the obvious version:
 
@@ -1415,10 +1434,14 @@ Decisions worth recording, because each went against the obvious version:
   arrived with this rather than later: a buffer that cannot be saved is not a
   place to type.
 - **One highlighter per open file, not one per workspace.** A shared one would
-  reparse from scratch on every switch — the ~40 ms cold open above, paid on a
-  ⌃Tab — and in between would hand the renderer a tree describing text that is
-  not on screen. The cost lands at launch instead: `ECode *.cpp` parses every
-  file up front, which is the same debt §7 already names and now worth more.
+  reparse from scratch on every switch — the cold open above, paid on a ⌃Tab —
+  and in between would hand the renderer a tree describing text that is not on
+  screen. ~~The cost lands at launch instead: `ECode *.cpp` parses every file up
+  front.~~ **Half right, and the wrong half.** It does not: nothing calls
+  `update` on a file nobody is looking at, so an unopened tab is never parsed —
+  the parse lands on the first ⌃Tab onto it, 8.6 ms, once. What `ECode *.cpp`
+  *did* pay per file was the 14 ms query compile in the constructor, and §7.9
+  fixes that by sharing it.
 - **The highlighter factory is a constructor argument, not a settable member.**
   The workspace builds its first file inside its own constructor, so a factory
   installed afterwards leaves exactly that one file — the one a launch with no
@@ -1496,6 +1519,136 @@ accessibility API, as §7.4 established: launched over three files, ⌃Tab cycli
 alpha → beta → gamma → alpha, Next/Previous Editor greyed with one tab open and
 live with two, a menu Paste lighting the dot, ⌘W refusing and saying so in the
 title, another edit making that question stale, and a second ⌘W taking it.
+
+### 7.9 The cold open — done, and the plan was wrong about what it was
+
+This section carried "opening an 8,000-line file spends ~40 ms parsing it before
+the first frame, essentially all of it tree-sitter's initial parse" for months,
+and §7.8 added that `ECode *.cpp` therefore "pays the parse once per file at
+launch". Measured, both sentences turn out to be wrong, and in a way that made
+the stated fix aim at the smaller half.
+
+**What a cold open is actually made of**, at `-O2`, off-screen so no window
+server is in the way (§9), for a generated 8,323-line C++ file:
+
+| | before | after |
+|---|---|---|
+| `SyntaxHighlighter` constructor | 13.6 ms | **0.00 ms** after the first |
+| first `update` — parse + query | 10.0 ms | 2.0 ms, then 4 more frames |
+| worst frame during the parse | 10.0 ms | **2.02 ms** |
+| **launch over 20 files × 8,000 lines** | **295 ms** | **11.8 ms** |
+| typing one character | 9.6 ms | **0.24 ms** |
+| first ⌃Tab onto an unparsed tab | 8.6 ms | 8.6 ms, in 2 ms frames |
+
+Three findings, in ascending order of how wrong the plan was.
+
+**One: the 40 ms was not the parse.** It was 13.6 ms of `ts_query_new` plus
+10.0 ms of parsing plus ~5 ms of `renderToImage`'s own off-screen target, and the
+plan had rounded the lot up and attributed it to tree-sitter's parse. Compiling
+the query is the single most expensive call in a cold open, and it analyses each
+of C++'s 77 patterns against the whole grammar — it is a function of the
+*grammar*, not of the file, and it costs the same for a 500-line file as for a
+30,000-line one. The glyph prepass and the draw are 0.36 ms and 0.44 ms; the
+renderer was never the problem.
+
+**Two: §7.8 multiplied the query compile, not the parse.** A file nobody is
+looking at is never parsed — `update` is only ever called for the visible editor,
+so an unopened tab holds a highlighter with no tree, and the parse lands on the
+first ⌃Tab onto it. What every tab *did* pay, eagerly, in its constructor, was
+those 13.6 ms. Twenty files was 295 ms of launch, 280 of it compiling one
+identical query twenty times.
+
+So the first fix is not the one this plan named: **share the compiled query.**
+`SyntaxLanguage` holds the grammar, the compiled `TSQuery` and the capture-index
+table, built on first use and shared by every highlighter thereafter. Everything
+derived from a *document* — the parser, its tree, the query cursor — stays with
+the highlighter. Sharing is safe because the query is immutable once built: the
+one call that mutates it, `ts_query_disable_pattern` for the predicated patterns
+(see §7.4), happens in the constructor before anyone else can see it, and
+`ts_query_cursor_exec` takes it as `const`.
+
+**Three, and it is worth more than the cold open: every keystroke was reparsing
+the whole file.** `reparse` discards its tree when the document's length no
+longer matches the length it parsed — a safety net for a document swapped out
+behind its back — and `applyEdit` never updated that length after telling the
+tree about an edit. So the net fired on every edit that moved the length, which
+is very nearly every edit, and the incremental reparse that `applyEdit` exists
+for had never once run. The only edits reaching the fast path were the
+same-length ones, which are exactly the ones the length check cannot catch.
+
+One line fixes it, and the interesting part is why it survived: a from-scratch
+parse and an incremental one arrive at the same tree, so the oracle test that
+compares an incremental reparse against a fresh parse agrees either way. §9
+already had the general form written down — *an oracle proves the answer, never
+the path* — and this is the second time in this project that the missing thing
+was a counter. `SyntaxHighlighter::fullParses()` is it.
+
+**Then the first frame, which is what the section originally asked for.** The
+parse now runs under a wall-clock budget: `ts_parser_parse_with_options` with a
+progress callback that cancels once 2 ms are gone, and tree-sitter resumes where
+it left off on the next call. `hasPendingWork()` says the parse is unfinished,
+`EditorWidget` asks for another frame, and the file is on screen and scrollable
+in the first one. Probed before designing around it, since the documentation
+describes resumption in a sentence: a budgeted parse of 8,000 lines came back
+byte-identical to an uninterrupted one — `ts_node_string` compared, 646,186
+characters both ways — and cost 9.79 ms against 10.59, so slicing it is free.
+
+Decisions worth recording, because each went against the obvious version:
+
+- **The budget is off by default and the *app* asks for it.** The obvious version
+  makes it the default so nobody can forget, which is what §7.8's
+  highlighter-factory lesson would suggest. It is wrong here, and the tests said
+  so before the reasoning did: a budget generous enough to be invisible at `-O2`
+  interrupts a 500-line parse in a debug build, so four existing tests went red
+  in Debug and passed in Release. A default that makes `update()`'s answer depend
+  on how the binary was compiled is worse than one that has to be asked for.
+  Whoever owns the frame is also the only one who knows there is a frame to give
+  back.
+- **The old tree is not replaced until a new one arrives.** A cancelled parse
+  returns null, and assigning that would throw away both the tree a resumed parse
+  needs as its starting point and the last good colouring. Keeping it means a
+  reparse holds its previous colours while it runs, rather than the file flashing
+  to plain on an edit.
+- **A pending parse runs no query.** The tree does not describe this text yet, so
+  querying it would spend the frame's most expensive call on spans about to be
+  replaced. Nothing is forgotten either, which is the same point from the other
+  side: what is held is still the best answer available.
+- **An edit mid-parse restarts it rather than resuming.** The parser holds a
+  position in text that no longer exists, and resuming from it builds a tree
+  describing neither version — not stale, *wrong*. `ts_parser_reset` is the
+  documented way to abandon it, and `parseRestarts()` counts them.
+- **`version()` moves when the parse lands, not per slice.** Per slice would drop
+  the §7.3 row cache on every frame of the parse; never would leave the file drawn
+  plain for as long as it stayed open.
+- **A parse begun is counted where it begins, not where it runs.** A budgeted
+  parse comes back through `reparse` once per frame, and all of those are one
+  parse — the distinction between `fullParses` and "calls" is what makes the
+  counter mean anything.
+
+**Verified three ways, and the counters are what make two of them tests at all.**
+`Tests/ColdOpenTests.cpp` covers the model: the query compiled once for twenty
+highlighters, typing not moving `fullParses`, an unreported change still moving
+it, a budgeted parse agreeing span-for-span with a whole one, a one-microsecond
+budget still terminating, the version moving only on completion.
+`Tests/ColdOpenRenderTests.cpp` covers the frame, through a real `EditorWidget`
+in a real `WidgetHost` rendered off-screen: the first frame draws the text with
+the parse still pending, it asks for another frame, the colours arrive, and once
+they have it stops asking. Eight mutations were tried and all eight went red.
+
+Then it was looked at — two frames dumped to files and opened, which is what §9
+settled on. Frame 1 of an 8,000-line file is the text, the gutter, the line
+numbers and the caret, all correct and entirely plain; frame 5 is the same
+picture coloured, with nothing moved. The app was also launched on that file and
+on twenty copies of it, and came up and stayed up; a screen capture came back
+black, which is the same wall §9 already ends on.
+
+**Not done, deliberately:** the remaining 8.6 ms is one parse of one file, spread
+over five frames, and there is nothing left to take out of it without threads or
+a smaller grammar. Two things are now the next numbers here rather than this one:
+the **first ⌃Tab onto a large tab** still pays that parse, which could be started
+in the background at open instead of at first sight; and a **100 MB file**, which
+neither this nor §7.6 has measured. `Document::fromText` is 0.41 ms for 556 KB,
+so the line index scales linearly and the string is the thing to watch.
 
 ---
 
@@ -1693,6 +1846,41 @@ Recorded because each of these cost something to find out.
   Option-without-Command mask — and macOS matches those before the window sees a
   key at all, so the path is as verified as this machine allows. It has not been
   pressed by a person.
+- **A measurement can be right about the total and wrong about every part of
+  it.** The cold open was carried as "~40 ms, essentially all of it tree-sitter's
+  initial parse". The total was in the right neighbourhood and the attribution was
+  not: 14 ms of it was compiling the highlight query, which depends on the grammar
+  and not on the file, and the parse was 10 ms. Everything the plan proposed —
+  draw unhighlighted, parse behind it — aimed at the 10. §9 already said to
+  measure before believing a debt; the other half is that a *number* is not a
+  measurement until it is broken down, because a fix is aimed at a part and never
+  at a total.
+- **The oracle lesson has a second victim, and it cost more than the first.** An
+  incremental reparse and a from-scratch one arrive at the same tree, so the test
+  that compares them agrees either way — and it agreed for as long as `applyEdit`
+  forgot to keep `reparse`'s length check in step and *every keystroke reparsed
+  the whole file*. 9.6 ms a character on an 8,000-line file, in a suite of 508
+  green tests, behind a test written specifically to cover that path. The rule
+  from `LineMap::rebuildCount` is now twice-earned: any optimisation whose
+  fallback is the thing it optimises needs a counter, and the counter is the test.
+- **The build type is a hidden input to a wall-clock default.** A 2 ms parse
+  budget is invisible at `-O2` and interrupts a 500-line parse in a debug build,
+  so making it the default turned four existing tests into ones that passed or
+  failed depending on how the binary was compiled. It showed up immediately, which
+  is the only reason it is a lesson rather than a bug: a default whose behaviour
+  depends on the compiler's optimiser has no business being a default.
+- **Read the library's promise, then check it.** The whole deferred-parse design
+  rests on one sentence of tree-sitter's documentation — that a parse cancelled by
+  the progress callback resumes on the next call. Confirmed before anything was
+  built on it, by parsing the same 8,000 lines twice and comparing the trees as
+  strings: 646,186 characters, identical, and the sliced version was no slower.
+  Cheap, and the alternative is discovering it through a subtly wrong syntax tree.
+- **A loop that tests before it acts can measure the wrong frame.** Two tests here
+  were written as `while (hasPendingWork()) render();` — and nothing is pending
+  until a frame has asked for it, so the loop never ran, and what came after it
+  measured the very first frame instead of a settled one. One failed loudly; the
+  other would have passed while asserting nothing. `do`/`while` is the shape, and
+  the tell is a loop whose condition depends on something the body causes.
 - **A snapshot at a scale the harness does not share is a lie.** The wrapped
   view dumped through `renderToImage(2.f)` came back with the right half of
   every row missing, which looked exactly like a clipping bug in the new code.

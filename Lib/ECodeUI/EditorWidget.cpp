@@ -345,6 +345,14 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
                               last > first
                                   ? lines.lineOfRow(document(), last - 1) + 1
                                   : lines.lineOfRow(document(), first));
+
+        // A highlighter is allowed to run out of time and leave the rest for the
+        // next frame, which is what keeps opening a large file from waiting on
+        // its parse. Nothing else would ask again: the app draws on demand, so
+        // without this the file would sit uncoloured until something unrelated —
+        // a caret blink, a keystroke — happened to request a frame.
+        if (highlighter()->hasPendingWork())
+            repaint();
     }
 
     renderer->prepare(view, bounds(), open->scrollY);

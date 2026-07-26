@@ -38,7 +38,9 @@ nano_add_executable(ECodeUITests
 # Highlighting runs a real grammar and a real query, but still needs no GPU: the
 # spans are computed entirely on the CPU.
 nano_add_executable(ECodeSyntaxTests
-        SOURCES SyntaxHighlighterTests.cpp
+        SOURCES
+            ColdOpenTests.cpp
+            SyntaxHighlighterTests.cpp
         TARGETS ECodeSyntax)
 
 # The renderer/highlighter integration draws off-screen, so unlike the others
@@ -48,6 +50,7 @@ nano_add_executable(ECodeRenderTests
         NO_MAIN
         SOURCES
             ChromeRenderTests.cpp
+            ColdOpenRenderTests.cpp
             ContextMenuRenderTests.cpp
             DamageTests.cpp
             FindRenderTests.cpp

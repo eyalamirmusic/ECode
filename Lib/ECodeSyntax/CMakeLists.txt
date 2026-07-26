@@ -3,6 +3,7 @@
 # knows nothing about how the spans were derived.
 add_library(ECodeSyntax STATIC
         SyntaxHighlighter.cpp
+        SyntaxLanguage.cpp
         ${ECODE_HIGHLIGHT_QUERY_CPP})
 
 target_include_directories(ECodeSyntax PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

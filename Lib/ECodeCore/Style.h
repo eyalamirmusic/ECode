@@ -42,6 +42,8 @@ struct StyleSpan
     TokenKind kind = TokenKind::Text;
 
     std::size_t end() const { return start + length; }
+
+    bool operator==(const StyleSpan&) const = default;
 };
 
 // Spans for a single line, sorted by start and non-overlapping. Gaps are plain
@@ -68,6 +70,11 @@ public:
     // around the window so that scrolling by a line needs no new work — so a
     // caller may not read anything into a line outside the range having spans.
     //
+    // Nor a promise that it finished: an implementation may spend a bounded
+    // amount of time and leave the rest for the next call, reporting what it
+    // has and saying so through hasPendingWork(). A caller that must have the
+    // real answer drives it until that goes false.
+    //
     // Part of the interface rather than of one implementation, so a view can
     // drive any highlighter without knowing which it has. Defaulted because a
     // highlighter that computes everything up front has nothing to do here.
@@ -76,6 +83,20 @@ public:
         (void) firstLine;
         (void) lastLine;
     }
+
+    // Whether the last update() left work unfinished, so a view should draw what
+    // there is and ask again next frame.
+    //
+    // This is what keeps a large file's first frame from waiting on its parse:
+    // opening one costs 10 ms of tree-sitter for every 8,000 lines against
+    // 0.06 ms for the frame around it, so a highlighter that insisted on
+    // finishing would decide when the window first appears. Reporting nothing
+    // and coming back means the text is on screen and scrollable immediately and
+    // the colours arrive over the frames after it.
+    //
+    // Defaulted false: a highlighter that always finishes has nothing pending,
+    // and a view that never asks simply gets the old behaviour.
+    virtual bool hasPendingWork() const { return false; }
 
     // Tells the highlighter the document changed, with `document` in the state
     // *after* the edit, so the next update can reuse whatever the edit did not
