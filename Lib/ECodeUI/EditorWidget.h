@@ -2,7 +2,7 @@
 
 #include "Widget.h"
 
-#include <ECodeCore/TextFile.h>
+#include <ECodeCore/Workspace.h>
 #include <ECodeRender/TextRenderer.h>
 
 #include <functional>
@@ -10,32 +10,43 @@
 
 namespace ecode
 {
-// The text view: a file, a scroll offset, and the keyboard and mouse handling
+// The text view: whichever file is open, and the keyboard and mouse handling
 // that turns input into edits.
 //
-// Holds the file rather than a bare Editor because a tab owns a file, and the
-// scroll offset belongs to the view of it rather than to the document. The
-// renderer is *not* owned: it is rebuilt whenever the display's backing scale
-// changes, and the view above owns that lifetime.
+// Points at an OpenFile rather than owning one, and switches which by being
+// pointed somewhere else. Everything about a file that a view would otherwise
+// have to save and restore around a tab switch — the scroll offset, the
+// highlighter's tree — lives on the OpenFile, so switching is one assignment
+// and there is no bookkeeping step to forget.
+//
+// The renderer is *not* owned either: it is rebuilt whenever the display's
+// backing scale changes, and the view above owns that lifetime.
 class EditorWidget final : public Widget
 {
 public:
-    explicit EditorWidget(TextFile& fileToEdit)
-        : file(fileToEdit)
+    explicit EditorWidget(OpenFile& fileToEdit)
+        : open(&fileToEdit)
     {
     }
 
     // Null until the atlas has been built, which cannot happen until the view
     // is on a display and its scale is known. Everything here tolerates that.
     void setRenderer(TextRenderer* rendererToUse);
-    void setHighlighter(Highlighter* highlighterToUse)
-    {
-        highlighter = highlighterToUse;
-    }
 
-    TextFile& textFile() { return file; }
-    Editor& editor() { return file.editor(); }
-    const Editor& editor() const { return file.editor(); }
+    // Shows a different open file. Cheap — no text is copied and nothing is
+    // reparsed, because the incoming file kept its own tree the whole time.
+    void setFile(OpenFile& fileToEdit);
+
+    OpenFile& openFile() { return *open; }
+    TextFile& textFile() { return open->file; }
+    Editor& editor() { return open->file.editor(); }
+    const Editor& editor() const { return open->file.editor(); }
+
+    Highlighter* highlighter() const { return open->highlighter.get(); }
+
+    // Where this file is scrolled to, in points, negative downwards. Exposed
+    // for the tests that check a switch does not lose it.
+    float scrollOffset() const { return open->scrollY; }
 
     // Half-open, matching Cursor's own range: an offset at the very end of a
     // selection is past it, which is where a click lands when someone aims just
@@ -47,7 +58,7 @@ public:
         return caret.hasSelection() && offset >= caret.start()
                && offset < caret.end();
     }
-    const Document& document() const { return file.document(); }
+    const Document& document() const { return open->file.document(); }
 
     // --- soft wrap -------------------------------------------------------
 
@@ -155,7 +166,9 @@ private:
 
     void refreshSearch();
 
-    TextFile& file;
+    // Never null: the workspace always has an active file, so there is always
+    // something to point at and no caller has to handle "no document".
+    OpenFile* open;
 
     Search finder;
 
@@ -164,10 +177,9 @@ private:
     std::uint64_t searchedVersion = 0;
 
     TextRenderer* renderer = nullptr;
-    Highlighter* highlighter = nullptr;
 
-    float scrollY = 0.f;
-
+    // Kept on the view rather than on the file: ⌥Z is a property of how the
+    // text is being looked at, and the View menu presents it that way.
     bool wordWrap = false;
 
     bool caretVisible = true;

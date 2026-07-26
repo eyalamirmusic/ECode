@@ -139,6 +139,15 @@ public:
     virtual void mouseUp(const eacp::Graphics::MouseEvent&) {}
     virtual void mouseMoved(const eacp::Graphics::MouseEvent&) {}
 
+    // The pointer has moved on to some other widget, or out of the window.
+    //
+    // Needed by anything narrower than the window that lights up under the
+    // pointer, because mouseMoved only ever reaches the widget the pointer is
+    // over: a tab that highlighted on the way in would never hear about the way
+    // out, and would stay lit until something else happened to repaint it. The
+    // host is what notices, since only it knows what was hovered a moment ago.
+    virtual void mouseExited() {}
+
     // True when the widget consumed the scroll. Returning false hands it to the
     // nearest ancestor that will take it, so a list inside a scrolling panel
     // passes on what it cannot use itself.

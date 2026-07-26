@@ -14,6 +14,7 @@ nano_add_executable(ECodeCoreTests
             StyleTests.cpp
             TextEditTests.cpp
             TextFileTests.cpp
+            WorkspaceTests.cpp
             WrapMotionTests.cpp
         TARGETS ECodeCore)
 
@@ -29,6 +30,7 @@ nano_add_executable(ECodeUITests
             MenuBuilderTests.cpp
             ScrollTests.cpp
             SplitterTests.cpp
+            TabBarTests.cpp
             TextFieldTests.cpp
             WidgetTests.cpp
         TARGETS ECodeUI)
@@ -52,6 +54,7 @@ nano_add_executable(ECodeRenderTests
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp
             SplitterRenderTests.cpp
+            TabRenderTests.cpp
             TestMain.cpp
             WrapRenderTests.cpp
         TARGETS ECodeSyntax ECodeUI)   # ECodeUI links ECodeRender publicly

@@ -39,6 +39,7 @@ void WidgetHost::setRoot(Widget& newRoot)
     // concerned, and both of these are raw pointers into it.
     capturedWidget = nullptr;
     focusedWidget = nullptr;
+    hoveredWidget = nullptr;
 }
 
 void WidgetHost::setBounds(const Graphics::Rect& bounds)
@@ -97,8 +98,35 @@ void WidgetHost::mouseMoved(const Graphics::MouseEvent& event)
     if (rootWidget == nullptr)
         return;
 
-    if (auto* target = rootWidget->widgetAt(event.pos))
+    auto* target = rootWidget->widgetAt(event.pos);
+
+    // Told it has been left before the new one is told it has been entered, so
+    // that no two widgets ever believe they are under the pointer at once.
+    setHovered(target);
+
+    if (target != nullptr)
         target->mouseMoved(event);
+}
+
+void WidgetHost::mouseExited()
+{
+    setHovered(nullptr);
+}
+
+void WidgetHost::setHovered(Widget* widget)
+{
+    if (hoveredWidget == widget)
+        return;
+
+    auto* previous = hoveredWidget;
+
+    // Stored before the callback, for the reason setFocus does the same: a
+    // handler asking who is hovered gets the answer it will still have once
+    // this returns.
+    hoveredWidget = widget;
+
+    if (previous != nullptr)
+        previous->mouseExited();
 }
 
 bool WidgetHost::mouseWheel(const Graphics::MouseEvent& event)

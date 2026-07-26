@@ -69,6 +69,25 @@ public:
     // would only trap the text in the buffer.
     bool hasChangedOnDisk() const;
 
+    // True once a save was refused because the file moved underneath us, and
+    // until something settles it — a save that takes the conflict, a reload, or
+    // opening something else.
+    //
+    // Kept with the file rather than with the window because the question is
+    // per file: with several open, the one being looked at is not necessarily
+    // the one whose save was refused.
+    bool isConflicted() const { return conflict; }
+
+    // One stat, and whatever the answer implies. A clean buffer simply takes
+    // the new version, which is what makes a git checkout or a formatter run
+    // appear on its own; a dirty one raises the conflict for a person to
+    // settle, because merging is not something to guess at.
+    //
+    // True when anything changed, so the caller knows to redraw. Standing in
+    // for file watching, which eacp does not have — FSEvents replaces the
+    // hasChangedOnDisk inside this, not this.
+    bool pollDisk();
+
     // Writes the buffer to disk atomically, so an interrupted save cannot
     // truncate the original.
     //
@@ -77,6 +96,14 @@ public:
     // either reloads or asks again through saveOverwriting.
     SaveResult save();
     SaveResult saveOverwriting();
+
+    // Writes to a new path and adopts it, which is what makes an untitled
+    // buffer saveable at all — there is nothing else to write to.
+    //
+    // Never refuses on a conflict: the person has just been shown a save panel
+    // naming this file and has already answered the overwrite question there,
+    // so asking again through the title bar would be asking twice.
+    SaveResult saveAs(const eacp::FilePath& newPath);
 
 private:
     // What we last saw on disk. Modification time plus size, the pair every
@@ -103,5 +130,7 @@ private:
     // The history position and the disk contents that agree with each other.
     std::uint64_t savedState = 0;
     DiskState onDisk;
+
+    bool conflict = false;
 };
 } // namespace ecode

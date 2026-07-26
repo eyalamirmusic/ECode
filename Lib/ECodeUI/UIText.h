@@ -2,6 +2,7 @@
 
 #include <ECodeRender/PaintContext.h>
 
+#include <string>
 #include <string_view>
 
 namespace ecode::UIText
@@ -30,6 +31,25 @@ float draw(PaintContext& context,
            float x,
            float baseline,
            const eacp::Graphics::Color& color);
+
+// The run, shortened with a trailing ellipsis until it fits in `maxWidth`.
+//
+// Returned rather than drawn clipped, because a clip cuts the last character in
+// half and leaves no sign that anything was removed: "Workspace.cpp" and
+// "Workspace.h" in narrow tabs both come out as "Workspace." and read as two
+// views of one file. An ellipsis at least says the name goes on.
+//
+// Cut on codepoint boundaries, so a multi-byte character is never split into
+// bytes that rasterize as replacement boxes.
+//
+// Measures, which means it rasterizes — so the run *and* the ellipsis must
+// already have gone through prepare(). Calling this from paint() is only safe
+// because every lookup it makes is then warm; a cold one would upload into a
+// texture the pass has bound. prepareElided() is prepare() plus the ellipsis.
+std::string
+    elide(eacp::Text::GlyphAtlas& atlas, std::string_view text, float maxWidth);
+
+void prepareElided(eacp::Text::GlyphAtlas& atlas, std::string_view text);
 
 // Baseline that centres one line of text vertically within `area`. Chrome rows
 // are laid out by height and the text hung inside them, so this is what every

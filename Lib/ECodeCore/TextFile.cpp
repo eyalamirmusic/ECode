@@ -60,10 +60,26 @@ bool TextFile::hasChangedOnDisk() const
     return now.exists && now != onDisk;
 }
 
+bool TextFile::pollDisk()
+{
+    if (!hasChangedOnDisk())
+        return false;
+
+    if (isDirty())
+        conflict = true;
+    else
+        reload();
+
+    return true;
+}
+
 SaveResult TextFile::save()
 {
     if (hasChangedOnDisk())
+    {
+        conflict = true;
         return SaveResult::changedOnDisk;
+    }
 
     if (!isDirty())
         return SaveResult::upToDate;
@@ -95,10 +111,35 @@ SaveResult TextFile::saveOverwriting()
     return SaveResult::saved;
 }
 
+SaveResult TextFile::saveAs(const eacp::FilePath& newPath)
+{
+    if (newPath.empty())
+        return SaveResult::failed;
+
+    const auto previous = filePath;
+
+    filePath = newPath;
+
+    const auto result = saveOverwriting();
+
+    // A failed write must not leave the buffer pointing at a file it is not in,
+    // or the next ⌘S would silently write somewhere nobody named.
+    if (result != SaveResult::saved)
+        filePath = previous;
+
+    return result;
+}
+
 void TextFile::markSaved()
 {
     savedState = ed.stateId();
     onDisk = stateOf(filePath);
+
+    // Whatever the conflict was about, this is now the version on disk — so the
+    // question the title was asking has been answered and must stop being
+    // asked. Every route back to agreement passes through here: a save that
+    // took the conflict, a reload, a saveAs, opening something else.
+    conflict = false;
 
     // Typing that continues after a save starts a new undo step, so undoing
     // once from there lands exactly on the text that was written rather than

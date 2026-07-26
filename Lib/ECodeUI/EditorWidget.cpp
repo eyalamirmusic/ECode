@@ -8,7 +8,7 @@ using namespace eacp;
 
 DocumentView EditorWidget::documentView() const
 {
-    return {document(), editor().lineMap(), highlighter};
+    return {document(), editor().lineMap(), highlighter()};
 }
 
 void EditorWidget::setRenderer(TextRenderer* rendererToUse)
@@ -18,6 +18,27 @@ void EditorWidget::setRenderer(TextRenderer* rendererToUse)
     // A new renderer means new metrics: a different advance changes how many
     // columns fit, and a different row height changes what offsets are in range.
     updateWrapWidth();
+    clampScroll();
+    repaint();
+}
+
+void EditorWidget::setFile(OpenFile& fileToEdit)
+{
+    if (open == &fileToEdit)
+        return;
+
+    open = &fileToEdit;
+
+    // The incoming file's line map was last given the wrap width of whatever
+    // viewport it was in, which is not necessarily this one.
+    updateWrapWidth();
+
+    // The match list describes the file that was open a moment ago, and the
+    // usual staleness check cannot see that: Editor::version counts per editor
+    // and starts at zero in each, so the incoming file's count can equal the
+    // outgoing file's and the stale list would survive comparison.
+    refreshSearch();
+
     clampScroll();
     repaint();
 }
@@ -66,7 +87,7 @@ void EditorWidget::clampScroll()
     // but never push a short document around.
     const auto lowest = std::min(0.f, bounds().h - content);
 
-    scrollY = std::clamp(scrollY, lowest, 0.f);
+    open->scrollY = std::clamp(open->scrollY, lowest, 0.f);
 }
 
 void EditorWidget::scrollToRow(std::size_t row)
@@ -80,13 +101,13 @@ void EditorWidget::scrollToRow(std::size_t row)
     // Already on screen: leave the view alone. Re-centring on every hit would
     // scroll the file out from under a match that was perfectly visible, and
     // ⌘G down a screenful of hits would judder rather than step.
-    if (top + scrollY >= 0.f && top + rowHeight + scrollY <= bounds().h)
+    if (top + open->scrollY >= 0.f && top + rowHeight + open->scrollY <= bounds().h)
         return;
 
     // Otherwise centre it rather than bringing it just inside the edge. A hit
     // revealed by the smallest possible scroll lands hard against the top or
     // bottom with no context on the side it arrived from.
-    scrollY = -top + (bounds().h - rowHeight) * 0.5f;
+    open->scrollY = -top + (bounds().h - rowHeight) * 0.5f;
 
     clampScroll();
 }
@@ -105,10 +126,10 @@ void EditorWidget::scrollToCaret()
 
     // Only move when the caret has actually left the viewport, so typing in the
     // middle of the screen does not drag the view around.
-    if (top + scrollY < 0.f)
-        scrollY = -top;
-    else if (bottom + scrollY > bounds().h)
-        scrollY = bounds().h - bottom;
+    if (top + open->scrollY < 0.f)
+        open->scrollY = -top;
+    else if (bottom + open->scrollY > bounds().h)
+        open->scrollY = bounds().h - bottom;
 
     clampScroll();
 }
@@ -312,20 +333,21 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
     // draw that follows it finds the row stale and lays it out again — with the
     // atlas already uploaded, so a glyph first needed by the new colouring
     // would be sampled from texels not yet on the GPU.
-    if (highlighter != nullptr)
+    if (highlighter() != nullptr)
     {
         const auto& lines = editor().lineMap();
 
-        const auto first = renderer->firstVisibleRow(scrollY);
-        const auto last = renderer->lastVisibleRow(view, bounds(), scrollY);
+        const auto first = renderer->firstVisibleRow(open->scrollY);
+        const auto last = renderer->lastVisibleRow(view, bounds(), open->scrollY);
 
-        highlighter->update(document(),
-                            lines.lineOfRow(document(), first),
-                            last > first ? lines.lineOfRow(document(), last - 1) + 1
-                                         : lines.lineOfRow(document(), first));
+        highlighter()->update(document(),
+                              lines.lineOfRow(document(), first),
+                              last > first
+                                  ? lines.lineOfRow(document(), last - 1) + 1
+                                  : lines.lineOfRow(document(), first));
     }
 
-    renderer->prepare(view, bounds(), scrollY);
+    renderer->prepare(view, bounds(), open->scrollY);
 }
 
 void EditorWidget::paint(PaintContext& context)
@@ -339,7 +361,7 @@ void EditorWidget::paint(PaintContext& context)
     overlay.matches = &finder.matches();
     overlay.currentMatch = finder.currentIndex();
 
-    renderer->draw(context, documentView(), overlay, bounds(), scrollY);
+    renderer->draw(context, documentView(), overlay, bounds(), open->scrollY);
 }
 
 void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
@@ -348,7 +370,7 @@ void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
         return;
 
     const auto offset =
-        renderer->offsetAtPoint(documentView(), event.pos, bounds(), scrollY);
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scrollY);
 
     if (event.button == Graphics::MouseButton::Right)
     {
@@ -382,7 +404,8 @@ void EditorWidget::mouseDragged(const Graphics::MouseEvent& event)
 
     // Always an extension: the anchor was set on mouse-down.
     editor().placeCaret(
-        renderer->offsetAtPoint(documentView(), event.pos, bounds(), scrollY), true);
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scrollY),
+        true);
 
     wake();
 }
@@ -398,7 +421,7 @@ bool EditorWidget::mouseWheel(const Graphics::MouseEvent& event)
                             ? event.delta.y
                             : event.delta.y * renderer->rowHeight() * 3.f;
 
-    scrollY += points;
+    open->scrollY += points;
     clampScroll();
     repaint();
 

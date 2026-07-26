@@ -24,23 +24,33 @@ using namespace eacp;
 
 namespace ecode
 {
-// The editor window: one file, drawn on the GPU, highlighted, typed in, saved.
+// The editor window: a workspace of open files, drawn on the GPU, highlighted,
+// typed in, saved.
 //
 // The chrome is a widget tree now rather than hardcoded rectangles, so this
 // file is down to what an application shell actually owns — the GPU resources
 // that depend on the display, the command chords, and the two timers.
 
-// `ECode <path>`, falling back to this file. Until there is a file tree it is
-// the only way to open anything, and it is what makes the editor testable
-// against a scratch file rather than against its own source.
-FilePath fileToOpen()
+// `ECode <path>…`, falling back to this file. It is what makes the editor
+// testable against scratch files rather than against its own source.
+//
+// Every path given rather than only the first, now that there is somewhere to
+// put the rest: `ECode *.cpp` is how anyone would expect to open a directory's
+// worth of files, and the workspace opens each into its own tab.
+eacp::Vector<FilePath> filesToOpen()
 {
     const auto& args = Apps::getAppEnvironment().commandLineArgs;
 
-    if (args.size() > 1 && !args[1].empty())
-        return FilePath {args[1]};
+    auto paths = eacp::Vector<FilePath> {};
 
-    return FilePath {__FILE__};
+    for (auto index = 1; index < args.size(); ++index)
+        if (!args[index].empty())
+            paths.add(FilePath {args[index]});
+
+    if (paths.size() == 0)
+        paths.add(FilePath {__FILE__});
+
+    return paths;
 }
 
 // The window's whole layout. Activity bar and sidebar off the left, tab strip
@@ -49,7 +59,7 @@ FilePath fileToOpen()
 // are y-down.
 struct WindowLayout final : Widget
 {
-    WindowLayout(TextFile& file,
+    WindowLayout(OpenFile& file,
                  const CommandRegistry& commands,
                  const Keymap& keymap)
         : editor(file)
@@ -199,9 +209,12 @@ struct EditorView final : GPU::GPUView
         host.setRoot(layout);
         layout.onRepaintNeeded = [this] { repaint(); };
 
+        workspace.onChanged = [this] { showActiveFile(); };
+
         registerCommands();
         bindKeys();
         connectFindBar();
+        connectTabs();
 
         layout.palette.onClosed = [this]
         {
@@ -213,36 +226,23 @@ struct EditorView final : GPU::GPUView
             repaint();
         };
 
-        openFile(fileToOpen());
+        for (const auto& path: filesToOpen())
+            openFile(path);
 
-        auto syntax = makeOwned<SyntaxHighlighter>();
-
-        // A grammar that failed to load leaves highlighter null, and everything
-        // still draws as plain text.
-        if (syntax->isValid())
-            highlighter = std::move(syntax);
-
-        layout.editor.setHighlighter(highlighter.get());
-
-        // Edits go straight to the syntax engine so it reparses the affected
-        // subtree rather than the file.
-        editor().onEdit = [this](const TextEdit& edit)
-        {
-            if (highlighter != nullptr)
-                highlighter->applyEdit(editor().document(), edit);
-        };
-
-        editor().onDocumentReplaced = [this]
-        {
-            if (highlighter != nullptr)
-                highlighter->reset();
-        };
+        // Left on the first, not the last: the first name on the command line
+        // is the one that was meant, and the rest are context.
+        workspace.activate(0);
 
         layout.editor.onStateChanged = [this] { updateChrome(); };
 
         // The tree is rooted at the open file's directory, which is the closest
         // thing to a project until there is a folder-open command.
-        layout.files.setRoot(file.path().parentDirectory());
+        layout.files.setRoot(activeFile().path().parentDirectory());
+
+        // The chrome was pushed once per file as the workspace changed, but the
+        // editor widget only learned its renderer afterwards, so the strip is
+        // rebuilt once here with everything in place.
+        updateChrome();
 
         layout.files.onFileChosen = [this](const FilePath& path)
         {
@@ -262,7 +262,40 @@ struct EditorView final : GPU::GPUView
         host.setFocus(&layout.editor);
     }
 
-    Editor& editor() { return file.editor(); }
+    Editor& editor() { return workspace.editor(); }
+    TextFile& activeFile() { return workspace.active().file; }
+
+    // Points the view at whatever the workspace made active, and pushes the
+    // change into the chrome around it.
+    //
+    // Every route that opens, closes or switches a file arrives here through
+    // Workspace::onChanged rather than by remembering to call it — which is the
+    // difference between a tab switch that always redraws the strip and one
+    // that redraws it wherever somebody thought to.
+    void showActiveFile()
+    {
+        layout.editor.setFile(workspace.active());
+
+        pendingClose = -1;
+
+        // Which also puts the active tab in the strip; see updateChrome.
+        updateChrome();
+        repaint();
+    }
+
+    void connectTabs()
+    {
+        layout.tabs.onTabSelected = [this](int index)
+        {
+            workspace.activate(index);
+
+            // Focus follows the click, for the same reason it follows one in
+            // the tree: the point of switching to a file is to type in it.
+            host.setFocus(&layout.editor);
+        };
+
+        layout.tabs.onTabClosed = [this](int index) { closeFile(index); };
+    }
 
     // The find bar reports what was typed and which button was pressed; the
     // editor widget owns the search itself, since it has the document to search
@@ -457,6 +490,8 @@ struct EditorView final : GPU::GPUView
                       "Show All Commands",
                       [this] { togglePalette(); }});
 
+        commands.add({"file.new", "File: New File", [this] { newFile(); }});
+
         commands.add(
             {"file.open", "File: Open File…", [this] { chooseFileToOpen(); }});
 
@@ -466,10 +501,16 @@ struct EditorView final : GPU::GPUView
 
         commands.add({"file.save", "File: Save", [this] { saveFile(); }});
 
+        commands.add({"file.saveAs", "File: Save As…", [this] { saveFileAs(); }});
+
+        commands.add({"file.close",
+                      "File: Close Editor",
+                      [this] { closeFile(workspace.activeIndex()); }});
+
         commands.add({"file.revert",
                       "File: Revert File",
                       [this] { revertFile(); },
-                      [this] { return file.isDirty(); }});
+                      [this] { return activeFile().isDirty(); }});
 
         // Registered everywhere even though only Windows shows it in a menu:
         // the registry is what the editor can do, and the menu spec decides
@@ -543,6 +584,19 @@ struct EditorView final : GPU::GPUView
                       "View: Focus Explorer",
                       [this] { host.setFocus(&layout.files.keyboardTarget()); }});
 
+        // Listed but unavailable with one file open, rather than hidden: a
+        // command that appears once a second tab exists is harder to find than
+        // one that is visibly not applicable yet.
+        commands.add({"view.nextTab",
+                      "View: Next Editor",
+                      [this] { workspace.activateNext(); },
+                      [this] { return workspace.count() > 1; }});
+
+        commands.add({"view.previousTab",
+                      "View: Previous Editor",
+                      [this] { workspace.activatePrevious(); },
+                      [this] { return workspace.count() > 1; }});
+
         commands.add({"view.refreshExplorer",
                       "View: Refresh Explorer",
                       [this] { layout.files.refresh(); }});
@@ -564,9 +618,12 @@ struct EditorView final : GPU::GPUView
     void bindKeys()
     {
         keymap.bind("cmd+shift+p", "workbench.showPalette");
+        keymap.bind("cmd+n", "file.new");
         keymap.bind("cmd+o", "file.open");
         keymap.bind("cmd+shift+o", "file.openFolder");
         keymap.bind("cmd+s", "file.save");
+        keymap.bind("cmd+shift+s", "file.saveAs");
+        keymap.bind("cmd+w", "file.close");
         keymap.bind("cmd+z", "edit.undo");
         keymap.bind("cmd+shift+z", "edit.redo");
         keymap.bind("cmd+x", "edit.cut");
@@ -579,6 +636,13 @@ struct EditorView final : GPU::GPUView
         keymap.bind("cmd+shift+g", "find.previous");
         keymap.bind("cmd+1", "view.focusEditor");
         keymap.bind("cmd+shift+e", "view.focusExplorer");
+
+        // VSCode's chords, and deliberately not expressible as menu key
+        // equivalents: toKeyEquivalent only converts single characters, so
+        // "tab" stays with the keymap and the menu item prints no shortcut
+        // rather than claiming one macOS would match before the window.
+        keymap.bind("ctrl+tab", "view.nextTab");
+        keymap.bind("ctrl+shift+tab", "view.previousTab");
 
         // VSCode's chord, and the one place a binding without Command matters:
         // handleShortcut runs before the editor sees the key, so ⌥Z toggles
@@ -629,9 +693,7 @@ struct EditorView final : GPU::GPUView
 
     void revertFile()
     {
-        file.reload();
-
-        conflicted = false;
+        activeFile().reload();
 
         updateChrome();
         repaint();
@@ -678,54 +740,131 @@ struct EditorView final : GPU::GPUView
         repaint();
     }
 
-    void openFile(const FilePath& path)
+    // Opens the file into a new tab, or brings its tab forward if it is already
+    // open. Workspace::onChanged does the rest.
+    void openFile(const FilePath& path) { workspace.open(path); }
+
+    // A new empty buffer with nowhere to save to yet, which is what Save As is
+    // for. Also what closing the last tab leaves behind, so the two arrived
+    // together.
+    void newFile()
     {
-        if (!file.open(path))
+        workspace.addUntitled();
+        host.setFocus(&layout.editor);
+    }
+
+    // Whether a "close without saving?" put to the person is still the question
+    // it was.
+    //
+    // The tab *and* the text, because the question is about a particular
+    // version of a particular file: type one character and it is a different
+    // question. Compared rather than cleared by an event, because the edit can
+    // arrive from a keystroke, a menu paste or an undo, and only the first of
+    // those runs the editor's own key handling — a callback hung off one route
+    // would leave the other two asking about text that is gone.
+    bool closeIsPending(int index) const
+    {
+        return index >= 0 && pendingClose == index
+               && pendingCloseState == workspace.at(index).file.editor().stateId();
+    }
+
+    // Refuses a file with unsaved edits and says so in the title, which is the
+    // same shape ⌘S over a conflict already takes: there is no dialog to ask
+    // in, so the title carries the question and a second ⌘W answers it.
+    void closeFile(int index)
+    {
+        if (closeIsPending(index))
+        {
+            pendingClose = -1;
+            workspace.closeDiscarding(index);
+
+            return;
+        }
+
+        if (workspace.close(index) == CloseResult::hasUnsavedChanges)
+        {
+            // Only ever one tab is armed: arming every refused close would mean
+            // a ⌘W aimed at one file discarding another that had been refused
+            // ten minutes earlier.
+            pendingClose = index;
+            pendingCloseState = workspace.at(index).file.editor().stateId();
+
+            updateChrome();
+            repaint();
+        }
+    }
+
+    void saveFileAs()
+    {
+        auto options = Apps::FileSaveOptions {};
+        options.suggestedName = activeFile().name();
+
+        const auto chosen = Apps::chooseSaveFile(options);
+
+        if (!chosen)
             return;
 
-        conflicted = false;
+        activeFile().saveAs(FilePath {*chosen});
 
-        // A fresh document means the highlighter's tree describes text that is
-        // no longer there. setDocument fires onDocumentReplaced, which resets
-        // it — but the editor's scroll offset is this view's to fix.
-        layout.editor.setRenderer(renderer ? &renderer.value() : nullptr);
-
+        // The tab now has a name, and the title with it.
         updateChrome();
         repaint();
     }
 
-    // What the window's title bar should read. A pure function of the file's
-    // state, so App can ask for it once at startup and then let onTitleChanged
-    // push every later change.
-    std::string windowTitle() const
+    // The name a file goes by in a tab or a title. Untitled is what a buffer
+    // with no path is called everywhere, and it has to be called something.
+    static std::string displayName(const TextFile& file)
     {
         auto name = file.name();
 
-        if (name.empty())
-            name = "Untitled";
+        return name.empty() ? "Untitled" : name;
+    }
+
+    // What the window's title bar should read. A pure function of the active
+    // file's state, so App can ask for it once at startup and then let
+    // onTitleChanged push every later change.
+    std::string windowTitle() const
+    {
+        const auto& file = workspace.active().file;
+
+        auto name = displayName(file);
 
         if (file.isDirty())
             name = "• " + name;
 
-        // There is no dialog to ask in yet, so the title carries the question.
-        // A second Cmd+S answers it; see saveFile.
-        if (conflicted)
+        // There is no dialog to ask in yet, so the title carries both questions
+        // and a second press of the same chord answers each. See saveFile and
+        // closeFile.
+        if (file.isConflicted())
             name += "  —  changed on disk. ⌘S again to overwrite";
+
+        if (closeIsPending(workspace.activeIndex()))
+            name += "  —  unsaved. ⌘W again to close anyway";
 
         return name;
     }
 
-    // Pushes the file's state into the chrome that displays it. Cheap enough to
-    // call on every keystroke: both the tab strip and the status bar compare
-    // before they store, so an unchanged state asks for no frame.
+    // Pushes the workspace's state into the chrome that displays it. Cheap
+    // enough to call on every keystroke: the tab strip and the status bar both
+    // compare before they store, so an unchanged state asks for no frame.
     void updateChrome()
     {
-        auto tab = TabItem {};
-        tab.title = file.name().empty() ? "Untitled" : file.name();
-        tab.modified = file.isDirty();
-        tab.conflicted = conflicted;
+        auto tabs = eacp::Vector<TabItem> {};
 
-        layout.tabs.setTabs({tab});
+        for (auto index = 0; index < workspace.count(); ++index)
+        {
+            const auto& file = workspace.at(index).file;
+
+            auto tab = TabItem {};
+            tab.title = displayName(file);
+            tab.modified = file.isDirty();
+            tab.conflicted = file.isConflicted();
+
+            tabs.add(std::move(tab));
+        }
+
+        layout.tabs.setTabs(std::move(tabs));
+        layout.tabs.setActiveTab(workspace.activeIndex());
 
         layout.status.setText("Ln " + std::to_string(layout.editor.caretLine())
                                   + ", Col "
@@ -809,30 +948,45 @@ struct EditorView final : GPU::GPUView
 
     void saveFile()
     {
+        auto& file = activeFile();
+
+        // An untitled buffer has nowhere to go, so ⌘S on one asks where —
+        // which is what every editor does and the only thing that makes the
+        // buffer closing the last tab leaves behind worth typing in.
+        if (file.path().empty())
+        {
+            saveFileAs();
+            return;
+        }
+
         // The second press takes the conflict. Refusing forever would strand
         // the text in the buffer, and there is no dialog to ask in until there
         // is a widget for one — so the title asks, and Cmd+S answers.
-        const auto result = conflicted ? file.saveOverwriting() : file.save();
-
-        conflicted = result == SaveResult::changedOnDisk;
+        if (file.isConflicted())
+            file.saveOverwriting();
+        else
+            file.save();
 
         updateChrome();
         repaint();
     }
 
     // Standing in for file watching, which eacp does not have: one stat a
-    // second, which is nothing next to a frame.
+    // second per open file, which is nothing next to a frame.
+    //
+    // Every open file, not only the visible one: a tab switched to an hour
+    // after a git checkout should show what is on disk now, and finding out at
+    // the moment it is switched to would mean discovering it too late to warn
+    // about a conflict.
     void checkDisk()
     {
-        if (!file.hasChangedOnDisk())
-            return;
+        auto changed = false;
 
-        // Nothing local to lose, so take the new version — a git checkout or a
-        // formatter run should simply appear.
-        if (!file.isDirty())
-            file.reload();
-        else
-            conflicted = true;
+        for (auto index = 0; index < workspace.count(); ++index)
+            changed |= workspace.at(index).file.pollDisk();
+
+        if (!changed)
+            return;
 
         updateChrome();
         repaint();
@@ -850,6 +1004,15 @@ struct EditorView final : GPU::GPUView
     {
         if (!host.runCommandOnFocus(id))
             commands.run(id);
+
+        // Several commands change the document or the caret without ever
+        // reaching the editor's key handling — paste, undo, redo, cut, select
+        // all — and that is what normally pushes a change into the chrome. Left
+        // out, the dirty dot and the line/column readout lag a whole ⌘V behind,
+        // catching up only at the next keystroke. Found by running the app:
+        // pasting into a fresh tab through the Edit menu left the tab looking
+        // clean over text that was not.
+        layout.editor.wake();
 
         repaint();
     }
@@ -924,11 +1087,10 @@ struct EditorView final : GPU::GPUView
             if (host.keyDown(event))
                 return;
 
+        // dispatchCommand wakes the editor, so a chord that ran a command has
+        // already refreshed the chrome by the time this returns.
         if (handleShortcut(event))
-        {
-            layout.editor.wake();
             return;
-        }
 
         // Tab traversal is the host's, but only once there is more than one
         // focusable widget to move between — until then Tab is indentation.
@@ -963,6 +1125,11 @@ struct EditorView final : GPU::GPUView
         host.mouseMoved(event);
         updateCursor(event.pos);
     }
+
+    // The pointer left the window. Nothing else will say so — the last move
+    // inside the view is the last move there is — so a tab lit under the
+    // pointer would stay lit with the pointer in another application.
+    void mouseExited(const Graphics::MouseEvent&) override { host.mouseExited(); }
 
     // The window is one Graphics::View, so there is exactly one cursor for the
     // whole thing and the application is what applies it — a widget can only say
@@ -1003,13 +1170,28 @@ struct EditorView final : GPU::GPUView
 
     TextTheme textTheme;
 
-    TextFile file;
+    // Ahead of the layout, which is constructed against the active file.
+    //
+    // One highlighter per open file rather than one for the workspace: a shared
+    // one would have to reparse from scratch on every switch, which is the
+    // ~40 ms cold open PLAN.md §7 measures, paid on a ⌃Tab.
+    Workspace workspace {[]
+                         {
+                             auto syntax = makeOwned<SyntaxHighlighter>();
 
-    // Ahead of the layout, which holds the palette that reads both of them.
+                             // A grammar that failed to load leaves this null,
+                             // and everything draws as plain text.
+                             if (!syntax->isValid())
+                                 return OwningPointer<Highlighter> {};
+
+                             return OwningPointer<Highlighter> {std::move(syntax)};
+                         }};
+
+    // Ahead of the layout too, which holds the palette that reads both of them.
     CommandRegistry commands;
     Keymap keymap;
 
-    WindowLayout layout {file, commands, keymap};
+    WindowLayout layout {workspace.active(), commands, keymap};
     WidgetHost host;
 
     // Where focus was when the palette opened, so closing it puts the keyboard
@@ -1033,15 +1215,15 @@ struct EditorView final : GPU::GPUView
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
     std::optional<Text::GlyphRenderer> glyphs;
-    OwningPointer<SyntaxHighlighter> highlighter;
 
     float builtAtScale = 1.f;
 
     std::string shownTitle;
 
-    // Set when a save was refused because the file moved underneath us, and
-    // cleared by the save that resolves it.
-    bool conflicted = false;
+    // The one tab whose close was refused for having unsaved edits, or -1, and
+    // the text it was refused over. See closeIsPending.
+    int pendingClose = -1;
+    std::uint64_t pendingCloseState = 0;
 
     Threads::Timer blink {[this] { layout.editor.tickCaretBlink(); }, 2};
     Threads::Timer diskWatch {[this] { checkDisk(); }, 1};

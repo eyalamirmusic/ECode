@@ -33,11 +33,11 @@ public:
     //
     // `document` is the state *after* the edit. Without this the alternative is
     // reparsing the file on every keystroke.
-    void applyEdit(const Document& document, const TextEdit& edit);
+    void applyEdit(const Document& document, const TextEdit& edit) override;
 
     // Discards the tree, so the next update parses from scratch. For opening a
     // file or any change not described by a TextEdit.
-    void reset();
+    void reset() override;
 
     // Computes spans for the given line range, parsing first if needed. Call
     // before drawing, with the same range the renderer will draw.

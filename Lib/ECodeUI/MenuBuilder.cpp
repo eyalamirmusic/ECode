@@ -135,8 +135,15 @@ Vector<MenuSpec> defaultMenus(bool withExit)
 
     auto menus = Vector<MenuSpec> {};
 
-    auto file = Vector<std::string> {
-        "file.open", "file.openFolder", separator, "file.save", "file.revert"};
+    auto file = Vector<std::string> {"file.new",
+                                     "file.open",
+                                     "file.openFolder",
+                                     separator,
+                                     "file.save",
+                                     "file.saveAs",
+                                     "file.revert",
+                                     separator,
+                                     "file.close"};
 
     // Below a separator and last, which is where Windows puts it.
     if (withExit)
@@ -167,7 +174,10 @@ Vector<MenuSpec> defaultMenus(bool withExit)
                 "find.replaceAll"}});
 
     menus.add({"View",
-               {"view.focusEditor",
+               {"view.nextTab",
+                "view.previousTab",
+                separator,
+                "view.focusEditor",
                 "view.focusExplorer",
                 separator,
                 "view.refreshExplorer",

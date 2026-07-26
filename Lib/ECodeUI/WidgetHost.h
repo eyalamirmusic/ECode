@@ -33,6 +33,11 @@ public:
     void mouseUp(const eacp::Graphics::MouseEvent& event);
     void mouseMoved(const eacp::Graphics::MouseEvent& event);
 
+    // The pointer left the window. Nothing else can clear a hover state: the
+    // last move inside the view is the last move there will be, so a widget lit
+    // under the pointer would stay lit with the pointer somewhere else entirely.
+    void mouseExited();
+
     // Wheel deliberately ignores the capture and goes to the widget under the
     // pointer, which is what the platform does and what feels right when a
     // drag is in progress somewhere else. Bubbles to ancestors until consumed.
@@ -61,6 +66,10 @@ public:
     // arrow mid-drag reads as the drag having been dropped.
     eacp::Graphics::MouseCursor cursorAt(const eacp::Graphics::Point& point) const;
 
+    // Whichever widget the pointer is over, or null. Public because it is the
+    // honest way to test that entering and leaving are paired.
+    Widget* hovered() const { return hoveredWidget; }
+
     // --- focus -----------------------------------------------------------
 
     void setFocus(Widget* widget);
@@ -77,9 +86,11 @@ public:
 
 private:
     void moveFocus(int direction);
+    void setHovered(Widget* widget);
 
     Widget* rootWidget = nullptr;
     Widget* capturedWidget = nullptr;
     Widget* focusedWidget = nullptr;
+    Widget* hoveredWidget = nullptr;
 };
 } // namespace ecode

@@ -269,6 +269,88 @@ auto tSaveRefusesOverExternalChange = test("TextFile/saveRefusesToClobber") = []
     std::filesystem::remove_all(dir);
 };
 
+// The refusal has to be remembered, not merely returned. With one file open the
+// window could hold the answer in a bool of its own; with several, the question
+// belongs to a file — the one being looked at is not necessarily the one whose
+// save was refused — and the title, the tab's dot and the second ⌘S all read it
+// back from here.
+//
+// Aimed at the expensive direction: forgetting means the next ⌘S goes through
+// the ordinary path and refuses again, so the work can never be written at all.
+auto tConflictIsRemembered =
+    test("TextFile/aRefusedSaveIsRememberedUntilSettled") = []
+{
+    auto dir = scratch("remembered");
+    auto path = dir / "doc.txt";
+    writeTo(path, "ours");
+
+    auto file = TextFile {};
+    file.open(eacp::FilePath {path});
+
+    check(!file.isConflicted());
+
+    file.editor().insert("edited ");
+    writeExternally(path, "someone else's work");
+
+    check(file.save() == SaveResult::changedOnDisk);
+    check(file.isConflicted());
+
+    // And the save that takes the conflict is what settles it.
+    check(file.saveOverwriting() == SaveResult::saved);
+    check(!file.isConflicted());
+
+    std::filesystem::remove_all(dir);
+};
+
+// The poll is the file's own policy rather than the window's, so that every
+// open file can be watched rather than only the visible one.
+auto tPollTakesACleanFile =
+    test("TextFile/pollingACleanBufferTakesTheDiskVersion") = []
+{
+    auto dir = scratch("pollClean");
+    auto path = dir / "doc.txt";
+    writeTo(path, "before");
+
+    auto file = TextFile {};
+    file.open(eacp::FilePath {path});
+
+    check(!file.pollDisk());
+
+    writeExternally(path, "after a git checkout");
+
+    check(file.pollDisk());
+    check(file.document().text() == "after a git checkout");
+    check(!file.isConflicted());
+
+    // And once taken there is nothing left to report.
+    check(!file.pollDisk());
+
+    std::filesystem::remove_all(dir);
+};
+
+auto tPollRaisesOnADirtyFile =
+    test("TextFile/pollingADirtyBufferRaisesTheConflict") = []
+{
+    auto dir = scratch("pollDirty");
+    auto path = dir / "doc.txt";
+    writeTo(path, "before");
+
+    auto file = TextFile {};
+    file.open(eacp::FilePath {path});
+    file.editor().insert("local ");
+
+    writeExternally(path, "someone else's work");
+
+    check(file.pollDisk());
+    check(file.isConflicted());
+
+    // Neither side was thrown away: merging is not something to guess at.
+    check(file.document().text() == "local before");
+    check(contentsOf(path) == "someone else's work");
+
+    std::filesystem::remove_all(dir);
+};
+
 auto tOverwriteWins = test("TextFile/saveOverwritingTakesTheConflict") = []
 {
     auto dir = scratch("overwrite");

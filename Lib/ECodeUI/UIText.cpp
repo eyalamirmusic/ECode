@@ -20,8 +20,8 @@ float width(Text::GlyphAtlas& atlas, std::string_view text)
     // font is the same monospace face as the editor's today, but a tab title
     // measured by character count would be wrong the moment it is not.
     for (std::size_t index = 0; index < text.size();)
-        total += atlas.glyph(Utf8::next(text, index), Text::FontStyle::Regular)
-                     .advance;
+        total +=
+            atlas.glyph(Utf8::next(text, index), Text::FontStyle::Regular).advance;
 
     return total;
 }
@@ -63,6 +63,50 @@ float draw(PaintContext& context,
     }
 
     return pen;
+}
+
+namespace
+{
+constexpr auto ellipsis = std::string_view {"…"};
+}
+
+void prepareElided(Text::GlyphAtlas& atlas, std::string_view text)
+{
+    prepare(atlas, text);
+    prepare(atlas, ellipsis);
+}
+
+std::string elide(Text::GlyphAtlas& atlas, std::string_view text, float maxWidth)
+{
+    if (width(atlas, text) <= maxWidth)
+        return std::string {text};
+
+    const auto room = maxWidth - width(atlas, ellipsis);
+
+    // Not even the ellipsis fits, so there is nothing honest to draw: a lone
+    // "…" in a box this narrow says less than an empty one, and the tab still
+    // has its dot and its ×.
+    if (room <= 0.f)
+        return {};
+
+    // Grown forwards rather than trimmed backwards, so the walk is one pass
+    // over the codepoints and never has to find the boundary before a byte.
+    auto kept = std::size_t {0};
+    auto used = 0.f;
+
+    for (auto index = std::size_t {0}; index < text.size();)
+    {
+        const auto advance =
+            atlas.glyph(Utf8::next(text, index), Text::FontStyle::Regular).advance;
+
+        if (used + advance > room)
+            break;
+
+        used += advance;
+        kept = index;
+    }
+
+    return std::string {text.substr(0, kept)} + std::string {ellipsis};
 }
 
 float centredBaseline(Text::GlyphAtlas& atlas, const Graphics::Rect& area)

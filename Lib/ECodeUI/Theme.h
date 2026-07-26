@@ -27,14 +27,27 @@ struct ChromeTheme
     // active without relying on the fill alone.
     eacp::Graphics::Color activeTabAccent {0.35f, 0.55f, 0.85f};
 
+    // An inactive tab under the pointer, and the rule between two tabs. The
+    // rule earns its place only once there is more than one file open: two
+    // inactive tabs share a fill with the strip behind them, so without it a
+    // pair of them reads as one wide tab with two names in it.
+    eacp::Graphics::Color hoverTab {1.f, 1.f, 1.f, 0.05f};
+    eacp::Graphics::Color tabSeparator {1.f, 1.f, 1.f, 0.07f};
+
+    // The close button. Dim until the pointer is on the button itself, so the
+    // × on the active tab reads as available rather than as pressed.
+    eacp::Graphics::Color tabCloseIcon {0.55f, 0.58f, 0.65f};
+    eacp::Graphics::Color tabCloseIconHover {0.94f, 0.95f, 0.97f};
+    eacp::Graphics::Color tabCloseHover {1.f, 1.f, 1.f, 0.12f};
+
     // Scrollbar thumbs. Dim until grabbed — a scrollbar is a status readout
     // most of the time and a control only briefly.
     eacp::Graphics::Color scrollThumb {1.f, 1.f, 1.f, 0.16f};
     eacp::Graphics::Color scrollThumbActive {1.f, 1.f, 1.f, 0.34f};
 
-    // Rows in a list or tree. No hover colour: nothing tracks the pointer yet,
-    // and a palette entry for a state that does not exist reads as though it
-    // does.
+    // Rows in a list or tree. Still no hover colour: the tab strip and the
+    // context menu track the pointer, lists do not, and a palette entry for a
+    // state that does not exist reads as though it does.
     eacp::Graphics::Color rowText {0.78f, 0.81f, 0.87f};
     eacp::Graphics::Color rowDirectoryText {0.88f, 0.90f, 0.94f};
     eacp::Graphics::Color rowSelected {1.f, 1.f, 1.f, 0.09f};

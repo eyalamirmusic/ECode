@@ -156,3 +156,39 @@ auto tRevisionsAreUnique = test("Document/revisionsAreUniqueAcrossDocuments") = 
     check(first.text() == second.text());
     check(first.revision() != second.revision());
 };
+
+// A document nobody has put text into still has to answer, because an untitled
+// buffer is one — and every one of these was reached, in the app, by drawing the
+// status bar over a brand new tab. columnAt() indexed an empty vector and the
+// window went down.
+//
+// The invariant was always documented ("a genuinely empty document still has a
+// single line to put the caret on"); it was the *default* constructor that did
+// not establish it, and nothing asked until untitled buffers were reachable.
+auto tADefaultDocumentIsIndexed =
+    test("Document/aDefaultConstructedDocumentIsIndexed") = []
+{
+    const auto doc = Document {};
+
+    check(doc.lineCount() == 1);
+    check(doc.length() == 0);
+    check(doc.lineAt(0) == 0);
+    check(doc.columnAt(0) == 0);
+    check(doc.line(0).empty());
+
+    // And an offset past the end clamps rather than reading off the index.
+    check(doc.lineAt(50) == 0);
+    check(doc.columnAt(50) == 50);
+};
+
+// The same document as fromText(""), because there is only one empty document.
+auto tDefaultMatchesEmptyText =
+    test("Document/aDefaultDocumentMatchesFromTextOfNothing") = []
+{
+    const auto byDefault = Document {};
+    const auto fromNothing = Document::fromText("");
+
+    check(byDefault.lineCount() == fromNothing.lineCount());
+    check(byDefault.text() == fromNothing.text());
+    check(byDefault.widestLine() == fromNothing.widestLine());
+};

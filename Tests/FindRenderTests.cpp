@@ -54,7 +54,7 @@ struct FindTestView final : GPU::GPUView
         setSampleCount(1);
         setBounds({0.f, 0.f, viewWidth, viewHeight});
 
-        file.editor().setDocument(Document::fromText(sampleText));
+        open.file.editor().setDocument(Document::fromText(sampleText));
 
         root.addChild(editor);
         root.addChild(bar);
@@ -152,9 +152,9 @@ struct FindTestView final : GPU::GPUView
     // to search from, show, focus the field.
     void openFind(bool withReplace = false)
     {
-        searchOrigin = file.editor().cursor().start();
+        searchOrigin = open.file.editor().cursor().start();
 
-        bar.show(file.editor().selectedText(), withReplace);
+        bar.show(open.file.editor().selectedText(), withReplace);
         host.setFocus(&bar.keyboardTarget());
 
         layOut();
@@ -219,7 +219,7 @@ struct FindTestView final : GPU::GPUView
     // that reads the background and reports the highlight missing.
     Graphics::Rect bandOfWord(std::size_t line, std::string_view word) const
     {
-        const auto text = file.document().line(line);
+        const auto text = open.file.document().line(line);
         const auto column = text.find(word);
 
         if (column == std::string_view::npos)
@@ -229,7 +229,7 @@ struct FindTestView final : GPU::GPUView
         const auto right = renderer->columnToX(text, column + word.size());
 
         const auto lineHeight = renderer->rowHeight();
-        const auto x = renderer->gutterWidth(file.document().lineCount()) + 8.f;
+        const auto x = renderer->gutterWidth(open.file.document().lineCount()) + 8.f;
 
         return {x + left,
                 static_cast<float>(line) * lineHeight + 2.f,
@@ -240,10 +240,10 @@ struct FindTestView final : GPU::GPUView
     ChromeTheme theme;
     TextTheme textTheme;
 
-    TextFile file;
+    OpenFile open;
 
     Widget root;
-    EditorWidget editor {file};
+    EditorWidget editor {open};
     FindBar bar {theme};
 
     WidgetHost host;
@@ -368,8 +368,8 @@ auto tCurrentHitOutranksItsSelection =
 
     check(current >= 0);
 
-    const auto line =
-        view.file.document().lineAt(view.editor.search().matches()[current].start);
+    const auto line = view.open.file.document().lineAt(
+        view.editor.search().matches()[current].start);
 
     const auto onIt = averageOver(image, view.bandOfWord(line, "counter"));
     const auto elsewhere =
@@ -463,8 +463,8 @@ auto tReplaceAllRewritesTheFile =
 
     view.clickAt(all);
 
-    check(view.file.document().text().find("counter") == std::string::npos);
-    check(view.file.document().text().find("total") != std::string::npos);
+    check(view.open.file.document().text().find("counter") == std::string::npos);
+    check(view.open.file.document().text().find("total") != std::string::npos);
 
     // Case-insensitively there were four, and "Counter" became "total" too.
     check(view.editor.search().count() == 0);

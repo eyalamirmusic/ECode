@@ -21,7 +21,16 @@ namespace ecode
 class Document
 {
 public:
-    Document() = default;
+    // An empty document — and one that has been indexed, so it answers
+    // lineCount(), lineAt() and columnAt() like any other.
+    //
+    // Not `= default`, which left the index empty and lineCount() reporting
+    // zero, contradicting the invariant three lines below. It went unnoticed
+    // for as long as nothing ever asked an unopened document anything: the app
+    // opened a file into its one buffer before drawing a frame. Untitled
+    // buffers made it reachable, and the symptom was columnAt() indexing an
+    // empty vector while drawing the status bar.
+    Document();
 
     static Document fromText(std::string text);
     static Document fromFile(const eacp::FilePath& path);

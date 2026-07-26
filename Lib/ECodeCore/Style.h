@@ -7,6 +7,7 @@
 namespace ecode
 {
 class Document;
+struct TextEdit;
 
 // What a run of text *is*, rather than what colour it should be.
 //
@@ -75,6 +76,20 @@ public:
         (void) firstLine;
         (void) lastLine;
     }
+
+    // Tells the highlighter the document changed, with `document` in the state
+    // *after* the edit, so the next update can reuse whatever the edit did not
+    // touch instead of starting from the whole text.
+    //
+    // On the interface for the reason update() is: a workspace wires each open
+    // file's editor to that file's own highlighter, and it has no business
+    // knowing which implementation it holds. Defaulted because a highlighter
+    // that recomputes from the text has nothing incremental to be told.
+    virtual void applyEdit(const Document&, const TextEdit&) {}
+
+    // Discards whatever was derived from the old text. For opening a file, or
+    // any change too wholesale to describe as a TextEdit.
+    virtual void reset() {}
 
     // Spans for one line. Returning empty means "plain text", which is both the
     // correct answer for an unrecognised language and a safe fallback when a

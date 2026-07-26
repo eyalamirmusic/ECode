@@ -24,6 +24,11 @@ Document Document::fromText(std::string text)
     return document;
 }
 
+Document::Document()
+{
+    indexLines();
+}
+
 Document Document::fromFile(const eacp::FilePath& path)
 {
     return fromText(eacp::Files::readFile(path));

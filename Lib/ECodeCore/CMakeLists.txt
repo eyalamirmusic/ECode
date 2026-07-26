@@ -10,7 +10,8 @@ add_library(ECodeCore STATIC
         LineMap.cpp
         Search.cpp
         TextEdit.cpp
-        TextFile.cpp)
+        TextFile.cpp
+        Workspace.cpp)
 
 target_include_directories(ECodeCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(ECodeCore PUBLIC eacp-core)

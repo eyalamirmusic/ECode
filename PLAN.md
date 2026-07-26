@@ -1,21 +1,22 @@
 # ECode — a GPU-drawn, VSCode-style code editor on eacp
 
-**Status:** a working editor. Opens a file, highlights it with tree-sitter,
-scrolls, can be typed in — with selection, undo, clipboard and mouse — and
-saves, with external-change detection. The chrome is a widget tree, the sidebar
-holds a real file tree you can scroll and open files from, every command is
-named in a registry that a keymap, a fuzzy-matching command palette, a native
-menu bar and a right-click context menu all read from, ⌘O and ⇧⌘O open a file or
-a project folder, and ⌘F finds and replaces with the hits lit up in the file.
-Right-click gives a context menu and the sidebar resizes by dragging its seam,
-with the pointer changing shape over both. Every widget the plan called for now
-exists (§7.4), and ⌥Z soft-wraps, on a logical-to-visual line mapping that the
-renderer, the cursor and the scroll offset all now go through — the larger of
-the two structural debts §7.3 named. **Both of those debts are now closed**: an
-idle frame no longer works out what it already knows, which took measuring the
-frame before building anything and finding the plan's premise wrong in two
-directions at once (§7.3). Sections 1–5 are the design and the research behind
-it; **§6 is where things stand and §7 is what to do next.**
+**Status:** a working editor. Opens files — several at once, each in its own tab
+with its own undo history, syntax tree and scroll offset — highlights them with
+tree-sitter, scrolls, can be typed in with selection, undo, clipboard and mouse,
+and saves, with external-change detection on every open file (§7.8). The chrome
+is a widget tree, the sidebar holds a real file tree you can scroll and open
+files from, every command is named in a registry that a keymap, a fuzzy-matching
+command palette, a native menu bar and a right-click context menu all read from,
+⌘O and ⇧⌘O open a file or a project folder, and ⌘F finds and replaces with the
+hits lit up in the file. Right-click gives a context menu and the sidebar resizes
+by dragging its seam, with the pointer changing shape over both. Every widget the
+plan called for now exists (§7.4), and ⌥Z soft-wraps, on a logical-to-visual line
+mapping that the renderer, the cursor and the scroll offset all now go through —
+the larger of the two structural debts §7.3 named. **Both of those debts are now
+closed**: an idle frame no longer works out what it already knows, which took
+measuring the frame before building anything and finding the plan's premise wrong
+in two directions at once (§7.3). Sections 1–5 are the design and the research
+behind it; **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -429,6 +430,9 @@ that was open, and CPU-side dirty tracking is what shipped. See §7.3.
   `LineMap`, with soft wrap as its first consumer; see §7.3.
 - **Syntax:** tree-sitter (C library, CPM-friendly), incremental reparse on edit, styles attached
   to ranges rather than baked into cells.
+- **The open set.** `Workspace` — the files open at once and which is active, one
+  syntax tree and one scroll offset each, never empty. Model only: the tab strip
+  reads it and it knows nothing about widgets. See §7.8.
 
 ### `ECodeRender`
 
@@ -467,13 +471,14 @@ Down and all Drag/Up route to it, which is exactly what splitter dragging and te
 Built: widget base + layout pass, focus traversal, scroll view + scrollbar, virtualised list,
 tree view, tab bar, status bar, the command palette — the first overlay — and a reusable
 single-line `TextField`, used three times over: the find bar's two fields and the palette's
-query. Still to build:
-splitter, in-window context menu
-(`Graphics::Menu` is the native menu bar only — no `popup(at:)`), minimap, tooltip,
-animation/easing, and hover states — no widget tracks the pointer yet, so nothing highlights
-under it. A `Button` widget is the other obvious gap: the find bar's six controls are a
-hotspot table inside it rather than widgets, which is the right call only while there are no
-hover states to give them.
+query — and since: the splitter and the in-window context menu (`Graphics::Menu`
+is the native menu bar only — no `popup(at:)`), and a tab strip that is a real
+control rather than a readout. Still to build: minimap, tooltip and
+animation/easing. Hover is no longer a gap in the framework — `Widget::mouseExited`
+and `WidgetHost::hovered` arrived with the tab strip (§7.8) — only in the widgets
+that have not adopted it. A `Button` widget is the obvious one left: the find
+bar's six controls are a hotspot table inside it rather than widgets, and now
+that hover states are available that has stopped being the right call.
 
 Lifted from CowTerm: `FuzzyMatch.h` (62-line header-only fzf-style scorer), now returning matched
 positions as well as a score so the palette can tint the characters the query hit. Its **peek**
@@ -661,9 +666,13 @@ a `FindBar`, match highlighting in the renderer and grouped undo for
 replace-all — the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher that
 the keymap and the menus both arrive at — and the last two widgets: a right-click
 `ContextMenu` and a draggable `Splitter` — `LineMap`, the logical-to-visual
-row mapping, with soft wrap on ⌥Z as the consumer that proves it — and damage
+row mapping, with soft wrap on ⌥Z as the consumer that proves it — damage
 tracking: a `RowCache` of laid-out rows and a memoised highlight query, which
-take an idle frame from 0.32 ms to 0.058.
+take an idle frame from 0.32 ms to 0.058 — and **more than one file open at
+once**: a `Workspace` of `OpenFile`s, each with its own highlighter, undo
+history and scroll offset, behind a tab strip that closes, shrinks, overflows
+and scrolls, with ⌘N, ⌘W, ⌃Tab and ⇧⌘S, and untitled buffers that now have
+somewhere to save to (§7.8).
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -676,8 +685,8 @@ real rather than a rearrangement, and it exposed two genuine gaps —
 
 Ordered by what unblocks the most, with the reasoning rather than just the list.
 
-**Where the front line is now that 7.1, 7.3 and 7.4 are done.** Nothing here is
-blocked on anything else, so this is a choice rather than a sequence:
+**Where the front line is now that 7.1, 7.3, 7.4 and 7.8 are done.** Nothing here
+is blocked on anything else, so this is a choice rather than a sequence:
 
 - **The cold open.** Opening an 8,000-line file spends ~40 ms parsing it before
   the first frame, which after §7.3 is the largest number left in the renderer by
@@ -685,6 +694,9 @@ blocked on anything else, so this is a choice rather than a sequence:
   of it is on screen; the fix is to let the first frame draw unhighlighted and
   parse behind it, which needs `Highlighter::version` to mean what §7.3 already
   made it mean. Measure a 100 MB file before deciding how much this matters.
+  **This got worse, and deliberately**: §7.8 gives every open file its own
+  highlighter, so `ECode *.cpp` pays the parse once per file at launch. The fix
+  is the same one and it is now worth more.
 - **Multi-cursor (§7.2).** Deferred "in favour of the widget layer", and the
   widget layer is finished — so the stated reason has expired, and §7.2 is
   explicit that the bill grows with everything written against a single cursor
@@ -694,9 +706,12 @@ blocked on anything else, so this is a choice rather than a sequence:
 - **Windows text (§7.7).** `GlyphRasterizer-Windows.cpp` is a stub, so Windows
   draws no text at all. First thing between ECode and a second platform, and the
   only item here that cannot be verified on this machine.
-- **More than one file open at a time.** Not named anywhere in this plan, which
-  is itself worth noticing: opening a file replaces the buffer and the tab strip
-  only ever shows one tab. It is the most visible gap in using the thing.
+- ~~**More than one file open at a time.**~~ — **done, see §7.8.**
+- **Editor groups**, which is what §7.8 makes the next obvious thing rather than
+  an idea: one `Workspace` holds one active file, and a split view is two of
+  them side by side. `SessionView`'s recursive split-pane tree in CowTerm is the
+  shape. What it collides with is named in §7.8: one `TextRenderer` and one
+  `RowCache` for the app, which two visible editors would thrash.
 
 ### 7.1 ~~Save and the file lifecycle~~ — done
 
@@ -1302,7 +1317,8 @@ reverting to an arrow mid-drag reads as the drag having been dropped. The editor
 now asks for an I-beam, which is the other half of gap 7's original point.
 
 **Every widget §7.4 planned now exists.** What is left here is not a widget: the
-minimap, tooltips, hover states beyond the two that now have them, and animation.
+minimap, tooltips, hover states beyond the three that now have them, and
+animation.
 The two structural debts §7.3 named are both closed — the line mapping is in and
 damage tracking with it — so what remains of variable line height is the
 arithmetic behind one function rather than an assumption spread through the
@@ -1375,6 +1391,111 @@ string does.
   documented key at all. Window tabbing would need `allowsAutomaticWindowTabbing`
   exposed from eacp, and "Enter Full Screen" being disabled is a window-options
   gap that predates the menus.
+
+### 7.8 More than one file open — done
+
+⌘N, ⌘O and the file tree each open into their own tab; ⌃Tab and ⌃⇧Tab cycle,
+⌘W closes, the × on a tab closes it and so does a middle click, and `ECode
+a.cpp b.cpp c.cpp` opens all three. The strip shares its width between the tabs
+down to a floor, and past that floor it overflows and scrolls to keep the active
+one in view.
+
+The model is `Workspace` in `ECodeCore`: a list of `OpenFile`, an active index,
+and nothing about widgets. An `OpenFile` is a `TextFile`, a `Highlighter` and a
+scroll offset.
+
+Decisions worth recording, because each went against the obvious version:
+
+- **The set is never empty.** Closing the last tab leaves an empty untitled
+  file rather than nothing. Everything downstream — the title, the status bar,
+  the renderer, every editing command — is written against "the active file",
+  and an absent one is a null check at each of them plus a window with no
+  caret, which reads as broken rather than as empty. It also made untitled
+  buffers reachable for the first time, which is why `TextFile::saveAs` and ⌘N
+  arrived with this rather than later: a buffer that cannot be saved is not a
+  place to type.
+- **One highlighter per open file, not one per workspace.** A shared one would
+  reparse from scratch on every switch — the ~40 ms cold open above, paid on a
+  ⌃Tab — and in between would hand the renderer a tree describing text that is
+  not on screen. The cost lands at launch instead: `ECode *.cpp` parses every
+  file up front, which is the same debt §7 already names and now worth more.
+- **The highlighter factory is a constructor argument, not a settable member.**
+  The workspace builds its first file inside its own constructor, so a factory
+  installed afterwards leaves exactly that one file — the one a launch with no
+  readable path lands in — permanently uncoloured while every file opened after
+  it is fine. Found by a render test that draws the *same* text through two
+  files and demands the two frames be identical.
+- **The scroll offset lives on the `OpenFile`, not on the widget.** The
+  alternative is stashing it on the way out of a tab and restoring it on the way
+  in, and a step that has to be remembered at every call site that switches is
+  one that will eventually be forgotten — the symptom being the view jumping on
+  a tab switch with nothing on screen to explain it. Same shape as §7.3's "the
+  clip and the glyph batch are owned by the same object, because they are
+  coupled and the coupling is silent".
+- **Paths are compared after resolving.** `FilePath::operator==` is a string
+  comparison, so `dir/sub/../a.txt` and `dir/a.txt` would be two tabs over one
+  file — two undo histories and two dirty flags over one set of bytes, with
+  whichever saved last winning silently.
+- **A dirty tab refuses to close**, exactly as §7.1's save refuses to clobber:
+  the title carries the question and a second ⌘W answers it. What is new is that
+  the question has to go *stale* — type one character and it is a different
+  question — and that is a comparison of `Editor::stateId` rather than a clear
+  on an event, because an edit arrives by three routes (a keystroke, a menu
+  paste, an undo) and only the first runs the editor's own key handling.
+- **`Highlighter::applyEdit` and `reset` moved onto the interface**, the same
+  move §7.3 made for `update` and for the same reason: the workspace wires each
+  file's editor to that file's highlighter and has no business knowing which
+  implementation it holds.
+- **`TextFile::pollDisk` is the file's policy now, not the window's**, so every
+  open file is watched rather than only the visible one. A tab switched to an
+  hour after a `git checkout` should show what is on disk, and finding out at
+  the moment of the switch is too late to warn about a conflict.
+- **Widgets are told the pointer has left them.** `mouseMoved` only ever reaches
+  the widget under the pointer, so anything narrower than the window that lights
+  up would stay lit for good — only the host knows what was hovered a moment
+  ago. `Widget::mouseExited` plus `WidgetHost::hovered` is the third hover state
+  in the app and the first that needed the widget layer changed for it.
+- **A tab is selected on the press and closed on the release.** Selection has to
+  follow the press or the strip feels a frame behind the hand; closing follows
+  the release for the reason §7.4 records for the context menu, and it is what
+  lets a press on the wrong × be backed out of by dragging off it.
+
+**Not done, deliberately:** dragging tabs to reorder, a tab context menu, and a
+"3 unsaved files" prompt on quit — `Workspace::hasUnsavedChanges` exists and
+nothing asks it yet. And the note §7.3 left for whoever adds tabs is still owed:
+the `RowCache` belongs to the app's one `TextRenderer`, so a switch drops every
+cached row. Correct today because only one editor is ever visible; two side by
+side would thrash it, which is what makes editor groups the next thing here.
+
+**Looked at, and it changed the code.** The strip dumped off-screen and opened
+showed what no assertion had thought to ask: at minimum width the filename ran
+*under* the close button and was cut mid-character, because a tab's own clip
+stops text at the tab's edge, which is past the ×. `UIText::elide` and a wider
+floor fixed it, and both are pinned by tests now — including one that compares
+the close button's box against the same tab with a short title, so any
+difference is the title having arrived somewhere it should not.
+
+**Then run, and it crashed on the second thing tried** — ⌘N, inside
+`Document::columnAt`, drawing the status bar. `Document()` was `= default`, so
+the line index was empty and `lineCount()` returned zero, contradicting the
+invariant written three lines below it in the same header. It had been wrong for
+as long as the file has existed and had never been reachable: the app opened a
+file into its one buffer before drawing a frame. Untitled buffers made it
+reachable. 508 tests were green.
+
+That same run found a second thing, smaller and older: **the dirty dot did not
+appear after a menu Paste.** Commands that change the document through the
+registry — paste, undo, cut, select-all — never reach the editor's key handling,
+which is what normally pushes a change into the chrome, so the tab looked clean
+over text that was not until the next keystroke. Every command already converges
+on `dispatchCommand`, so that is where the refresh went.
+
+**Verified live where it belongs.** `renderToImage` answered the strip; the menu
+bar and the workspace behind it were driven in the running app through the
+accessibility API, as §7.4 established: launched over three files, ⌃Tab cycling
+alpha → beta → gamma → alpha, Next/Previous Editor greyed with one tab open and
+live with two, a menu Paste lighting the dot, ⌘W refusing and saying so in the
+title, another edit making that question stale, and a second ⌘W taking it.
 
 ---
 
@@ -1583,6 +1704,38 @@ Recorded because each of these cost something to find out.
   shader — passed every test that existed and was obvious in one screenshot.
   Still true, and the point is narrower than it looks: run it to see whether
   something is *right*, then write the off-screen test that proves it stays so.
+- **And the second thing you try in it is where the crash is.** 508 tests green,
+  the tab strip rendered off-screen and inspected, the model covered by 23
+  mutations — and ⌘N in the running app segfaulted immediately, because
+  `Document`'s default constructor never built its line index and `lineCount()`
+  therefore reported zero, contradicting a comment three lines below it. The
+  code had been wrong since the file was written and *unreachable*: the app
+  opened a file into its one buffer before drawing anything. The general form —
+  a new feature does not only add code paths, it makes old ones reachable, and
+  those have never been executed by anything. Ask what your change lets happen
+  for the first time.
+- **An invariant a class states in prose is a test you have not written.**
+  `Document`'s header said "a genuinely empty document still has a single line to
+  put the caret on" while `= default` left it with none. The sentence was true of
+  `fromText` and false of the constructor beside it, and no test asked either,
+  because every existing test built documents from text.
+- **Three tabs cannot tell a decrement from a clamp.** Closing the first of
+  three with the last one active lands on the right file whether the active index
+  is stepped down or merely clamped — the two arithmetic errors cancel. It takes
+  four tabs and the third active. Same family as the word-wrap widths above: when
+  a test compares two implementations, the *size* of the case is the test.
+- **A guard whose point is a coordinate needs a case with that coordinate.**
+  Dropping the tab strip's "is the point even inside the strip" check left every
+  test green, because the strip in those tests started at x = 0 — so there was
+  nowhere to the left for a scrolled-off tab's rectangle to be. In the window the
+  strip starts at the sidebar's edge and that rectangle reaches back under the
+  file tree. The test had to move the strip.
+- **A refusal that is returned but not remembered passes a test of the return
+  value.** `TextFile::save` reported `changedOnDisk` correctly while forgetting
+  it had, and the existing test only read the result. Nothing was wrong until the
+  window stopped being able to hold that state for the one open file — and then
+  the failure is silent and expensive: the second ⌘S takes the ordinary path,
+  refuses again, and the work can never be written at all.
 
 - **A revert that keeps the file's old timestamp leaves the mutant in the
   binary.** The mutation script backed each file up with `shutil.copy`, which
