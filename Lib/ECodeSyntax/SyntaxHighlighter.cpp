@@ -189,6 +189,56 @@ struct SyntaxHighlighter::Impl
         ++styleVersion;
     }
 
+    // Gives up on a document too large to parse, and frees what was derived from
+    // it. Idempotent, which is the part that matters: update() calls this on
+    // every frame a large file is on screen, and doing the work each time would
+    // tick styleVersion each time — which drops the renderer's whole row cache
+    // each time (§7.3), turning a size limit meant to save a frame into a
+    // guarantee that no frame is ever cheap.
+    void suppress()
+    {
+        if (suppressed)
+            return;
+
+        suppressed = true;
+
+        if (tree != nullptr)
+        {
+            ts_tree_delete(tree);
+            tree = nullptr;
+        }
+
+        // A budgeted parse may be halfway through the very document that has
+        // just grown past the limit, holding a position in it.
+        if (parsing)
+        {
+            ts_parser_reset(parser);
+            parsing = false;
+            ++restartCount;
+        }
+
+        // Both the spans and the tree they came from are gone, so every line now
+        // answers plain — and anything caching colours has to be told, exactly as
+        // it would be for a reparse.
+        forgetQuery();
+        dirty = true;
+
+        ++styleVersion;
+    }
+
+    // And back again, for a file that shrinks below the limit — a paste undone,
+    // a selection deleted, a smaller file reloaded over a larger one.
+    void unsuppress()
+    {
+        if (!suppressed)
+            return;
+
+        suppressed = false;
+        dirty = true;
+
+        ++styleVersion;
+    }
+
     // Whether `lines` already answers for [firstLine, lastLine).
     //
     // A subset of what was queried counts, because a line's spans do not depend
@@ -412,6 +462,10 @@ struct SyntaxHighlighter::Impl
     // Whether a parse ran out of budget partway and is waiting to be resumed.
     bool parsing = false;
 
+    // Whether the last document seen was over the size limit, so nothing is
+    // parsed and every line answers plain.
+    bool suppressed = false;
+
     // Which document state the unfinished parse is reading, so an edit arriving
     // mid-parse is noticed rather than resumed over.
     std::uint64_t parsingRevision = 0;
@@ -488,6 +542,19 @@ void SyntaxHighlighter::update(const Document& document,
     if (!impl->valid)
         return;
 
+    // Before the reparse, because the whole point is that the reparse does not
+    // run. Asked of the document handed in rather than remembered from the file
+    // being opened, so a buffer crossing the limit in either direction is
+    // noticed wherever it happens — a paste, an undo, a reload — with no event
+    // to subscribe to and nothing to keep in step.
+    if (document.length() > maxHighlightedBytes)
+    {
+        impl->suppress();
+        return;
+    }
+
+    impl->unsuppress();
+
     // Reparsing first, because it is what decides whether the answers already
     // held are still about this text: a reparse forgets them.
     impl->reparse(document);
@@ -524,6 +591,11 @@ void SyntaxHighlighter::update(const Document& document,
 bool SyntaxHighlighter::hasPendingWork() const
 {
     return impl->parsing;
+}
+
+bool SyntaxHighlighter::isTooLargeToHighlight() const
+{
+    return impl->suppressed;
 }
 
 std::uint64_t SyntaxHighlighter::version() const

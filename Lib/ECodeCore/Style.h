@@ -112,6 +112,20 @@ public:
     // any change too wholesale to describe as a TextEdit.
     virtual void reset() {}
 
+    // Whether this file is being drawn plain *because it is too large to parse*,
+    // as opposed to simply having no highlighting available for it.
+    //
+    // The distinction is the whole point: a file with no grammar has always
+    // looked like this and nothing is wrong, while a file that lost its colours
+    // on the way past a size limit needs saying so, or it reads as the
+    // highlighter having broken. So this is a question about a decision that was
+    // taken, not about whether spans happen to be empty.
+    //
+    // On the interface for the reason update() and applyEdit() are: the status
+    // bar asks it of whatever highlighter the active file holds, and has no
+    // business knowing which implementation that is.
+    virtual bool isTooLargeToHighlight() const { return false; }
+
     // Spans for one line. Returning empty means "plain text", which is both the
     // correct answer for an unrecognised language and a safe fallback when a
     // parse has not finished yet.

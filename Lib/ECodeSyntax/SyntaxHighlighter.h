@@ -42,6 +42,26 @@ public:
     // frame to give back, so the budget belongs at that call site.
     static constexpr auto noParseBudget = std::chrono::microseconds {0};
 
+    // Above this, the file is drawn plain and never parsed at all.
+    //
+    // Not a guess. tree-sitter's *incremental* reparse — the fast path, with
+    // fullParses() reading 1 throughout — is linear at about 1.7 ms per MB of
+    // C++, which is a property of repairing a tree with that many nodes rather
+    // than anything ECode can tune away:
+    //
+    //     1 MB   1.4 ms      4 MB   6.0 ms      16 MB    26 ms
+    //     2 MB   2.9 ms      8 MB  11.1 ms     100 MB   208 ms
+    //
+    // A keystroke has to fit in a frame with the drawing, and 4 MB is the last
+    // size where it comfortably does: 6 ms of a 16.7 ms frame at 60 Hz, and
+    // still inside one at 120. At 8 MB there is no room left for anything else,
+    // and by 100 MB a keystroke costs a fifth of a second.
+    //
+    // The budgeted parse (§7.9) already keeps a large file on screen and
+    // scrollable while it colours, so this is not about the first frame — it is
+    // about every keystroke afterwards, which no budget can slice up.
+    static constexpr auto maxHighlightedBytes = std::size_t {4 * 1024 * 1024};
+
     explicit SyntaxHighlighter(
         std::chrono::microseconds parseBudget = noParseBudget);
 
@@ -82,6 +102,14 @@ public:
     // Whether the last update ran out of its budget with the parse incomplete,
     // so the caller should draw what there is and come back.
     bool hasPendingWork() const override;
+
+    // Whether the document last seen by update() was over maxHighlightedBytes.
+    //
+    // Answers about the last document handed in rather than about one held,
+    // because this class holds no document — and that is also what makes it
+    // follow a file across the limit in both directions: pasting a fifth
+    // megabyte in turns highlighting off and undoing that turns it back on.
+    bool isTooLargeToHighlight() const override;
 
     const LineStyle& lineStyle(std::size_t line) override;
 

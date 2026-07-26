@@ -910,7 +910,16 @@ struct EditorView final : GPU::GPUView
         if (const auto count = layout.editor.editor().cursors().count(); count > 1)
             position += "  (" + std::to_string(count) + " cursors)";
 
-        layout.status.setText(position, "UTF-8    C++");
+        // A file that lost its colours on the way past the size limit has to say
+        // so. Drawn plain, it is indistinguishable from a language with no
+        // grammar — and the person watching just watched it happen, so silence
+        // reads as the highlighter having broken rather than as a decision.
+        const auto* const highlighter = layout.editor.highlighter();
+        const auto tooLarge =
+            highlighter != nullptr && highlighter->isTooLargeToHighlight();
+
+        layout.status.setText(
+            position, tooLarge ? "UTF-8    Plain (file too large)" : "UTF-8    C++");
 
         updateTitle();
     }

@@ -25,8 +25,10 @@ been measured, which was the cheapest thing left to learn and duly found the pla
 wrong a fourth time: neither of §7.6's two candidates bit first — two thirds of a
 keystroke went into recomputing a number nothing reads — and once that and the
 open were fixed, the thing standing between ECode and a large file turned out not
-to be the rope at all but tree-sitter, by two orders of magnitude (§7.6).
-Sections 1–5 are the design and the research behind it; **§6 is where things
+to be the rope at all but tree-sitter, by two orders of magnitude — so the
+highlighter now stops above 4 MiB and says so, and a keystroke on a 100 MB file
+costs 1.1 ms rather than 208 (§7.6). Sections 1–5 are the design and the research
+behind it; **§6 is where things
 stand and §7 is what to do next.**
 
 ## Decisions taken
@@ -665,7 +667,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (577 tests): `Document` with an incremental line index,
+**Done in ECode** (585 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -697,8 +699,9 @@ selections drawn, with ⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L and Escape (§7.2
 longest line is derived on demand and carried across an edit instead of rebuilt
 over the whole file on every keystroke, and the line index is scanned with
 `memchr`, together taking a keystroke from 5.4 ms to 1.0 and an open from 107 ms
-to 30, with the rope still unbuilt and tree-sitter now the thing in the way
-(§7.6).
+to 30 — and then a **size threshold on the highlighter**, 4 MiB, above which
+nothing is parsed and the status bar says so, which is what actually made a large
+file usable: 208 ms a keystroke to 1.1, with the rope still unbuilt (§7.6).
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -744,12 +747,15 @@ sequence:
   reads. A keystroke at 100 MB is 5.4 ms → 1.0 and an open 107 ms → 30. What the
   measurement then found is that the rope is not what stands between ECode and a
   large file — **tree-sitter is**, at 208 ms a keystroke against `Document`'s 1.1.
-- **A size threshold on the highlighter**, which §7.6 makes the next obvious thing
-  rather than an idea. Above some size, do not parse and draw the file plain: the
-  budget, `hasPendingWork` and a `Highlighter` interface that a null
-  implementation already satisfies are all in place, so what is actually being
-  decided is the number and what the person is told. The knee is between 4 MB and
-  8 MB. The cheapest real thing left, now that the 100 MB file has been looked at.
+- ~~**A size threshold on the highlighter.**~~ — **done, see §7.6.** 4 MiB, above
+  which nothing is parsed and the status bar says so. A keystroke at 100 MB goes
+  from 208 ms to 1.10, which is `Document`'s own cost and nothing else.
+- **`Files::readFile` costs 4.9× the file it reads**, which is what §7.6 found
+  once the highlighter stopped being the answer: a 100 MB file is 490 MB of RSS,
+  all of it the read and none of it returned. It builds through an
+  `ostringstream` and copies out of it. Upstream, small, and not a one-liner —
+  the current version opens in text mode, so sizing the string and reading into
+  it changes CRLF handling on Windows. The largest number left on a big file.
 - **The first ⌃Tab onto a large tab**, the 8.6 ms §7.9 leaves behind. Nothing
   parses a file until it is looked at, so the cost lands on the switch; starting
   it at open in 2 ms slices off the same budget would move it somewhere nobody is
@@ -1567,12 +1573,55 @@ RSS, on-demand rendering leaving it near-idle once the frames stop. The file is
 readable and scrollable immediately, which is §7.9's budgeted parse working as
 designed — it is only *colouring* that takes 8 seconds.
 
-**So the next number here is a size threshold on the highlighter, not a rope**,
-and it is a policy decision rather than a data structure: above some size, do not
-parse at all and draw the file plain. Everything needed for it exists — the
-budget, `hasPendingWork`, and a `Highlighter` interface a null implementation
-already satisfies. What has to be decided is the number and what the person is
-told. On these measurements the knee is between 4 MB and 8 MB.
+**So the next number here was a size threshold on the highlighter, not a rope —
+and it is now in.** `SyntaxHighlighter::maxHighlightedBytes` is 4 MiB: above it
+nothing is parsed, the file is drawn plain, and the status bar says
+"Plain (file too large)" rather than leaving it looking as though the
+highlighter broke. The number is the measurement above — 6 ms a keystroke at
+4 MB is a third of a 60 Hz frame and still inside a 120 Hz one, while 8 MB has
+no room left for the drawing.
+
+| | 1 MB | 10 MB | 100 MB |
+|---|---|---|---|
+| keystroke before the threshold | 1.46 ms | 18.4 ms | 208 ms |
+| keystroke after it | 1.46 ms | **0.11 ms** | **1.10 ms** |
+| first sight coloured | 84 ms | — drawn plain | — drawn plain |
+
+Decisions worth recording, because each went against the obvious version:
+
+- **The limit is asked of the document handed to `update()`, not decided when the
+  file is opened.** The obvious version picks a highlighter in the workspace
+  factory, which already exists and already varies per file — and it is wrong in
+  both directions: a buffer pasted past the limit keeps parsing, and one that
+  shrinks back never resumes. Asking per update needs no event to subscribe to
+  and nothing to keep in step, which is §7.8's scroll-offset lesson again.
+- **Giving up is idempotent, and that is the part that matters.** `update()` runs
+  on every frame a large file is on screen; doing the work each time would tick
+  `version()` each time, and the renderer drops every cached row when that moves
+  (§7.3). A size limit meant to save a frame would have guaranteed no frame was
+  ever cheap. The test for it is the version not moving over twenty frames.
+- **`hasPendingWork()` must go false, not stay true.** A view asks for another
+  frame while it is set, so a file that will never be parsed would spin the app
+  at full rate for as long as it stayed open — worse than the slow highlighting
+  the limit exists to avoid.
+- **The tree is released, and the only thing that can see it is the way back.**
+  Freeing it changes no colour, because forgetting the query has already emptied
+  the spans — so this is §9's "optimisation with no CPU-side observable", except
+  that here there *is* one if you ask what happens afterwards: with the tree gone,
+  a file that shrinks back under the limit is parsed from scratch, so
+  `fullParses()` goes to 2. That is what turned a surviving mutation into a red
+  one.
+
+**What that leaves is memory, and it is not ECode's.** A 100 MB file costs
+**490 MB of RSS**, and `Document` accounts for almost none of it: measured
+through the open path, `Files::readFile` alone is the 490, and
+`Document::fromText` adds 4 MB on top — the string is moved in, and the line
+index lands in pages the read had already freed. None of it is returned to the
+OS afterwards. `readFile` builds the whole file through an `std::ostringstream`
+and then copies it out with `buffer.str()` on an lvalue, so a 100 MB file is a
+doubling buffer plus a full copy. The fix is upstream and small — size the string
+once and read into it — but it is not a one-liner, because the current version
+opens in text mode and changing that changes CRLF handling on Windows. See §7.7.
 
 The deferral itself was still right, and for the reason given: the mutation API
 is only `replace(start, end, text)` plus `line(i)`, so the storage can change
@@ -1602,6 +1651,15 @@ and it is why this could wait for a measurement instead of a guess.
   every cross-platform toolkit does — but it changes keyboard semantics
   framework-wide, touching `GlobalHotKey` and `TextInput`, so it is a decision
   rather than a patch.
+- **`Files::readFile` reads a file into 4.9× its size.** Measured through the
+  open path: 100 MB of text costs 490 MB of RSS, all of it the read — an
+  `std::ostringstream` grown by doubling, then `buffer.str()` on an lvalue
+  copying the whole thing out — and none of it goes back to the OS.
+  `Document::fromText` adds 4 MB on top of that, so this is the whole of what a
+  large file costs in memory. The fix is to stat the size, resize a string once
+  and read into it. What stops it being a one-liner is that the current version
+  opens in **text** mode, so a binary read changes CRLF translation on Windows;
+  and it ships upstream, so it needs tests, a live example and the iOS build.
 - **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
   diagnostics, completion and go-to-definition after the chrome exists.
 - **macOS injects items into menus it recognises by name.** The Edit menu comes
@@ -2153,6 +2211,15 @@ Recorded because each of these cost something to find out.
   says the invariant is held twice over. Worth keeping both, and worth writing
   down which one the test is actually exercising, or the next person reads a
   green suite as coverage of both.
+- **When an optimisation has no observable, ask what changes *afterwards*.**
+  Releasing the syntax tree for a file that has grown past the size limit shows up
+  in no colour — forgetting the query has already emptied the spans — so the
+  mutation that kept the tree stayed green, and the entry below would have filed
+  it under "can only be measured". It isn't: with the tree gone, a file that
+  shrinks back under the limit has to be parsed *from scratch*, and `fullParses()`
+  goes to 2 rather than staying at 1. The state the test needed was not a bigger
+  assertion about the suppressed file but a second crossing in the other
+  direction. Freeing something is invisible; needing to rebuild it is not.
 - **An optimisation with no CPU-side observable can only be measured.** Skipping
   the glyph prepass for a cached row saves hash lookups. Nothing counts them —
   the atlas has no counter, and a stub glyph source sees nothing either, since a
