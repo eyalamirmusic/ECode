@@ -297,8 +297,6 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
 
     const auto view = documentView();
 
-    renderer->prepare(view, bounds(), scrollY);
-
     // Highlight exactly the lines about to be drawn: tree-sitter parses the
     // whole file, but querying all of it would put scrolling cost back in
     // proportion to file size.
@@ -307,6 +305,13 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
     // and knows nothing about wrapping — so the visible band is converted back
     // through the map. The last visible row is exclusive and the last line has
     // to be inclusive of it, which is the +1.
+    //
+    // Before the glyph prepass, not after: the renderer keeps each row's
+    // laid-out glyphs and colours, and a reparse changes the colours. Asking
+    // afterwards would have the prepass decide a row needs nothing while the
+    // draw that follows it finds the row stale and lays it out again — with the
+    // atlas already uploaded, so a glyph first needed by the new colouring
+    // would be sampled from texels not yet on the GPU.
     if (highlighter != nullptr)
     {
         const auto& lines = editor().lineMap();
@@ -319,6 +324,8 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
                             last > first ? lines.lineOfRow(document(), last - 1) + 1
                                          : lines.lineOfRow(document(), first));
     }
+
+    renderer->prepare(view, bounds(), scrollY);
 }
 
 void EditorWidget::paint(PaintContext& context)

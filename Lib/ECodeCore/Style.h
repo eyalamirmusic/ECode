@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace ecode
@@ -61,6 +62,11 @@ public:
     // may hold a tree for the whole document, but querying all of it per frame
     // would put file size back into the frame time.
     //
+    // A floor rather than a promise of exactness: an implementation may answer
+    // for more than it was asked about — SyntaxHighlighter computes a band
+    // around the window so that scrolling by a line needs no new work — so a
+    // caller may not read anything into a line outside the range having spans.
+    //
     // Part of the interface rather than of one implementation, so a view can
     // drive any highlighter without knowing which it has. Defaulted because a
     // highlighter that computes everything up front has nothing to do here.
@@ -74,6 +80,17 @@ public:
     // correct answer for an unrecognised language and a safe fallback when a
     // parse has not finished yet.
     virtual const LineStyle& lineStyle(std::size_t line) = 0;
+
+    // Changes whenever a line already reported on could now come back
+    // differently — a reparse, a new grammar, a theme of kinds.
+    //
+    // The renderer caches the colours it derived from lineStyle(), and the
+    // document's own revision does not cover this: a parse that finishes, or a
+    // reset, changes the spans without changing a byte of the text. A
+    // highlighter that computes everything up front and never changes its mind
+    // can leave this alone; one that does change its mind and does not tick it
+    // will be drawn with the colours it gave the first time.
+    virtual std::uint64_t version() const { return 0; }
 };
 
 // Finds the span covering a byte offset, or nullptr for the gaps between spans.

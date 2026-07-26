@@ -4,6 +4,7 @@
 
 #include <eacp/Core/Core.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,7 +66,19 @@ public:
     // with, and cheaper than a full UTF-8 pass over the file.
     std::size_t widestLine() const { return widest; }
 
+    // Changes whenever the text does, so anything caching work derived from it
+    // can tell in one comparison rather than by re-reading the file.
+    //
+    // Unique across documents as well as across edits, which is the part that
+    // is easy to get wrong: a renderer caching by revision must not mistake a
+    // freshly opened file for the one it replaced, and two documents both
+    // starting at zero is exactly that mistake. So the counter is global and a
+    // new document draws from it too.
+    std::uint64_t revision() const { return currentRevision; }
+
 private:
+    static std::uint64_t nextRevision();
+
     void indexLines();
     void reindexAfterEdit(std::size_t start,
                           std::size_t removedLength,
@@ -80,5 +93,7 @@ private:
     std::vector<std::size_t> lineStarts;
 
     std::size_t widest = 0;
+
+    std::uint64_t currentRevision = nextRevision();
 };
 } // namespace ecode

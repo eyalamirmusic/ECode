@@ -40,13 +40,28 @@ public:
     void reset();
 
     // Computes spans for the given line range, parsing first if needed. Call
-    // before drawing, with the same range the renderer will draw; lineStyle()
-    // outside that range returns empty.
+    // before drawing, with the same range the renderer will draw.
+    //
+    // Cheap to call every frame: an unchanged range over unchanged text runs no
+    // query, and the band computed reaches a margin past the window so that
+    // scrolling a line at a time stays inside it.
     void update(const Document& document,
                 std::size_t firstLine,
                 std::size_t lastLine) override;
 
     const LineStyle& lineStyle(std::size_t line) override;
+
+    // Ticks on every reparse and on reset, which are the two things that can
+    // change what a line already reported comes back as.
+    std::uint64_t version() const override;
+
+    // How many times the highlight query has actually run.
+    //
+    // For tests rather than for callers, for the reason LineMap::rebuildCount
+    // exists: update() returning the same spans it returned last frame is
+    // indistinguishable from update() having recomputed them, so nothing an
+    // oracle can see says whether the work was skipped. See PLAN.md §9.
+    std::uint64_t queries() const;
 
 private:
     struct Impl;

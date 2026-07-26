@@ -11,9 +11,11 @@ Right-click gives a context menu and the sidebar resizes by dragging its seam,
 with the pointer changing shape over both. Every widget the plan called for now
 exists (§7.4), and ⌥Z soft-wraps, on a logical-to-visual line mapping that the
 renderer, the cursor and the scroll offset all now go through — the larger of
-the two structural debts §7.3 named. What is left there is damage tracking.
-Sections 1–5 are the design and the research behind it; **§6 is where things
-stand and §7 is what to do next.**
+the two structural debts §7.3 named. **Both of those debts are now closed**: an
+idle frame no longer works out what it already knows, which took measuring the
+frame before building anything and finding the plan's premise wrong in two
+directions at once (§7.3). Sections 1–5 are the design and the research behind
+it; **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -394,7 +396,16 @@ avoids atlas-switch batch breaks, appending avoids the realloc-and-recopy stall.
 CowTerm's flush-everything.
 
 **Damage:** Alacritty does real compositor damage (double-buffered, `swap_buffers_with_damage`);
-Ghostty has only CPU-side dirty tracking. Follow Alacritty.
+Ghostty has only CPU-side dirty tracking. ~~Follow Alacritty.~~ **Corrected, and
+it was the load-bearing half of this section that was wrong.** Alacritty's damage
+goes through EGL, which takes damage rectangles at *present* time. Metal has no
+equivalent: a `CAMetalDrawable` is presented whole, and the drawable
+`nextDrawable` hands back comes from a rotating pool, so loading its previous
+contents gives a frame two or three old rather than the last one — Apple
+documents the contents as undefined and promises nothing about which drawable
+you get. So "redraw only the damaged rows" is not available at all; it would
+leave the rest of the window showing an older frame. Ghostty's side is the one
+that was open, and CPU-side dirty tracking is what shipped. See §7.3.
 
 ---
 
@@ -428,8 +439,11 @@ Ghostty has only CPU-side dirty tracking. Follow Alacritty.
 - **Keep** CowTerm's run-length background coalescing — it collapses long same-colour spans into
   one quad and skips default-background cells entirely, since the pass clear already painted them.
 - **Real damage tracking.** CowTerm's `changeVersion` machinery exists but its only consumer is
-  write-only dead code, so every repaint redraws the whole grid. A dirty-line bitset lets us skip
-  both the glyph prepass and the draw loop for unchanged rows.
+  write-only dead code, so every repaint redraws the whole grid. ~~A dirty-line bitset lets us skip
+  both the glyph prepass and the draw loop for unchanged rows.~~ **Done, and half
+  of that sentence turned out to be impossible** — the draw loop cannot be
+  skipped, because the frame has nowhere to skip *to*: see the correction to §4's
+  damage note. The glyph prepass and the *layout* are what got skipped. §7.3.
 - On-demand rendering (`GPUView` default) — idle submits zero GPU work. `setContinuous(true)` only
   while animating. `renderNow()` is available for the lowest-latency keystroke→glass path.
 - MSAA off (`setSampleCount(1)`); text is grayscale-AA'd in the atlas already.
@@ -633,7 +647,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (445 tests): `Document` with an incremental line index,
+**Done in ECode** (465 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -646,8 +660,10 @@ reads both through a shared `TextField` — find/replace: a `Search` model,
 a `FindBar`, match highlighting in the renderer and grouped undo for
 replace-all — the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher that
 the keymap and the menus both arrive at — and the last two widgets: a right-click
-`ContextMenu` and a draggable `Splitter` — and `LineMap`, the logical-to-visual
-row mapping, with soft wrap on ⌥Z as the consumer that proves it.
+`ContextMenu` and a draggable `Splitter` — `LineMap`, the logical-to-visual
+row mapping, with soft wrap on ⌥Z as the consumer that proves it — and damage
+tracking: a `RowCache` of laid-out rows and a memoised highlight query, which
+take an idle frame from 0.32 ms to 0.058.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -659,6 +675,28 @@ real rather than a rearrangement, and it exposed two genuine gaps —
 ## 7. What to do next
 
 Ordered by what unblocks the most, with the reasoning rather than just the list.
+
+**Where the front line is now that 7.1, 7.3 and 7.4 are done.** Nothing here is
+blocked on anything else, so this is a choice rather than a sequence:
+
+- **The cold open.** Opening an 8,000-line file spends ~40 ms parsing it before
+  the first frame, which after §7.3 is the largest number left in the renderer by
+  two orders of magnitude. tree-sitter parses the whole file whether or not any
+  of it is on screen; the fix is to let the first frame draw unhighlighted and
+  parse behind it, which needs `Highlighter::version` to mean what §7.3 already
+  made it mean. Measure a 100 MB file before deciding how much this matters.
+- **Multi-cursor (§7.2).** Deferred "in favour of the widget layer", and the
+  widget layer is finished — so the stated reason has expired, and §7.2 is
+  explicit that the bill grows with everything written against a single cursor
+  in the meantime.
+- **IME (§7.5).** Still the largest framework gap, and the marked-text range in
+  the cursor model is the part that should not wait for the rest of it.
+- **Windows text (§7.7).** `GlyphRasterizer-Windows.cpp` is a stub, so Windows
+  draws no text at all. First thing between ECode and a second platform, and the
+  only item here that cannot be verified on this machine.
+- **More than one file open at a time.** Not named anywhere in this plan, which
+  is itself worth noticing: opening a file replaces the buffer and the tab strip
+  only ever shows one tab. It is the most visible gap in using the thing.
 
 ### 7.1 ~~Save and the file lifecycle~~ — done
 
@@ -831,12 +869,8 @@ top, where it was always meant to be.
 
 Two things still to get right, because both are painful later:
 - ~~**Variable line height.**~~ — the mapping half is **done**; see below.
-- **Damage tracking.** Every frame redraws everything visible. That was a
-  future worry when the sidebar was an empty rectangle; the file tree is on
-  screen now, so a caret blink repaints every visible row of it. Virtualisation
-  caps the cost at a screenful rather than at the file count, which is why this
-  is still affordable — but it is the next thing to bite, and the honest fix is
-  a dirty-region pass rather than more clever painting.
+- ~~**Damage tracking.**~~ — **done**, and it came out a different shape than
+  this section asked for. See below.
 
 **Done: the logical-to-visual line mapping, with soft wrap as its consumer.**
 `LineMap` in `ECodeCore` answers which text a row holds and which row an offset
@@ -914,6 +948,112 @@ keystroke** — ECode would not come to the front to receive one — only that t
 menu carries the chord as a native key equivalent, which is what macOS matches
 before a window sees a key. See §9; the reading took considerably longer to get
 right than the feature did.
+
+**Done: damage tracking — but measured first, and the measurement moved the
+target.** This section called it "the next thing to bite". It was not: a full
+repaint of a 2500×1350 window showing 73 rows of highlighted C++ cost **0.32 ms**
+of CPU in a `-O2` build. At the app's on-demand cadence that is nothing, and even
+at 120 Hz it is 4% of the frame. The debt was real as a statement about the
+design and wrong about the urgency, and it is worth saying which.
+
+Then the shape of the fix turned out to be settled by the platform rather than by
+us. **The drawing cannot be skipped.** §4 said to follow Alacritty, which sends
+damage rectangles to EGL at present time; Metal has no such call, and the
+drawable `nextDrawable` returns comes from a rotating pool, so its previous
+contents are a frame two or three old. Drawing only the changed rows would leave
+the rest of the window showing that older frame. What a frame actually spends its
+time on is not the drawing anyway — it is *deriving* what to draw. So that is
+what is cached, and every frame still draws every visible row.
+
+Two pieces, and the smaller one was the bigger win:
+
+- **The highlight query is memoised.** `SyntaxHighlighter::update` re-ran the
+  tree-sitter query, repainted a `TokenKind` per byte and rebuilt the span map on
+  **every frame**, for the same lines of the same unchanged text. It now keeps
+  what it computed and the range it computed it for.
+- **`RowCache` in `ECodeRender`** holds each visible row's glyphs — destination,
+  atlas source, colour — so the UTF-8 decode, the atlas lookup per character and
+  the span search happen once per row rather than once per row per frame.
+  `TextRenderer::prepare` skips rasterizing a row it already holds, and `draw`
+  replays it.
+
+| frame | before | after |
+|---|---|---|
+| idle (nothing changed) | 0.32 ms | **0.058 ms** |
+| scrolling, one row per frame | 0.32 ms | **0.069 ms** |
+| highlight queries per 401 frames | 401 | **3** |
+| row layouts per 401 frames | ~29,300 | **272** |
+
+The first frame is unchanged at ~40 ms for an 8,000-line file, essentially all of
+it tree-sitter's initial parse. That is now by far the largest number in the
+renderer and the only one worth looking at next.
+
+Decisions worth recording, because each went against the obvious version:
+
+- **Cached glyphs are row-local, not absolute.** Positions measured from the
+  row's own origin and the baseline mean a scroll is an origin change rather than
+  an invalidation — the text did not move relative to itself. Absolute positions
+  would throw a screenful away every time the view moved by a pixel, which is
+  exactly the case worth keeping.
+- **A window of rows, not a map of them.** An entry per row index would grow to
+  one per row ever scrolled past — hundreds of megabytes on a large file — so the
+  cache is narrowed each frame to the rows about to be drawn, and `store` refuses
+  a row outside that window rather than resizing to reach it. Refuses without
+  taking it, so the caller can still draw what it built.
+- **One stamp for the whole cache, not a per-row dirty set.** Any change to the
+  text, the colours, the wrap width, the tab width or the atlas generation drops
+  everything. A per-row set would keep the rows above an edit, which sounds
+  better until you notice what typing already costs: a reparse and a re-query,
+  next to which laying out a screenful of rows is small. The frames worth saving
+  are the ones where *nothing* changed, and those are all of them except the
+  keystroke itself.
+- **A document revision is unique across documents, not per document.** The
+  obvious counter starts at zero in every `Document`, so opening a file would
+  look to the cache exactly like the file it replaced at the same revision —
+  same number, different text, and the old rows kept. One counter for the process
+  and a new document drawing from it makes that state unrepresentable.
+- **`Highlighter::version()` is on the interface, because the document's revision
+  cannot see a reparse.** A parse that finishes changes what a line already
+  reported comes back as without changing a byte. The renderer caches colours, so
+  it needs to be told; a highlighter that never changes its mind can leave the
+  default alone.
+- **The query is widened past the window.** Scrolling asks for a window one line
+  further down each frame, so an exact memo misses every single time — the reason
+  scrolling was still 0.27 ms after the row cache landed. A 96-line margin either
+  side costs a longer query on the frames that run one and buys 96 rows of
+  scrolling that run none. That makes `update`'s documented range a floor rather
+  than an exact promise, and two existing tests were asserting the promise: both
+  were rewritten around a document longer than the margin, which is the honest
+  form of the claim they were making (bounded by the window, not by the file).
+- **The backing scale moved into `TextRenderer`'s constructor.** The prepass and
+  the layout have to agree about which rows are cached, and only one of them is
+  handed a `PaintContext`. The scale belongs to the atlas the renderer draws
+  through in any case: a renderer sizing glyphs by one scale while its atlas was
+  rasterized at another draws the wrong size.
+- **The highlighter now runs before the glyph prepass, not after.** With colours
+  cached, the old order would let the prepass decide a row needs nothing while
+  the draw that follows finds it stale and lays it out again — after the atlas
+  upload, so a glyph the new colouring needs first would be sampled from texels
+  not yet on the GPU. One line moved, and the reason is written where it moved
+  from.
+
+**Not done, deliberately:** per-row invalidation on an edit, as above. And the
+cache belongs to the `TextRenderer`, of which the app has one; the day a second
+editor shares it, the two will invalidate each other on every switch. That is
+correct, just not free, and it is a note for whoever adds tabs.
+
+**Twelve tests, and the counters are what make them tests at all.** A renderer
+that re-derives every row draws exactly the same picture as one that reuses them,
+so pixels alone can say nothing — `RowCache::layouts()` and
+`SyntaxHighlighter::queries()` exist for the tests, in the shape
+`LineMap::rebuildCount()` established. Sixteen mutations were tried and thirteen
+went red; the three that did not are each recorded in §9, and two of them are
+statements about the design rather than about the tests.
+
+Then it was looked at: the assembled tree with the real highlighter, dumped
+off-screen. Typing between the two slashes of a `//` breaks the comment and the
+whole line loses its comment colour in the same frame — which is the recolouring
+path end to end, and the one thing no counter can confirm.
 
 ### 7.4 IDE chrome, on top of the widget layer
 
@@ -1162,10 +1302,11 @@ reverting to an arrow mid-drag reads as the drag having been dropped. The editor
 now asks for an I-beam, which is the other half of gap 7's original point.
 
 **Every widget §7.4 planned now exists.** What is left here is not a widget: the
-minimap, tooltips, hover states beyond the two that now have them, and animation
-— plus the two structural debts §7.3 names, variable line height and damage
-tracking, which are the ones that get more expensive the longer the chrome grows
-on top of them.
+minimap, tooltips, hover states beyond the two that now have them, and animation.
+The two structural debts §7.3 named are both closed — the line mapping is in and
+damage tracking with it — so what remains of variable line height is the
+arithmetic behind one function rather than an assumption spread through the
+renderer.
 
 On overlays: the palette is the first, and it confirms the shape those want: a child of the root
 laid out over the whole window, because `PaintContext` has no notion of a layer
@@ -1442,3 +1583,52 @@ Recorded because each of these cost something to find out.
   shader — passed every test that existed and was obvious in one screenshot.
   Still true, and the point is narrower than it looks: run it to see whether
   something is *right*, then write the off-screen test that proves it stays so.
+
+- **A revert that keeps the file's old timestamp leaves the mutant in the
+  binary.** The mutation script backed each file up with `shutil.copy`, which
+  preserves mtime, and restored it with `shutil.move` — so after the revert the
+  source was older than the object built from the mutant, ninja reported nothing
+  to do, and the mutant stayed linked in. Every mutation after the first was
+  therefore tested against an accumulation of the earlier ones, and the run
+  afterwards was a suite failing for reasons that were not in the source. The
+  revert has to *write* the file. This is the "verify the mutation applied"
+  lesson from the other end: verify the revert applied too, and check the suite
+  is green before the run and green after it.
+- **A red detector that cannot see red.** The same script asked ctest for its
+  verdict through `| tail -3`, which cuts off the "(Failed)" line and the
+  percentage — so all thirteen mutations came back green and looked like
+  thirteen worthless tests. The exit code is the answer. And a pipeline's exit
+  code is the *last* command's, so piping ctest into anything throws it away.
+- **Two independent guards for one invariant, and neither mutation goes red.**
+  Deleting the revision comparison from the highlighter's memo leaves the tests
+  green, because a reported edit already forgets the query through the reparse;
+  deleting the forget leaves them green, because the revision comparison already
+  catches it. That is information about the design and not about the tests: it
+  says the invariant is held twice over. Worth keeping both, and worth writing
+  down which one the test is actually exercising, or the next person reads a
+  green suite as coverage of both.
+- **An optimisation with no CPU-side observable can only be measured.** Skipping
+  the glyph prepass for a cached row saves hash lookups. Nothing counts them —
+  the atlas has no counter, and a stub glyph source sees nothing either, since a
+  warm lookup never reaches it. So the mutation that disables the skip stays
+  green, and the only evidence it does anything is the clock: 0.076 ms against
+  0.058. What *is* tested is its precondition — that a cached row's glyphs are
+  still in the atlas — which is the atlas generation in the cache's stamp. When a
+  skip cannot be observed, test the thing that makes it safe.
+- **Timing a live window measures what the window server allowed, not what the
+  code costs.** Instrumenting the running app gave 0.5 ms a frame at 1200×800 and
+  then *less* at 2500×1350, which is not how bigger windows work. An occluded
+  window gets no drawable, the pass becomes a no-op and the paint measures
+  nothing. The off-screen numbers are the quotable ones, for the same reason §9
+  already prefers `renderToImage` for looking: no window server in the way.
+- **Measure before believing a debt.** This plan carried damage tracking as "the
+  next thing to bite" for months. It was 0.32 ms a frame. The measurement took
+  half an hour, and it changed both the urgency and — via what it revealed about
+  the drawable pool — the whole shape of the fix. A performance debt is a claim
+  about numbers, and the numbers were never taken.
+- **A test comparing two frames cannot fail if both are blank.** The idle-frame
+  test asserts the reused frame is pixel-identical to the frame that built it,
+  and it passed with the cache storing empty rows — two blank frames are equal.
+  It took an ink count alongside the equality: the frame that skipped the work
+  still has to have drawn something. Same family as the backdrop that dimmed by
+  a rounding error.

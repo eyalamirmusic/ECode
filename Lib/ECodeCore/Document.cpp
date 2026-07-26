@@ -4,6 +4,17 @@
 
 namespace ecode
 {
+// One counter for every document in the process, so no two states ever share a
+// revision — see the comment on revision(). Not atomic, because a Document is
+// touched from the main thread only: edits arrive from key events and the disk
+// poll is an NSTimer on the main run loop.
+std::uint64_t Document::nextRevision()
+{
+    static auto counter = std::uint64_t {0};
+
+    return ++counter;
+}
+
 Document Document::fromText(std::string text)
 {
     auto document = Document {};
@@ -84,6 +95,10 @@ void Document::reindexAfterEdit(std::size_t start,
                                 std::size_t removedLength,
                                 std::string_view inserted)
 {
+    // Here rather than in replace() and apply(): every mutation reaches this
+    // function, so nothing can change the text without the revision following.
+    currentRevision = nextRevision();
+
     if (lineStarts.empty())
     {
         indexLines();

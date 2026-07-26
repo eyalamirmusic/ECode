@@ -136,7 +136,7 @@ struct FindTestView final : GPU::GPUView
         atlas = makeOwned<Text::GlyphAtlas>(
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 2048);
 
-        renderer.emplace(*atlas, textTheme);
+        renderer.emplace(*atlas, textTheme, 1.f);
         glyphs.emplace();
         glyphs->setViewportSize({viewWidth, viewHeight});
 

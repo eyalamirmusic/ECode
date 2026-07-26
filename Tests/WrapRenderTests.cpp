@@ -49,7 +49,7 @@ struct WrapTestView final : GPU::GPUView
         atlas = makeOwned<Text::GlyphAtlas>(
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 2048);
 
-        renderer.emplace(*atlas, theme);
+        renderer.emplace(*atlas, theme, 1.f);
         glyphs.emplace();
         glyphs->setViewportSize({viewWidth, viewHeight});
 

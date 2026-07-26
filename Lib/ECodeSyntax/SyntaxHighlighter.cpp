@@ -2,6 +2,7 @@
 
 #include <tree_sitter/api.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -168,7 +169,41 @@ struct SyntaxHighlighter::Impl
 
         dirty = false;
         parsedLength = text.size();
+
+        forgetQuery();
+
+        // Every span reported so far came from the tree that was just replaced,
+        // so anything caching colours has to be told. See Highlighter::version.
+        ++styleVersion;
+    }
+
+    // Whether `lines` already answers for [firstLine, lastLine).
+    //
+    // A subset of what was queried counts, because a line's spans do not depend
+    // on the range they were asked for: captures are returned when they overlap
+    // the range and are clamped per line, so a line queried as part of a wider
+    // window gets exactly the spans it would have got on its own.
+    //
+    // The revision comparison is redundant against a *reported* edit — that
+    // makes the tree dirty, and reparsing forgets the query — so no test can
+    // catch its removal. It stays because it is what makes this self-contained
+    // rather than correct by a side effect of reparse(), and because it is the
+    // only thing that would notice a change nobody reported: an unreported edit
+    // of the same length slips past reparse()'s length check.
+    bool queryCovers(std::uint64_t revision,
+                     std::size_t firstLine,
+                     std::size_t lastLine) const
+    {
+        return queriedRevision == revision && firstLine >= queriedFirst
+               && lastLine <= queriedLast;
+    }
+
+    void forgetQuery()
+    {
         lines.clear();
+
+        // Revisions start at one, so zero is "nothing has been queried".
+        queriedRevision = 0;
     }
 
     // Advances a point over a run of text, for deriving the edit's end points
@@ -227,10 +262,16 @@ struct SyntaxHighlighter::Impl
                    std::size_t firstLine,
                    std::size_t lastLine)
     {
-        lines.clear();
+        forgetQuery();
 
         if (!valid || tree == nullptr || firstLine >= lastLine)
             return;
+
+        queriedRevision = document.revision();
+        queriedFirst = firstLine;
+        queriedLast = lastLine;
+
+        ++queryCount;
 
         // A capture is returned when it *overlaps* the range, not only when it
         // is contained, so multi-line comments and strings crossing into view
@@ -342,6 +383,18 @@ struct SyntaxHighlighter::Impl
 
     // Length of the text the tree was built from, for the sanity check above.
     std::size_t parsedLength = 0;
+
+    // What `lines` currently answers for: which document state, and which band
+    // of it. The query is by far the most expensive thing a frame asks for, and
+    // an idle editor asks for the same band of the same text every time.
+    std::uint64_t queriedRevision = 0;
+    std::size_t queriedFirst = 0;
+    std::size_t queriedLast = 0;
+
+    std::uint64_t styleVersion = 1;
+
+    // Only the tests read this; see SyntaxHighlighter::queries.
+    std::uint64_t queryCount = 0;
 };
 
 SyntaxHighlighter::SyntaxHighlighter()
@@ -376,7 +429,9 @@ void SyntaxHighlighter::reset()
     }
 
     impl->dirty = true;
-    impl->lines.clear();
+    impl->forgetQuery();
+
+    ++impl->styleVersion;
 }
 
 void SyntaxHighlighter::update(const Document& document,
@@ -386,8 +441,38 @@ void SyntaxHighlighter::update(const Document& document,
     if (!impl->valid)
         return;
 
+    // Reparsing first, because it is what decides whether the answers already
+    // held are still about this text: a reparse forgets them.
     impl->reparse(document);
-    impl->highlight(document, firstLine, lastLine);
+
+    // An editor sitting still asks for the same lines of the same document on
+    // every frame — a caret blink, a hover, a scrollbar. Running the query
+    // again would be the single most expensive thing in that frame, and it
+    // would arrive at exactly the answer already stored.
+    if (impl->queryCovers(document.revision(), firstLine, lastLine))
+        return;
+
+    // Widened past what was asked for, because scrolling asks for a window one
+    // line further down each frame and an exact answer is a miss every time.
+    // A margin costs a longer query on the frames that do run one — the cost is
+    // linear in the lines queried — and buys a whole margin's worth of
+    // scrolling that runs none at all.
+    const auto margin = std::size_t {96};
+
+    const auto from = firstLine > margin ? firstLine - margin : 0;
+    const auto to = std::min(lastLine + margin, document.lineCount());
+
+    impl->highlight(document, from, std::max(to, lastLine));
+}
+
+std::uint64_t SyntaxHighlighter::version() const
+{
+    return impl->styleVersion;
+}
+
+std::uint64_t SyntaxHighlighter::queries() const
+{
+    return impl->queryCount;
 }
 
 const LineStyle& SyntaxHighlighter::lineStyle(std::size_t line)

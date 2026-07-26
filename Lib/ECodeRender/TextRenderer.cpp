@@ -56,9 +56,12 @@ const Graphics::Color& TextTheme::colorFor(TokenKind kind) const
     return text;
 }
 
-TextRenderer::TextRenderer(Text::GlyphAtlas& atlasToUse, const TextTheme& themeToUse)
+TextRenderer::TextRenderer(Text::GlyphAtlas& atlasToUse,
+                           const TextTheme& themeToUse,
+                           float backingScale)
     : atlas(atlasToUse)
     , theme(themeToUse)
+    , scale(backingScale)
 {
     const auto metrics = atlas.metrics();
 
@@ -145,6 +148,19 @@ void TextRenderer::prepareLine(std::string_view text)
     }
 }
 
+RowCacheStamp TextRenderer::stampFor(const DocumentView& view) const
+{
+    auto stamp = RowCacheStamp {};
+
+    stamp.document = view.document.revision();
+    stamp.highlight = view.highlighter != nullptr ? view.highlighter->version() : 0;
+    stamp.atlas = atlas.generation();
+    stamp.wrapColumns = view.lines.wrapColumns();
+    stamp.tabWidth = view.lines.tabWidth();
+
+    return stamp;
+}
+
 void TextRenderer::prepare(const DocumentView& view,
                            const Graphics::Rect& viewport,
                            float scrollY)
@@ -152,8 +168,19 @@ void TextRenderer::prepare(const DocumentView& view,
     const auto first = firstVisibleRow(scrollY);
     const auto last = lastVisibleRow(view, viewport, scrollY);
 
+    // The rows the frame is about to draw, and no others: this is what bounds
+    // the cache to a screenful rather than to the file.
+    cache.revalidate(stampFor(view));
+    cache.setWindow(first, last);
+
     for (auto index = first; index < last; ++index)
     {
+        // A row that survived revalidation was laid out against this same atlas
+        // generation, so every glyph it names is still in the texture and there
+        // is nothing to rasterize.
+        if (cache.find(index) != nullptr)
+            continue;
+
         const auto row = view.lines.row(view.document, index);
 
         prepareLine(row.textIn(view.document));
@@ -163,16 +190,13 @@ void TextRenderer::prepare(const DocumentView& view,
     }
 }
 
-void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
-                            std::string_view text,
-                            const LineStyle* spans,
-                            std::size_t spanOffset,
-                            float x,
-                            float baseline,
-                            const Graphics::Color& color,
-                            float backingScale)
+void TextRenderer::layoutLine(std::vector<PlacedGlyph>& out,
+                              std::string_view text,
+                              const LineStyle* spans,
+                              std::size_t spanOffset,
+                              const Graphics::Color& color) const
 {
-    auto pen = x;
+    auto pen = 0.f;
 
     // Walks forward with the loop rather than searching per glyph; the spans and
     // the text are both traversed left to right exactly once.
@@ -194,9 +218,9 @@ void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
         {
             // Advance to the next tab stop rather than by a fixed amount, so
             // indentation lines up the way the file's author saw it.
-            const auto column = (pen - x) / advance;
+            const auto column = pen / advance;
             const auto next = std::floor(column / tabWidth + 1.f) * tabWidth;
-            pen = x + next * advance;
+            pen = next * advance;
             continue;
         }
 
@@ -209,17 +233,80 @@ void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
         {
             const auto colored = glyph.format == Text::GlyphFormat::Color;
 
-            // The atlas rect is in device pixels; the destination is in points.
+            // The atlas rect is in device pixels; the destination is in points,
+            // measured from the row's own origin.
             const auto destination = Graphics::Rect {pen + glyph.offset.x,
-                                                     baseline + glyph.offset.y,
-                                                     glyph.src.w / backingScale,
-                                                     glyph.src.h / backingScale};
+                                                     glyph.offset.y,
+                                                     glyph.src.w / scale,
+                                                     glyph.src.h / scale};
 
-            glyphs.add(destination, glyph.src, glyphColor, colored);
+            out.push_back({destination, glyph.src, glyphColor, colored});
         }
 
         pen += glyph.advance;
     }
+}
+
+void TextRenderer::submitLine(Text::GlyphRenderer& glyphs,
+                              const std::vector<PlacedGlyph>& placed,
+                              float x,
+                              float baseline)
+{
+    for (const auto& glyph: placed)
+        glyphs.add({glyph.destination.x + x,
+                    glyph.destination.y + baseline,
+                    glyph.destination.w,
+                    glyph.destination.h},
+                   glyph.source,
+                   glyph.color,
+                   glyph.colored);
+}
+
+CachedRow TextRenderer::buildRow(const DocumentView& view, std::size_t index) const
+{
+    const auto row = view.lines.row(view.document, index);
+
+    auto entry = CachedRow {};
+
+    const auto* spans = view.highlighter != nullptr
+                            ? &view.highlighter->lineStyle(row.line)
+                            : nullptr;
+
+    layoutLine(entry.text, row.textIn(view.document), spans, row.start, theme.text);
+
+    // A continuation row carries no number: the gutter numbers lines, and a
+    // wrapped line is one line. Repeating it down the rows is the single most
+    // obvious way to make wrapping look broken.
+    if (!row.isContinuation())
+    {
+        const auto number = lineNumberText(row.line);
+
+        entry.numberWidth = static_cast<float>(number.size()) * advance;
+
+        layoutLine(entry.number, number, nullptr, 0, theme.lineNumber);
+    }
+
+    return entry;
+}
+
+const CachedRow& TextRenderer::rowLayout(const DocumentView& view, std::size_t index)
+{
+    if (const auto* held = cache.find(index))
+        return *held;
+
+    auto entry = buildRow(view, index);
+
+    if (const auto* stored = cache.store(index, std::move(entry)))
+        return *stored;
+
+    // The cache refused the row, which means it is outside the window the frame
+    // said it was drawing. Nothing in the app can reach this — draw() declares
+    // the window itself — but drawing the row anyway is the difference between
+    // a caller that gets it wrong seeing a layout it did not expect and seeing
+    // a blank line. `entry` is untouched: store only takes it on success.
+    scratch = std::move(entry);
+
+    return scratch;
 }
 
 float TextRenderer::columnToX(std::string_view text, std::size_t column) const
@@ -437,8 +524,13 @@ void TextRenderer::draw(PaintContext& context,
     const auto last = lastVisibleRow(view, viewport, scrollY);
     const auto gutter = gutterWidth(document.lineCount());
 
+    // Again here rather than trusting prepare(): a caller may draw without
+    // preparing, and every row this loop lays out has to land in a window that
+    // holds it. Prepared or not, the overlapping rows keep their layout.
+    cache.revalidate(stampFor(view));
+    cache.setWindow(first, last);
+
     auto& glyphs = context.glyphs();
-    const auto backingScale = context.backingScale();
 
     // Line numbers are clipped to the gutter and the text to what remains, so
     // neither can spill into the other however long a line is.
@@ -506,28 +598,18 @@ void TextRenderer::draw(PaintContext& context,
 
         for (auto index = first; index < last; ++index)
         {
-            const auto row = view.lines.row(document, index);
+            const auto& row = rowLayout(view, index);
 
-            // A continuation row carries no number: the gutter numbers lines,
-            // and a wrapped line is one line. Repeating it down the rows is the
-            // single most obvious way to make wrapping look broken.
-            if (row.isContinuation())
+            if (row.number.empty())
                 continue;
 
-            const auto number = lineNumberText(row.line);
-
             // Right-aligned against the gutter's inner edge.
-            const auto width = static_cast<float>(number.size()) * advance;
-            const auto x = viewport.x + gutter - gutterPadding - width;
+            const auto x = viewport.x + gutter - gutterPadding - row.numberWidth;
 
-            drawLine(glyphs,
-                     number,
-                     nullptr,
-                     0,
-                     x,
-                     viewport.y + scrollY + rowTop(index) + ascent,
-                     theme.lineNumber,
-                     backingScale);
+            submitLine(glyphs,
+                       row.number,
+                       x,
+                       viewport.y + scrollY + rowTop(index) + ascent);
         }
     }
 
@@ -535,22 +617,10 @@ void TextRenderer::draw(PaintContext& context,
         const auto clip = ClipScope {context, textRect};
 
         for (auto index = first; index < last; ++index)
-        {
-            const auto row = view.lines.row(document, index);
-
-            const auto* spans = view.highlighter != nullptr
-                                    ? &view.highlighter->lineStyle(row.line)
-                                    : nullptr;
-
-            drawLine(glyphs,
-                     row.textIn(document),
-                     spans,
-                     row.start,
-                     textRect.x + textPadding,
-                     viewport.y + scrollY + rowTop(index) + ascent,
-                     theme.text,
-                     backingScale);
-        }
+            submitLine(glyphs,
+                       rowLayout(view, index).text,
+                       textRect.x + textPadding,
+                       viewport.y + scrollY + rowTop(index) + ascent);
 
         // The batch has to reach the GPU before the caret is drawn over it,
         // rather than at the end of the scope. context.sprites() rebinds after

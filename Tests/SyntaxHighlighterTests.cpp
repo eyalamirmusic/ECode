@@ -35,6 +35,20 @@ TokenKind kindOf(SyntaxHighlighter& highlighter,
     return span != nullptr ? span->kind : TokenKind::Text;
 }
 
+// Long enough that the band queried around a window is a small part of it,
+// which is what the range tests below have to be measured against: the query is
+// widened past what was asked for so that scrolling a line at a time does not
+// re-run it, so "outside the range" has to mean well outside.
+Document longSample()
+{
+    auto text = std::string {};
+
+    for (auto line = 0; line < 500; ++line)
+        text += "int value" + std::to_string(line) + " = 1; // comment\n";
+
+    return Document::fromText(std::move(text));
+}
+
 Document sample()
 {
     return Document::fromText("#include <string>\n" // 0
@@ -200,9 +214,13 @@ auto tMultiLineCommentCoversEveryLine =
     check(kindOf(highlighter, document, 3, "int") == TokenKind::Type);
 };
 
-// The property the whole design rests on: only the requested lines are
-// computed, so scrolling a large file costs what is on screen rather than what
+// The property the whole design rests on: the work is bounded by what is on
+// screen, so scrolling a large file costs what is in the window rather than what
 // is in the document.
+//
+// Bounded, not exact — the band queried is the window plus a fixed margin either
+// side, so that scrolling by a line does not re-run the query. What must still
+// hold is that a line far from the window is not computed at all.
 auto tOnlyTheRequestedRangeIsPopulated =
     test("Syntax/populatesOnlyTheRequestedRange") = []
 {
@@ -211,13 +229,13 @@ auto tOnlyTheRequestedRangeIsPopulated =
     if (!highlighter.isValid())
         return;
 
-    const auto document = sample();
+    const auto document = longSample();
 
-    highlighter.update(document, 3, 5);
+    highlighter.update(document, 200, 205);
 
-    check(!highlighter.lineStyle(3).empty());
-    check(highlighter.lineStyle(0).empty()); // before the range
-    check(highlighter.lineStyle(8).empty()); // after it
+    check(!highlighter.lineStyle(200).empty());
+    check(highlighter.lineStyle(0).empty()); // far before the range
+    check(highlighter.lineStyle(499).empty()); // far after it
 };
 
 // Moving the range must recompute rather than accumulate: a cursor has to be
@@ -230,14 +248,14 @@ auto tRangeCanMove = test("Syntax/movingTheRangeRecomputes") = []
     if (!highlighter.isValid())
         return;
 
-    const auto document = sample();
+    const auto document = longSample();
 
     highlighter.update(document, 0, 3);
     check(!highlighter.lineStyle(2).empty());
-    check(highlighter.lineStyle(8).empty());
+    check(highlighter.lineStyle(400).empty());
 
-    highlighter.update(document, 6, 10);
-    check(!highlighter.lineStyle(8).empty());
+    highlighter.update(document, 400, 403);
+    check(!highlighter.lineStyle(400).empty());
     check(highlighter.lineStyle(2).empty()); // the old range is gone
 };
 
@@ -390,4 +408,177 @@ auto tProducesVariedKinds = test("Syntax/producesSeveralDistinctKinds") = []
                 kinds.push_back(span.kind);
 
     check(kinds.size() >= 4);
+};
+
+// --- not doing the work twice ----------------------------------------------
+//
+// The query is the most expensive thing in a frame, and an editor sitting still
+// asks for the same lines of the same text on every one of them. What follows
+// is aimed at the two ways of getting that wrong: running it again for nothing,
+// and *not* running it when the answer would have changed.
+
+auto tRepeatedRangeIsNotQueriedTwice =
+    test("Syntax/theSameRangeIsNotQueriedTwice") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    const auto document = sample();
+
+    highlighter.update(document, 0, document.lineCount());
+
+    const auto after = highlighter.queries();
+
+    check(after == 1);
+
+    highlighter.update(document, 0, document.lineCount());
+
+    check(highlighter.queries() == after);
+
+    // Still answering, which is the half that keeps the skip honest.
+    check(!highlighter.lineStyle(0).empty());
+};
+
+// A narrower band is already covered: a line's spans do not depend on the range
+// it was asked for, because captures overlapping the range are delivered and
+// clamped per line.
+auto tNarrowerRangeReusesTheQuery =
+    test("Syntax/aNarrowerRangeReusesTheWiderQuery") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    const auto document = sample();
+
+    highlighter.update(document, 0, document.lineCount());
+
+    // Line 2 is the comment, so it has spans to still be there — line 1 of the
+    // sample is blank, and a blank line reports nothing whether the query was
+    // reused or thrown away.
+    highlighter.update(document, 2, 3);
+
+    check(highlighter.queries() == 1);
+    check(!highlighter.lineStyle(2).empty());
+};
+
+// Scrolling to lines that were never queried has to query them, or they come
+// back plain and the file looks half-highlighted.
+auto tWiderRangeQueriesAgain = test("Syntax/aRangeNotYetQueriedIsQueried") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    const auto document = longSample();
+
+    highlighter.update(document, 0, 5);
+
+    check(highlighter.queries() == 1);
+
+    // Far enough that the band around the first window cannot reach it.
+    highlighter.update(document, 400, 405);
+
+    check(highlighter.queries() == 2);
+    check(!highlighter.lineStyle(400).empty());
+};
+
+// The margin's whole purpose: a window that moves by a line is inside the band
+// already queried, so scrolling runs no query at all. Without it, every scrolled
+// row re-runs the most expensive thing in the frame.
+auto tSmallScrollReusesTheQuery = test("Syntax/scrollingALineReusesTheQuery") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    const auto document = longSample();
+
+    highlighter.update(document, 200, 240);
+
+    check(highlighter.queries() == 1);
+
+    for (auto line = std::size_t {201}; line < 240; ++line)
+        highlighter.update(document, line, line + 40);
+
+    check(highlighter.queries() == 1);
+
+    // And still answering for the lines that scrolled into view.
+    check(!highlighter.lineStyle(275).empty());
+};
+
+// The expensive direction. A skipped query after an edit means the spans
+// describe text that is no longer there — the colours drift off the words, and
+// nothing about it looks like a caching bug.
+//
+// What this actually pins is the reparse path: a reported edit makes the tree
+// dirty, and reparsing forgets the query. The revision comparison inside
+// queryCovers is *also* enough on its own, so deleting it leaves this test
+// green — see the note there, and PLAN.md §9.
+auto tEditRequeries = test("Syntax/anEditIsQueriedAgain") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    auto document = Document::fromText("int a = 1;\nreturn a;\n");
+
+    highlighter.update(document, 0, document.lineCount());
+
+    const auto before = highlighter.lineStyle(0);
+
+    check(highlighter.queries() == 1);
+    check(!before.empty());
+
+    // Turns the whole first line into a comment, so its spans must change.
+    const auto edit = document.replace(0, 0, "// ");
+    highlighter.applyEdit(document, edit);
+
+    highlighter.update(document, 0, document.lineCount());
+
+    check(highlighter.queries() == 2);
+
+    const auto after = highlighter.lineStyle(0);
+
+    check(!after.empty());
+    check(after.front().kind == TokenKind::Comment);
+};
+
+// A reparse changes what a line already reported comes back as, and the
+// document's own revision cannot say so — the text did not change, the tree
+// did. Anything caching colours reads this instead.
+auto tVersionTicksOnReparse = test("Syntax/theVersionTicksOnAReparse") = []
+{
+    auto highlighter = SyntaxHighlighter {};
+
+    if (!highlighter.isValid())
+        return;
+
+    auto document = Document::fromText("int a = 1;\n");
+
+    highlighter.update(document, 0, document.lineCount());
+
+    const auto parsed = highlighter.version();
+
+    // No change: nothing was reparsed, so nothing downstream should throw work
+    // away.
+    highlighter.update(document, 0, document.lineCount());
+
+    check(highlighter.version() == parsed);
+
+    const auto edit = document.replace(0, 0, "// ");
+    highlighter.applyEdit(document, edit);
+    highlighter.update(document, 0, document.lineCount());
+
+    check(highlighter.version() > parsed);
+
+    highlighter.reset();
+
+    check(highlighter.version() > parsed + 1);
 };

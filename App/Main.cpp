@@ -771,7 +771,7 @@ struct EditorView final : GPU::GPUView
         atlas = makeOwned<Text::GlyphAtlas>(
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 4096);
 
-        renderer.emplace(*atlas, textTheme);
+        renderer.emplace(*atlas, textTheme, scale);
         glyphs.emplace();
         builtAtScale = scale;
 

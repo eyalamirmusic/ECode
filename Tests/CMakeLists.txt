@@ -47,6 +47,7 @@ nano_add_executable(ECodeRenderTests
         SOURCES
             ChromeRenderTests.cpp
             ContextMenuRenderTests.cpp
+            DamageTests.cpp
             FindRenderTests.cpp
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp

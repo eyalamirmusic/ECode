@@ -114,3 +114,45 @@ auto tWidestHandlesFinalLine =
 
     check(document.widestLine() == 8);
 };
+
+// --- the revision ----------------------------------------------------------
+//
+// What anything caching work derived from the text compares against. Two
+// properties, and the second is the one that is easy to miss.
+
+auto tRevisionFollowsTheText = test("Document/theRevisionFollowsTheText") = []
+{
+    auto document = Document::fromText("alpha\nbeta\n");
+
+    const auto before = document.revision();
+
+    // Reading does not count as changing.
+    (void) document.line(0);
+    (void) document.lineCount();
+
+    check(document.revision() == before);
+
+    document.replace(0, 0, "x");
+
+    const auto afterInsert = document.revision();
+
+    check(afterInsert != before);
+
+    // Undoing through apply() is a change like any other: the text is back
+    // where it started but nothing derived from the intermediate state is.
+    document.apply(TextEdit {0, "x", ""});
+
+    check(document.revision() != afterInsert);
+};
+
+// The property that matters to a cache and that a per-document counter would
+// get wrong: opening a file must not look like the file it replaced. Both would
+// otherwise be at revision one with entirely different text.
+auto tRevisionsAreUnique = test("Document/revisionsAreUniqueAcrossDocuments") = []
+{
+    const auto first = Document::fromText("alpha\n");
+    const auto second = Document::fromText("alpha\n");
+
+    check(first.text() == second.text());
+    check(first.revision() != second.revision());
+};

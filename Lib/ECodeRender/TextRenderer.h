@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PaintContext.h"
+#include "RowCache.h"
 
 #include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
@@ -104,7 +105,14 @@ struct DocumentView
 class TextRenderer
 {
 public:
-    TextRenderer(eacp::Text::GlyphAtlas& atlasToUse, const TextTheme& themeToUse);
+    // `backingScale` is the scale the atlas was rasterized at, which is what
+    // turns its device-pixel slots back into points. It belongs here rather
+    // than arriving with each frame's PaintContext because the two passes over
+    // a row — rasterizing its glyphs and laying them out — have to agree about
+    // it, and only one of them is given a context.
+    TextRenderer(eacp::Text::GlyphAtlas& atlasToUse,
+                 const TextTheme& themeToUse,
+                 float backingScale);
 
     // Lays out and draws the rows visible in `viewport` at the given scroll
     // offset. Clipping goes through the context rather than straight to the
@@ -164,18 +172,38 @@ public:
     // a continuation row starts at the left margin and its tab stops with it.
     float columnToX(std::string_view text, std::size_t column) const;
 
+    // The rows laid out and held for the next frame, for tests: a cache that
+    // silently rebuilt every row would draw the same picture as one that never
+    // did, so only the counters can tell them apart.
+    const RowCache& rows() const { return cache; }
+
 private:
+    // Turns one run of text into glyphs placed relative to the row's own
+    // origin, which is the expensive half of drawing and the half worth
+    // keeping: a UTF-8 decode, an atlas lookup and a span search per character.
+    //
     // spans may be null for uniformly coloured text (the line-number gutter).
     // `spanOffset` is where this text starts within the line the spans describe,
     // which is non-zero for every row after a wrap.
-    void drawLine(eacp::Text::GlyphRenderer& glyphs,
-                  std::string_view text,
-                  const LineStyle* spans,
-                  std::size_t spanOffset,
-                  float x,
-                  float baseline,
-                  const eacp::Graphics::Color& color,
-                  float backingScale);
+    void layoutLine(std::vector<PlacedGlyph>& out,
+                    std::string_view text,
+                    const LineStyle* spans,
+                    std::size_t spanOffset,
+                    const eacp::Graphics::Color& color) const;
+
+    // The cheap half: places an already laid-out row at an origin and queues it.
+    static void submitLine(eacp::Text::GlyphRenderer& glyphs,
+                           const std::vector<PlacedGlyph>& placed,
+                           float x,
+                           float baseline);
+
+    CachedRow buildRow(const DocumentView& view, std::size_t index) const;
+
+    // Lays a row out unless it already has been, and hands back what to draw.
+    const CachedRow& rowLayout(const DocumentView& view, std::size_t index);
+
+    // What the cached rows are only valid for.
+    RowCacheStamp stampFor(const DocumentView& view) const;
 
     void prepareLine(std::string_view text);
 
@@ -203,6 +231,12 @@ private:
     eacp::Text::GlyphAtlas& atlas;
     TextTheme theme;
 
+    RowCache cache;
+
+    // Where a row the cache refused is laid out instead. See rowLayout.
+    CachedRow scratch;
+
+    float scale = 1.f;
     float advance = 0.f;
     float ascent = 0.f;
     float height = 0.f;

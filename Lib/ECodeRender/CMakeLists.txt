@@ -2,6 +2,7 @@
 # clip stack the GPU does not have.
 add_library(ECodeRender STATIC
         PaintContext.cpp
+        RowCache.cpp
         TextRenderer.cpp)
 
 target_include_directories(ECodeRender PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
