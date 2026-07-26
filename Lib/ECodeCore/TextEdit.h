@@ -59,8 +59,8 @@ public:
     // the right question for a person at a keyboard and the wrong one for a
     // single action made of several edits. Replace-all is exactly what it
     // refuses — replacements rather than insertions, running backwards through
-    // the file — so each occurrence would land on the stack separately. One
-    // cursor per selection will want the same thing when it arrives.
+    // the file — so each occurrence would land on the stack separately. A
+    // keystroke at N cursors is N edits and wants the same treatment.
     //
     // Nests by counting, so a grouped operation can call another one without the
     // inner group closing the outer.

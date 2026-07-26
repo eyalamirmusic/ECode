@@ -162,7 +162,13 @@ Vector<MenuSpec> defaultMenus(bool withExit)
                 commands::editCopy,
                 commands::editPaste,
                 separator,
-                commands::editSelectAll}});
+                commands::editSelectAll,
+                separator,
+                "edit.addCursorAbove",
+                "edit.addCursorBelow",
+                "edit.addNextOccurrence",
+                "edit.selectAllOccurrences",
+                "edit.collapseCursors"}});
 
     menus.add({"Find",
                {"find.show",

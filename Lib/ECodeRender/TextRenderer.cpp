@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace ecode
 {
@@ -518,7 +519,7 @@ void TextRenderer::draw(PaintContext& context,
                         float scrollY)
 {
     const auto& document = view.document;
-    const auto* cursor = overlay.cursor;
+    const auto* cursors = overlay.cursors;
 
     const auto first = firstVisibleRow(scrollY);
     const auto last = lastVisibleRow(view, viewport, scrollY);
@@ -544,34 +545,58 @@ void TextRenderer::draw(PaintContext& context,
     {
         const auto clip = ClipScope {context, textRect};
 
-        if (cursor != nullptr && !cursor->hasSelection())
+        if (cursors != nullptr)
         {
-            // The whole of the caret's logical line, however many rows it takes.
-            // Lighting only the row the caret is on would break a wrapped
-            // paragraph into a lit strip and an unlit one, which reads as two
-            // different lines rather than one.
-            const auto caretLine = document.lineAt(cursor->head);
-            const auto from = view.lines.firstRowOfLine(caretLine);
-            const auto to = from + view.lines.rowsInLine(caretLine);
+            // The band is drawn once per *line*, not once per caret. Two
+            // carets on one line would otherwise paint it twice, and at 3.5%
+            // white the doubled alpha reads as a different colour rather than
+            // as a mistake. Cursors arrive in document order, so two on one
+            // line arrive consecutively and remembering the last line filled
+            // is the whole of the deduplication.
+            auto filled = std::numeric_limits<std::size_t>::max();
 
-            for (auto row = std::max(first, from); row < std::min(last, to); ++row)
-                context.sprites().fillRect({textRect.x,
-                                            textRect.y + scrollY + rowTop(row),
-                                            textRect.w,
-                                            height},
-                                           theme.currentLine);
+            for (const auto& caret: *cursors)
+            {
+                if (caret.hasSelection())
+                    continue;
+
+                const auto caretLine = document.lineAt(caret.head);
+
+                if (caretLine == filled)
+                    continue;
+
+                filled = caretLine;
+
+                // The whole of the caret's logical line, however many rows it
+                // takes. Lighting only the row the caret is on would break a
+                // wrapped paragraph into a lit strip and an unlit one, which
+                // reads as two different lines rather than one.
+                const auto from = view.lines.firstRowOfLine(caretLine);
+                const auto to = from + view.lines.rowsInLine(caretLine);
+
+                for (auto row = std::max(first, from); row < std::min(last, to);
+                     ++row)
+                    context.sprites().fillRect({textRect.x,
+                                                textRect.y + scrollY + rowTop(row),
+                                                textRect.w,
+                                                height},
+                                               theme.currentLine);
+            }
+
+            // Non-overlapping by CursorSet's invariant, so these cannot double
+            // up the way the band above can.
+            for (const auto& caret: *cursors)
+                if (caret.hasSelection())
+                    fillRange(context.sprites(),
+                              view,
+                              caret.start(),
+                              caret.end(),
+                              textRect,
+                              scrollY,
+                              first,
+                              last,
+                              theme.selection);
         }
-
-        if (cursor != nullptr && cursor->hasSelection())
-            fillRange(context.sprites(),
-                      view,
-                      cursor->start(),
-                      cursor->end(),
-                      textRect,
-                      scrollY,
-                      first,
-                      last,
-                      theme.selection);
 
         // Over the selection, not under it. Finding a hit *selects* it, so the
         // two always coincide on the current match — and drawn underneath, the
@@ -627,18 +652,26 @@ void TextRenderer::draw(PaintContext& context,
         // the flush on its own.
         context.flushGlyphs();
 
-        // The caret goes on top of the text: at a line's end it would otherwise
+        // The carets go on top of the text: at a line's end one would otherwise
         // sit under the glyph that follows it after an edit.
-        if (cursor != nullptr && overlay.caretVisible)
+        //
+        // Every cursor draws the same caret, the primary included. Marking it
+        // out would say which one a following ⌘F searches from, and cost the
+        // much more useful reading that all of them are equally live — a
+        // multi-cursor edit happens at all of them at once.
+        if (cursors != nullptr && overlay.caretVisible)
         {
-            const auto index = view.lines.rowOfOffset(document, cursor->head);
-
-            if (index >= first && index < last)
+            for (const auto& caret: *cursors)
             {
+                const auto index = view.lines.rowOfOffset(document, caret.head);
+
+                if (index < first || index >= last)
+                    continue;
+
                 const auto row = view.lines.row(document, index);
                 const auto rowStart = document.offsetAt(row.line, row.start);
                 const auto within =
-                    cursor->head > rowStart ? cursor->head - rowStart : 0;
+                    caret.head > rowStart ? caret.head - rowStart : 0;
 
                 const auto x = columnToX(row.textIn(document), within);
 

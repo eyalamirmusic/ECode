@@ -364,7 +364,7 @@ void EditorWidget::paint(PaintContext& context)
         return;
 
     auto overlay = EditorOverlay {};
-    overlay.cursor = &editor().cursor();
+    overlay.cursors = &editor().cursors();
     overlay.caretVisible = caretVisible;
     overlay.matches = &finder.matches();
     overlay.currentMatch = finder.currentIndex();
@@ -391,6 +391,18 @@ void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
 
         wake();
         onContextMenuRequested(event.pos);
+
+        return;
+    }
+
+    // ⌥-click adds a caret, or takes away the one already under the pointer.
+    // Ahead of the click-count cases because ⌥-double-click means "add a
+    // cursor" twice over rather than "select a word" — a word selection would
+    // throw away every cursor the person had just placed.
+    if (event.modifiers.alt)
+    {
+        editor().toggleCursorAt(offset);
+        wake();
 
         return;
     }
@@ -448,6 +460,16 @@ bool EditorWidget::keyDown(const Graphics::KeyEvent& event)
 
     switch (event.keyCode)
     {
+        case Graphics::KeyCode::Escape:
+            // Only consumed when there was something to collapse, so Escape
+            // still belongs to whatever else wants it — closing the find bar
+            // is the case that would otherwise stop working the moment the
+            // editor claimed the key unconditionally.
+            if (!editor().collapseCursors())
+                return false;
+
+            break;
+
         case Graphics::KeyCode::LeftArrow:
             word ? editor().moveWordLeft(shift) : editor().moveLeft(shift);
             break;

@@ -17,9 +17,11 @@ closed**: an idle frame no longer works out what it already knows, which took
 measuring the frame before building anything and finding the plan's premise wrong
 in two directions at once (§7.3). The cold open is closed too, and measuring
 *that* found the premise wrong again and turned up a worse bug behind it — every
-keystroke had been reparsing the whole file (§7.9). Sections 1–5 are the design
-and the research behind it; **§6 is where things stand and §7 is what to do
-next.**
+keystroke had been reparsing the whole file (§7.9). And **multi-cursor** is in —
+⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L — the last piece of sequencing this plan had called the
+one not to get wrong, and the third time running that the estimate written down
+here turned out not to survive contact (§7.2). Sections 1–5 are the design and
+the research behind it; **§6 is where things stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -427,6 +429,8 @@ that was open, and CPU-side dirty tracking is what shipped. See §7.3.
 - **Multi-cursor / multi-selection.** VSCode semantics: N cursors, each with an anchor, all edits
   applied per-cursor with offset fixup. CowTerm's single contiguous `CellRef` range and O(1)
   `isSelected` test do not generalize; plan for N selections from the beginning.
+  **Done** — `CursorSet`, and the fixup runs upwards with a running total
+  rather than downwards; see §7.2.
 - **Logical ↔ visual line mapping.** Soft wrap, folding, and variable line heights all break the
   `row * cellH` assumption. This is the single biggest structural difference from a terminal grid,
   and the mapping layer should exist even in the read-only milestone. **Done** —
@@ -655,7 +659,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (523 tests): `Document` with an incremental line index,
+**Done in ECode** (568 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -679,7 +683,10 @@ somewhere to save to (§7.8) — and the cold open: a `SyntaxLanguage` shared by
 every highlighter, a parse budgeted across frames so a large file is on screen
 immediately, and the incremental reparse `applyEdit` was written for actually
 running, which takes a keystroke on an 8,000-line file from 9.6 ms to 0.24 and a
-twenty-file launch from 295 ms to 11.8 (§7.9).
+twenty-file launch from 295 ms to 11.8 (§7.9) — and **multi-cursor**: a
+`CursorSet` that owns the sorted, non-overlapping, never-empty invariant, every
+edit and movement applied at N cursors as one thing to undo, N carets and N
+selections drawn, with ⌥-click, ⌥⌘↑/↓, ⌘D, ⇧⌘L and Escape (§7.2).
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -692,8 +699,9 @@ real rather than a rearrangement, and it exposed two genuine gaps —
 
 Ordered by what unblocks the most, with the reasoning rather than just the list.
 
-**Where the front line is now that 7.1, 7.3, 7.4, 7.8 and 7.9 are done.** Nothing
-here is blocked on anything else, so this is a choice rather than a sequence:
+**Where the front line is now that 7.1, 7.2, 7.3, 7.4, 7.8 and 7.9 are done.**
+Nothing here is blocked on anything else, so this is a choice rather than a
+sequence:
 
 - ~~**The cold open.**~~ — **done, and the plan had the wrong half of it. See
   §7.9.** The 40 ms was not the parse: it was 14 ms of compiling the highlight
@@ -701,10 +709,11 @@ here is blocked on anything else, so this is a choice rather than a sequence:
   number of open files. The parse was already lazy. Measuring it also turned up a
   bug worth more than the cold open itself — every keystroke was reparsing the
   whole file.
-- **Multi-cursor (§7.2).** Deferred "in favour of the widget layer", and the
-  widget layer is finished — so the stated reason has expired, and §7.2 is
-  explicit that the bill grows with everything written against a single cursor
-  in the meantime.
+- ~~**Multi-cursor (§7.2).**~~ — **done, and the predicted bill never came.**
+  §7.2 had spent months saying the deferral was costing a refactor across the
+  app; `Editor::cursor()` turned out to have seven callers outside the editor
+  and not one of them had to change. See §7.2 for why, and for what the
+  deferral *did* cost.
 - **IME (§7.5).** Still the largest framework gap, and the marked-text range in
   the cursor model is the part that should not wait for the rest of it.
 - **Windows text (§7.7).** `GlyphRasterizer-Windows.cpp` is a stub, so Windows
@@ -771,34 +780,110 @@ inserts `event.characters` and Opt+R *is* `®` on macOS. Not a bug, and it
 confirmed the dot from the other direction: it lights exactly when the buffer
 genuinely differs, including when the edit came from somewhere unexpected.
 
-### 7.2 Multi-cursor — deferred, deliberately, with the cost known
+### 7.2 Multi-cursor — done, and the bill was much smaller than billed
 
-Put aside for now in favour of the widget layer. Recording the trade rather
-than deleting the section, because this plan previously called it the one piece
-of sequencing not to get wrong, and reversing that should be visible.
+⌥-click adds or removes a caret, ⌥⌘↑ and ⌥⌘↓ grow a column, ⌘D adds the next
+occurrence and ⇧⌘L takes all of them, Escape collapses back to one. Every
+editing operation, every movement, copy and the renderer all work at N cursors.
 
-`Editor` holds a single `Cursor` and every operation assumes it. The change
-itself stays contained — `Cursor` becomes `Vector<Cursor>`, edits apply per
-cursor from the highest offset down so earlier edits do not shift later ones,
-and overlapping cursors merge after each operation. **One piece of it already
-exists**: replace-all needed the same shape — several edits, highest offset
-first, one thing to undo — so `EditHistory::beginGroup`/`endGroup` and the RAII
-`UndoGroup` are in and tested. That is the part of multi-cursor that would
-otherwise have been discovered late.
+**This section spent months predicting a refactor across the app, and it was
+wrong about that** — which is worth recording as plainly as the estimate was.
+It said the bill "grows with everything written against a single cursor in the
+meantime: the widget layer, find and replace, the palette's commands". Measured
+by grep before starting, `Editor::cursor()` had **seven** callers outside the
+editor and its tests, and every one of them genuinely wants the *primary*: the
+status bar's line and column, the offset ⌘F resumes from, the caret the view
+scrolls to, the caret `TextFile::reload` preserves. Not one of them had to
+change. The rule the old section laid down — *anything new that touches the
+cursor goes through `Editor`, not into `Editor::cursor()`* — is why, and it is
+the part of this that turned out to be load-bearing. The deferral was the right
+call and the reason given for it was not the one that paid off.
 
-What grows is everything written against a single cursor in the meantime: the
-widget layer, find and replace, the palette's commands.
+What did change: the renderer's `const Cursor*` became a `const CursorSet*`,
+exactly as this section predicted, and `EditorWidget::isInsideSelection` had to
+ask about all of them rather than one. Two lines and a loop.
 
-The bill comes due when multi-cursor lands, and it is a refactor across the app
-rather than the couple of hours it would be today. What keeps it from getting
-worse: **anything new that touches the cursor should go through `Editor`, not
-reach into `Editor::cursor()`**. Today the renderer takes a `const Cursor*`,
-which becomes a span. Keep that surface as narrow as it is.
+The one piece that already existed also held. Replace-all needed several edits
+as one thing to undo, so `EditHistory::beginGroup`/`endGroup` and the RAII
+`UndoGroup` were in and tested — and a keystroke at N cursors is the same
+shape.
 
-Soft wrap was the first change since to test that rule, and it is the reason
-`Editor` owns the line map rather than the view: moving by visual rows is cursor
-movement, so it stayed behind `moveUp`/`moveDown` instead of the widget
-computing an offset and calling `placeCaret`. The surface did not widen.
+Decisions worth recording, because each went against the obvious version:
+
+- **The set is a type, not a vector.** `CursorSet` holds three invariants — at
+  least one cursor, in document order, never overlapping — and `transform()` is
+  the only way to mutate it, so the repair runs on the way out rather than at
+  each of a dozen call sites that could forget it. All three failures are
+  silent: two cursors in one place type every character twice, two out of order
+  make the edit at one shift the other by a stale amount, and an empty set is a
+  window with no caret. Nothing about any of them looks like a crash.
+- **Edits run upwards with a running total, not downwards.** This section
+  originally called for the highest offset first, which needs no shift for the
+  cursors not yet reached — but then needs every cursor already done shifted by
+  each later edit, which is the same arithmetic with an extra loop to get wrong.
+  Upwards is one accumulator and no second pass.
+- **A cursor is shifted whether or not it edits.** The bug that shape invites,
+  and the one the tests were aimed at: forward-delete with a caret at the end of
+  the file deletes nothing there, and a cursor left at its unshifted offset is
+  pointing past the end of a document the cursors below it just shortened.
+- **The undo group is conditional.** `beginGroup` ends whatever step is open, so
+  grouping every keystroke would stop a typed word undoing as a word. With N
+  cursors there is no such run to preserve — one keystroke is already N edits
+  that have to be one step. Both directions are wrong in a way only ⌘Z reveals,
+  and both are pinned.
+- **Undo goes back to one cursor.** Restoring the set an edit was made with
+  means recording it on the step, which is a change to `EditHistory`. The cheap
+  substitute — a cursor per edit in the undone step — is right for a
+  multi-cursor keystroke and wrong for the other kind of grouped edit: undoing a
+  replace-all would leave a cursor on every occurrence in the file.
+- **⌘D decides whole-word from the text, not from a flag.** VSCode matches whole
+  words when the selection came from expanding a caret and substrings when it
+  did not, which is the behaviour that keeps ⌘D on `id` from catching the `id`
+  inside `hybrid`. A remembered flag would have to be cleared by everything else
+  that changes a selection, and the one that got missed would silently change
+  what the next press matched. Asking the two word motions whether the selection
+  *is* a word answers the same question with no state.
+- **The current-line band is drawn per line, not per cursor.** At 3.5% white a
+  second pass over the same rectangle is a visible step in brightness. Cursors
+  arrive in document order, so remembering the last line filled is the whole of
+  the deduplication — and it is a fold no per-cursor test can land on.
+- **Every caret looks the same, primary included.** Marking the primary would
+  say which one a following ⌘F searches from, and cost the much more useful
+  reading that all of them are equally live.
+- **⌥-click toggles.** Adding only would leave a click that landed one character
+  off with no way back except Escape and starting over.
+
+**Verified four ways.** `Tests/MultiCursorTests.cpp` covers the model — 39
+tests, chosen for inputs where a plausible wrong implementation gives a
+*different* answer rather than no answer. `Tests/MultiCursorRenderTests.cpp`
+drives a real `EditorWidget` in a real `WidgetHost` with synthesized ⌥-clicks
+and keys and reads the pixels back. Twenty-seven mutations were tried and all
+twenty-seven went red — one only after a test was rebuilt around the state it
+needed, which is recorded in §9. Then it was looked at, off-screen and dumped to
+files: a column of carets down three lines, every occurrence of a token selected
+at once, two carets on one line with the band at exactly a single caret's
+brightness, and `const ` typed into three lines from one keystroke.
+
+The menus were driven live, since that is the half `renderToImage` cannot see:
+Add Cursor Above/Below, Add Selection To Next Find Match and Select All
+Occurrences all run, and Collapse To One Cursor comes up greyed with one cursor
+and live with two — the predicate chain end to end. ⌘D and ⇧⌘L are read back
+through AX as real key equivalents; the two arrow chords deliberately are not,
+for the reason ⌃Tab is not (§7.4).
+
+**Not done, deliberately:** an undo that restores the cursor set, as above.
+Multi-cursor paste that distributes N copied lines to N cursors — VSCode does
+it, and it needs the clipboard to carry how many selections produced the text.
+Column (box) selection by ⌥-dragging, which is a different gesture on the same
+model. And ⌥-double-click to add a *word* selection: the widget takes ⌥-click
+before the click-count cases, so ⌥-double-click adds two carets rather than
+selecting a word.
+
+Soft wrap was the first change to test the narrow-surface rule, and it is the
+reason `Editor` owns the line map rather than the view: moving by visual rows is
+cursor movement, so it stayed behind `moveUp`/`moveDown` instead of the widget
+computing an offset and calling `placeCaret`. The surface did not widen, and
+that is what made this change small.
 
 ### 7.3 The widget layer — foundation done, concrete widgets next
 
@@ -1173,8 +1258,9 @@ Six decisions worth recording:
   and refuses exactly what replace-all is: replacements, running backwards
   through the file. So each occurrence landed on the stack separately and one
   ⌘Z left the file half-replaced. `EditHistory::beginGroup`/`endGroup` and an
-  RAII `UndoGroup` fix it, and **multi-cursor wants the same primitive** — N
-  edits, highest offset first, one thing to undo.
+  RAII `UndoGroup` fix it, and **multi-cursor wanted the same primitive** — N
+  edits, one thing to undo. It uses a conditional version of it rather than
+  `UndoGroup` itself, for the reason §7.2 records.
 - **`Widget::isTextInput()` is the first piece of a `when` clause.** ⌘A, ⌘C and
   ⌘V with a find field focused belong to the field; everywhere else they belong
   to the document. Pasting a search term into the file being searched is a
@@ -1359,8 +1445,14 @@ cannot be layered on from app code.
 The implementation can wait; the **marked-text range in the cursor model should
 not**. Composition means the document holds provisional text that is styled
 differently and is not yet a real edit. Retrofitting that through `Editor`,
-`EditHistory` and the renderer after multi-cursor and the widget layer exist is
-exactly the kind of change this plan has been trying to avoid.
+`EditHistory` and the renderer is exactly the kind of change this plan has been
+trying to avoid — and multi-cursor has now landed on top of all three, so the
+warning is about a larger surface than it was.
+
+Though §7.2 is also the evidence for the other reading: the surface that
+mattered there stayed small because it went through `Editor` rather than around
+it, and marked text can be held to the same rule. It is a range on the
+`CursorSet`, not a second thing views reach into.
 
 ### 7.6 The rope, when files get big
 
@@ -1973,3 +2065,38 @@ Recorded because each of these cost something to find out.
   It took an ink count alongside the equality: the frame that skipped the work
   still has to have drawn something. Same family as the backdrop that dimmed by
   a rounding error.
+
+- **Two implementations can agree on every sequence you would naturally write.**
+  "Add a cursor below the bottommost" and "below the primary" are different
+  rules, and swapping one for the other left all 566 tests green — because every
+  add makes its own new cursor the primary, so in any run of presses that only
+  goes downwards the two are the same cursor. Separating them needs a ⌥-click,
+  which is the one thing that makes the primary an *upper* cursor. This is the
+  held-column lesson from §7.3 generalised: when a mutation stays green, the
+  question is what state the code actually needs, and the answer belongs in the
+  test. Both directional tests now build that state on purpose and say why.
+- **A channel that separates two colours in principle may not separate them in a
+  pixel.** The caret is (0.55, 0.78, 0.98) and the text is (0.85, 0.87, 0.91), so
+  "is this pixel blue" looked like it would find a caret — and it found one on
+  every line, because a 70%-covered antialiased glyph edge reaches the same
+  blue. Blue *minus red* is 0.43 against 0.06 and separates them with room to
+  spare. The general form: when two things are distinguished by hue rather than
+  by brightness, test the hue. Antialiasing turns every colour into a ramp
+  towards the background, and a single-channel threshold reads a point on that
+  ramp.
+- **§9's own lessons come back.** The multi-cursor frames were dumped at 2× while
+  the harness passed 1.f to `PaintContext`, and the right half of every row went
+  missing — exactly the entry three bullets up, reproduced within an hour of
+  reading it. It looked like a clipping bug in the new renderer code for about a
+  minute. Writing a lesson down does not stop it; recognising it faster is the
+  whole return.
+- **A "grey it out" predicate can only be read while the menu is being drawn.**
+  Checking that Collapse To One Cursor greys with one cursor and lives with two
+  read `false`, `false`, `true` through three states it should have read
+  `false`, `true`, `true` — one step behind, every time. `validateMenuItem:` runs
+  when AppKit is about to draw the menu, and `click menu item "X"` does not draw
+  it, so the attribute reports the state at the previous draw. Enumerating
+  `menu items` does draw it, and the same three reads then came back correct.
+  §9 already recorded this for the View menu's checkmark; it applies to
+  `enabled` for the same reason, and the tell is a sequence of readings that are
+  each right for the *previous* step.

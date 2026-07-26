@@ -3,6 +3,7 @@
 #include "Cursor.h"
 #include "Document.h"
 #include "LineMap.h"
+#include "Search.h"
 #include "TextEdit.h"
 
 #include <functional>
@@ -29,7 +30,13 @@ public:
     }
 
     const Document& document() const { return doc; }
-    const Cursor& cursor() const { return caret; }
+
+    // The primary cursor. Kept as the name it has always had because most
+    // callers genuinely want that one — the status bar's readout, the offset a
+    // search resumes from, the caret the view scrolls to. Anything that has to
+    // see all of them asks for cursors() instead.
+    const Cursor& cursor() const { return carets.primary(); }
+    const CursorSet& cursors() const { return carets; }
 
     // How the document's lines map onto rows on screen.
     //
@@ -52,6 +59,8 @@ public:
     void setDocument(Document documentToUse);
 
     // --- editing ---------------------------------------------------------
+    //
+    // Every one of these applies at every cursor, as one thing to undo.
 
     // Replaces the selection if there is one, otherwise inserts at the caret.
     void insert(std::string_view text);
@@ -74,11 +83,46 @@ public:
 
     // --- selection -------------------------------------------------------
 
+    // Every selection, in document order, joined by newlines. One string
+    // rather than a list because the only caller is the clipboard, and the
+    // alternative — the primary's selection alone — silently drops the rest of
+    // what a person selected before copying it.
     std::string selectedText() const;
 
     void selectAll();
     void selectWordAt(std::size_t offset);
     void selectLineAt(std::size_t offset);
+
+    // --- more than one cursor --------------------------------------------
+
+    // ⌥-click: a caret at `offset`, or the removal of the one already there.
+    // Toggling rather than only adding, because a click that lands one pixel
+    // into the wrong character otherwise has no way back except Escape and
+    // starting over.
+    bool toggleCursorAt(std::size_t offset);
+
+    // ⌥⌘↑ / ⌥⌘↓: a caret one visual row above the topmost or below the
+    // bottommost, at the column that one holds.
+    //
+    // Relative to the outermost cursor rather than to each of them, which is
+    // what makes holding the chord grow a column downwards. Adding one under
+    // every cursor would double the set on each press.
+    bool addCursorAbove();
+    bool addCursorBelow();
+
+    // Escape. False when there was only one cursor, so the key can fall
+    // through to whatever else wants it.
+    bool collapseCursors();
+
+    // ⌘D. With nothing selected this selects the word the primary is in — the
+    // first press is what gives the later ones something to look for. With a
+    // selection it adds a cursor on the next occurrence of that text, wrapping
+    // at the end of the file.
+    bool selectNextOccurrence();
+
+    // ⇧⌘L: a cursor on every occurrence, with the one already under the primary
+    // staying primary so the view does not jump to the last hit in the file.
+    bool selectAllOccurrences();
 
     // --- movement --------------------------------------------------------
     //
@@ -132,12 +176,39 @@ private:
     // the caret should land after it.
     std::size_t applyEdit(std::size_t start, std::size_t end, std::string_view text);
 
-    // Movement shares this: collapse or extend, then clear the held column
-    // unless the caller is moving vertically.
-    void applyMotion(std::size_t offset, bool extend);
+    // Where one cursor is going, asked once per cursor.
+    using Destination = std::function<std::size_t(const Cursor&)>;
+
+    // Moves every cursor to wherever `destination` sends it. Two that walk into
+    // each other stop being two, which CursorSet::transform does on the way out.
+    void moveEach(const Destination& destination, bool extend);
+
+    // Up or down by whole visual rows, which cannot go through moveEach: it
+    // clears the held column, and holding that column is the entire point of
+    // vertical movement.
+    void moveVertically(int rowsToMove, bool extend);
+
+    // The shape every deletion has: the selection where there is one, and
+    // otherwise the span between the caret and wherever `motion` says to go.
+    // The four callers differ only in the motion and the direction, and the
+    // check that the motion actually moved covers both ends of the document.
+    void deleteWith(std::size_t (*motion)(const Document&, std::size_t),
+                    bool backwards);
+
+    // What ⌘D and ⇧⌘L look for: the primary's selection, matched
+    // case-sensitively, and as a whole word when the selection *is* one.
+    //
+    // Decided from the text rather than remembered from the press that
+    // produced it, so there is no flag to fall out of step with the selection.
+    // ⌘D on `i` finding every `i` inside every identifier is the case this
+    // exists for.
+    SearchQuery occurrenceQuery() const;
+
+    // A selection over a match, pointing forwards.
+    static Cursor selectionOver(const SearchMatch& match);
 
     Document doc;
-    Cursor caret;
+    CursorSet carets;
     EditHistory history;
     LineMap rows;
 
@@ -146,9 +217,12 @@ private:
 
 // Makes everything done inside it a single thing to undo.
 //
-// For an operation that is one action made of several edits — replace-all
-// today, one edit per cursor when multi-cursor lands. See
-// EditHistory::beginGroup for why the ordinary merge rule cannot cover those.
+// For an operation that is one action made of several edits: replace-all, and
+// one edit per cursor. See EditHistory::beginGroup for why the ordinary merge
+// rule cannot cover those.
+//
+// The editor's own multi-cursor edits do not use this, because they must not
+// group when there is only one cursor — see GroupWhen in Editor.cpp.
 class UndoGroup
 {
 public:

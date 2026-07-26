@@ -86,16 +86,28 @@ struct WrapTestView final : GPU::GPUView
         auto context = PaintContext {pass, sprites, *glyphs, *atlas, bounds(), 1.f};
 
         auto overlay = EditorOverlay {};
-        overlay.cursor = cursor;
-        overlay.caretVisible = cursor != nullptr;
+        overlay.cursors = showCursors ? &cursors : nullptr;
+        overlay.caretVisible = showCursors;
 
         renderer->draw(context, view, overlay, bounds(), 0.f);
     }
 
+    // Shows exactly this cursor, with its caret lit. Every test here wants one
+    // or none, so the set is built for them.
+    void setCursor(Cursor caret)
+    {
+        cursors.reset(caret);
+        showCursors = true;
+    }
+
+    void hideCursors() { showCursors = false; }
+
     TextTheme theme;
     Document document;
     LineMap lines;
-    const Cursor* cursor = nullptr;
+
+    CursorSet cursors;
+    bool showCursors = false;
 
     OwningPointer<Text::GlyphAtlas> atlas;
     std::optional<TextRenderer> renderer;
@@ -243,10 +255,9 @@ auto tCaretLandsOnItsRow = test("WrapRender/theCaretIsDrawnOnItsOwnRow") = []
     const auto second = view.lines.row(view.document, 1);
 
     auto cursor = Cursor {};
-    cursor.head = view.document.offsetAt(second.line, second.start);
-    cursor.anchor = cursor.head;
+    cursor.moveTo(view.document.offsetAt(second.line, second.start));
 
-    view.cursor = &cursor;
+    view.setCursor(cursor);
 
     const auto image = view.renderToImage(1.f);
     check(image.isValid());
@@ -297,11 +308,11 @@ auto tSelectionSpansRows = test("WrapRender/aSelectionAcrossAWrapFillsBothRows")
     cursor.anchor = start > 4 ? start - 4 : 0;
     cursor.head = start + 4;
 
-    view.cursor = &cursor;
+    view.setCursor(cursor);
 
     const auto selected = view.renderToImage(1.f);
 
-    view.cursor = nullptr;
+    view.hideCursors();
     const auto plain = view.renderToImage(1.f);
 
     check(selected.isValid() && plain.isValid());

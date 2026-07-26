@@ -547,6 +547,31 @@ struct EditorView final : GPU::GPUView
                       "Edit: Select All",
                       [this] { editor().selectAll(); }});
 
+        commands.add({"edit.addCursorAbove",
+                      "Edit: Add Cursor Above",
+                      [this] { editor().addCursorAbove(); }});
+
+        commands.add({"edit.addCursorBelow",
+                      "Edit: Add Cursor Below",
+                      [this] { editor().addCursorBelow(); }});
+
+        commands.add({"edit.addNextOccurrence",
+                      "Edit: Add Selection To Next Find Match",
+                      [this] { editor().selectNextOccurrence(); }});
+
+        commands.add({"edit.selectAllOccurrences",
+                      "Edit: Select All Occurrences",
+                      [this] { editor().selectAllOccurrences(); }});
+
+        // Listed but unavailable with one cursor, for the reason the tab
+        // commands are: a command that only appears once the state exists is
+        // harder to discover than one that is visibly not applicable yet. It
+        // is also how anyone finds out that Escape is what does this.
+        commands.add({"edit.collapseCursors",
+                      "Edit: Collapse To One Cursor",
+                      [this] { editor().collapseCursors(); },
+                      [this] { return editor().cursors().hasMultiple(); }});
+
         commands.add({"find.show", "Find", [this] { showFind(false); }});
 
         commands.add({"find.showReplace", "Replace", [this] { showFind(true); }});
@@ -630,6 +655,16 @@ struct EditorView final : GPU::GPUView
         keymap.bind("cmd+c", "edit.copy");
         keymap.bind("cmd+v", "edit.paste");
         keymap.bind("cmd+a", "edit.selectAll");
+        keymap.bind("cmd+d", "edit.addNextOccurrence");
+        keymap.bind("cmd+shift+l", "edit.selectAllOccurrences");
+
+        // VSCode's chords, and like ⌃Tab they cannot become menu key
+        // equivalents: toKeyEquivalent only converts single characters, so an
+        // arrow stays with the keymap. That is the right side of the trade
+        // here — a key equivalent is matched by macOS before the window sees
+        // the key, and ⌥⌘↑ has to reach the editor.
+        keymap.bind("cmd+alt+up", "edit.addCursorAbove");
+        keymap.bind("cmd+alt+down", "edit.addCursorBelow");
         keymap.bind("cmd+f", "find.show");
         keymap.bind("cmd+alt+f", "find.showReplace");
         keymap.bind("cmd+g", "find.next");
@@ -866,10 +901,16 @@ struct EditorView final : GPU::GPUView
         layout.tabs.setTabs(std::move(tabs));
         layout.tabs.setActiveTab(workspace.activeIndex());
 
-        layout.status.setText("Ln " + std::to_string(layout.editor.caretLine())
-                                  + ", Col "
-                                  + std::to_string(layout.editor.caretColumn()),
-                              "UTF-8    C++");
+        auto position = "Ln " + std::to_string(layout.editor.caretLine()) + ", Col "
+                        + std::to_string(layout.editor.caretColumn());
+
+        // The only place that says the mode is on when the other carets have
+        // been scrolled off the screen. Without it, a keystroke lands in places
+        // nobody can see with nothing on screen to explain it.
+        if (const auto count = layout.editor.editor().cursors().count(); count > 1)
+            position += "  (" + std::to_string(count) + " cursors)";
+
+        layout.status.setText(position, "UTF-8    C++");
 
         updateTitle();
     }

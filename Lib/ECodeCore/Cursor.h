@@ -37,6 +37,10 @@ struct Cursor
 
     bool hasSelection() const { return head != anchor; }
 
+    // Which end the head is on. A selection grown leftwards shrinks from the
+    // left when Shift+Right is pressed, so the direction is not cosmetic.
+    bool isReversed() const { return head < anchor; }
+
     std::size_t start() const { return head < anchor ? head : anchor; }
     std::size_t end() const { return head < anchor ? anchor : head; }
     std::size_t length() const { return end() - start(); }
@@ -57,6 +61,103 @@ struct Cursor
         head = offset;
         holdsColumn = false;
     }
+
+    // Covers `offset` in the half-open sense a selection already uses, except
+    // that a bare caret covers the one offset it sits at. A zero-length range
+    // contains nothing under the half-open rule, and ⌥-clicking a caret to take
+    // it away again has to be able to find it.
+    bool covers(std::size_t offset) const
+    {
+        if (!hasSelection())
+            return offset == head;
+
+        return offset >= start() && offset < end();
+    }
+};
+
+// The cursors an editor edits through: at least one, in document order, and
+// never overlapping.
+//
+// Those three properties are the whole reason this is a type rather than a
+// vector. Two cursors in the same place type every character twice; two out of
+// order make the edit at one shift the other by a delta computed from an offset
+// that has already moved. Both are silent — the text simply comes out wrong —
+// so the repair runs after every operation rather than at each call site that
+// could forget it. transform() is the only way in, and it always repairs.
+class CursorSet
+{
+public:
+    // The cursor that everything written against a single one still means: the
+    // status bar's line and column, the offset a search resumes from, the caret
+    // the view scrolls to follow. It is the most recently added, which is what
+    // makes ⌥-click then ⌘F search from where the click landed.
+    const Cursor& primary() const { return carets[primaryIndex]; }
+
+    int count() const { return carets.size(); }
+    bool hasMultiple() const { return carets.size() > 1; }
+
+    const Cursor& operator[](int index) const { return carets[index]; }
+
+    auto begin() const { return carets.begin(); }
+    auto end() const { return carets.end(); }
+
+    // Back to exactly one cursor. The set is never empty, so this is how a
+    // plain click replaces it rather than clearing and rebuilding.
+    void reset(Cursor only);
+
+    // Back to one, keeping the primary — Escape.
+    void collapseToPrimary() { reset(primary()); }
+
+    // Adds a cursor and makes it the primary. False when it merged into one
+    // already there, so ⌥-clicking inside an existing selection is reported as
+    // having added nothing while still moving the primary onto it.
+    bool add(Cursor extra);
+
+    // Takes away the cursor covering `offset`. False when there is none, and
+    // false for the last one left: the set is never empty, and a click that
+    // silently emptied it would leave a window with no caret.
+    bool removeCovering(std::size_t offset);
+
+    // -1 when no cursor covers it.
+    int indexCovering(std::size_t offset) const;
+
+    void makePrimary(int index) { primaryIndex = index; }
+
+    // Applies `change` to every cursor in document order, then repairs the
+    // invariant. Every mutation of the set goes through this, so there is one
+    // place to get the repair right rather than a dozen places to forget it.
+    //
+    // Document order matters to more than tidiness: an edit loop accumulates
+    // how far the text below it has shifted, and that is only valid walking
+    // upwards through cursors that are already sorted.
+    template <typename Change>
+    void transform(Change&& change)
+    {
+        for (auto& caret: carets)
+            change(caret);
+
+        normalize();
+    }
+
+    // The same, for the one gesture that means a single cursor even when there
+    // are several: a drag, or a Shift+click, extends the cursor it started
+    // from and leaves the others where they are.
+    template <typename Change>
+    void transformPrimary(Change&& change)
+    {
+        change(carets[primaryIndex]);
+
+        normalize();
+    }
+
+private:
+    // Sorts, then merges what overlaps, keeping track of which entry the
+    // primary ended up inside.
+    void normalize();
+
+    eacp::Vector<Cursor> carets {Cursor {}};
+
+    int primaryIndex = 0;
 };
 
 // Cursor movement over a document. Free functions rather than members because

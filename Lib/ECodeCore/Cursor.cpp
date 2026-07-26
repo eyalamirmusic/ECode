@@ -32,7 +32,145 @@ bool isBlank(char byte)
 {
     return byte == ' ' || byte == '\t';
 }
+
+// By where the range begins, then by where it ends, so a bare caret sitting at
+// the start of a selection sorts before it and is absorbed by it rather than
+// left dangling in front of one.
+bool startsBefore(const Cursor& first, const Cursor& second)
+{
+    if (first.start() != second.start())
+        return first.start() < second.start();
+
+    return first.end() < second.end();
+}
+
+// Grows `into` to cover `other` as well.
+//
+// The direction is taken rather than recomputed, because the head is the end a
+// following Shift+Arrow moves: a merge that quietly flipped it would turn an
+// extension into a contraction, and the person would see the selection shrink
+// from the wrong end for no visible reason.
+void absorb(Cursor& into, const Cursor& other, bool takeOtherDirection)
+{
+    const auto from = std::min(into.start(), other.start());
+    const auto to = std::max(into.end(), other.end());
+
+    const auto reversed =
+        takeOtherDirection ? other.isReversed() : into.isReversed();
+
+    into.head = reversed ? from : to;
+    into.anchor = reversed ? to : from;
+
+    // The column a vertical move was holding described a caret that no longer
+    // exists on its own.
+    into.holdsColumn = false;
+}
 } // namespace
+
+void CursorSet::reset(Cursor only)
+{
+    carets.clear();
+    carets.add(only);
+
+    primaryIndex = 0;
+}
+
+bool CursorSet::add(Cursor extra)
+{
+    const auto before = carets.size();
+
+    carets.add(extra);
+
+    // Provisionally the primary, and it stays so through normalize() whether it
+    // survives as its own cursor or is folded into one that was already there.
+    primaryIndex = before;
+
+    normalize();
+
+    return carets.size() > before;
+}
+
+int CursorSet::indexCovering(std::size_t offset) const
+{
+    for (auto index = 0; index < carets.size(); ++index)
+        if (carets[index].covers(offset))
+            return index;
+
+    return -1;
+}
+
+bool CursorSet::removeCovering(std::size_t offset)
+{
+    if (carets.size() < 2)
+        return false;
+
+    const auto index = indexCovering(offset);
+
+    if (index < 0)
+        return false;
+
+    carets.removeAt(index);
+
+    // Removing the primary hands the role to whichever cursor takes its place,
+    // and removing one above it leaves the primary where it was.
+    if (primaryIndex >= index)
+        primaryIndex = std::max(0, primaryIndex - 1);
+
+    return true;
+}
+
+void CursorSet::normalize()
+{
+    // The overwhelmingly common case, and worth keeping free: one cursor is
+    // already sorted and cannot overlap itself, so every arrow key in an
+    // ordinary editing session stops here rather than allocating.
+    if (carets.size() < 2)
+    {
+        primaryIndex = 0;
+        return;
+    }
+
+    // Which entry is the primary has to survive both the sort and the merge. A
+    // pointer does not survive the sort and an index does not survive the
+    // merge, so the flag travels with the cursor.
+    struct Entry
+    {
+        Cursor cursor;
+        bool primary;
+    };
+
+    auto entries = eacp::Vector<Entry> {};
+    entries.reserve(carets.size());
+
+    for (auto index = 0; index < carets.size(); ++index)
+        entries.add({carets[index], index == primaryIndex});
+
+    std::stable_sort(entries.begin(),
+                     entries.end(),
+                     [](const Entry& first, const Entry& second)
+                     { return startsBefore(first.cursor, second.cursor); });
+
+    carets.clear();
+    primaryIndex = 0;
+
+    for (const auto& entry: entries)
+    {
+        // Touching counts as overlapping. [0,3) and [3,6) describe one run of
+        // text, and two cursors over one run insert every character twice at
+        // the seam — which looks like a stutter in the typing rather than like
+        // two cursors.
+        const auto merges =
+            !carets.empty() && entry.cursor.start() <= carets.back().end();
+
+        if (merges)
+            absorb(carets.back(), entry.cursor, entry.primary);
+        else
+            carets.add(entry.cursor);
+
+        if (entry.primary)
+            primaryIndex = carets.size() - 1;
+    }
+}
 
 namespace Motion
 {

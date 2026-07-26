@@ -86,8 +86,8 @@ struct EditorTestView final : GPU::GPUView
         auto context = PaintContext {pass, sprites, *glyphs, *atlas, area, 1.f};
 
         auto overlay = EditorOverlay {};
-        overlay.cursor = cursor;
-        overlay.caretVisible = cursor != nullptr;
+        overlay.cursors = showCursors ? &cursors : nullptr;
+        overlay.caretVisible = showCursors;
         overlay.matches = matches;
         overlay.currentMatch = currentMatch;
 
@@ -102,11 +102,23 @@ struct EditorTestView final : GPU::GPUView
         return {document, lines, highlighter.get()};
     }
 
+    // Shows exactly these cursors, with their carets lit. Every test here
+    // either wants one cursor or none, so the set is built for them.
+    void setCursor(Cursor caret)
+    {
+        cursors.reset(caret);
+        showCursors = true;
+    }
+
+    void hideCursors() { showCursors = false; }
+
     TextTheme theme;
     Document document;
     LineMap lines;
     OwningPointer<SyntaxHighlighter> highlighter;
-    const Cursor* cursor = nullptr;
+
+    CursorSet cursors;
+    bool showCursors = false;
 
     const eacp::Vector<SearchMatch>* matches = nullptr;
     int currentMatch = -1;
@@ -306,9 +318,8 @@ auto tCaretDraws = test("RenderIntegration/caretIsDrawnWhenVisible") = []
     shown.document = Document::fromText("");
     hidden.document = Document::fromText("");
 
-    const auto cursor = caretAt(0);
-    shown.cursor = &cursor;
-    hidden.cursor = nullptr;
+    shown.setCursor(caretAt(0));
+    hidden.hideCursors();
 
     auto shownImage = shown.renderToImage(1.f);
     auto hiddenImage = hidden.renderToImage(1.f);
@@ -333,11 +344,8 @@ auto tSelectionDraws = test("RenderIntegration/selectionIsDrawnBehindTheText") =
     plain.document = codeSample();
     selected.document = codeSample();
 
-    const auto none = caretAt(0);
-    const auto range = selectionOver(0, 12);
-
-    plain.cursor = &none;
-    selected.cursor = &range;
+    plain.setCursor(caretAt(0));
+    selected.setCursor(selectionOver(0, 12));
 
     auto plainImage = plain.renderToImage(1.f);
     auto selectedImage = selected.renderToImage(1.f);
@@ -563,8 +571,7 @@ auto tCurrentMatchSurvivesItsOwnSelection =
     view.currentMatch = 1;
 
     // Exactly what findNext leaves behind: the second hit, selected.
-    const auto selected = selectionOver(matches[1].start, matches[1].end);
-    view.cursor = &selected;
+    view.setCursor(selectionOver(matches[1].start, matches[1].end));
 
     const auto image = view.renderToImage(1.f);
 

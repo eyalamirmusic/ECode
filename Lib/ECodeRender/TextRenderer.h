@@ -64,7 +64,12 @@ struct EditorOverlay
 {
     // Null while the editor has no caret to show — a view being rendered to an
     // image, or one that has never been focused.
-    const Cursor* cursor = nullptr;
+    //
+    // The whole set rather than the primary: every cursor draws a caret, and
+    // every selection is painted. A renderer given only the primary would draw
+    // a multi-cursor edit as though it were happening in one place, which is
+    // the one thing about it that has to be visible.
+    const CursorSet* cursors = nullptr;
     bool caretVisible = false;
 
     // Every search hit on screen, and which of them the find bar is on. Null

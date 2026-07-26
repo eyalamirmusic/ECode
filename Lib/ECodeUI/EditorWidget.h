@@ -48,15 +48,21 @@ public:
     // for the tests that check a switch does not lose it.
     float scrollOffset() const { return open->scrollY; }
 
-    // Half-open, matching Cursor's own range: an offset at the very end of a
-    // selection is past it, which is where a click lands when someone aims just
-    // beyond the last selected character.
+    // Inside *any* selection, half-open, matching Cursor's own range: an offset
+    // at the very end of a selection is past it, which is where a click lands
+    // when someone aims just beyond the last selected character.
+    //
+    // Any rather than the primary's, because the caller is the right-click that
+    // decides whether to collapse before opening a menu — and collapsing a
+    // multi-cursor selection because the click missed the primary is the same
+    // mistake in a louder form.
     bool isInsideSelection(std::size_t offset) const
     {
-        const auto& caret = editor().cursor();
+        for (const auto& caret: editor().cursors())
+            if (caret.hasSelection() && caret.covers(offset))
+                return true;
 
-        return caret.hasSelection() && offset >= caret.start()
-               && offset < caret.end();
+        return false;
     }
     const Document& document() const { return open->file.document(); }
 

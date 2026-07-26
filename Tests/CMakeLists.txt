@@ -10,6 +10,7 @@ nano_add_executable(ECodeCoreTests
             EditorTests.cpp
             FileTreeTests.cpp
             LineMapTests.cpp
+            MultiCursorTests.cpp
             SearchTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
@@ -54,6 +55,7 @@ nano_add_executable(ECodeRenderTests
             ContextMenuRenderTests.cpp
             DamageTests.cpp
             FindRenderTests.cpp
+            MultiCursorRenderTests.cpp
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp
             SplitterRenderTests.cpp
