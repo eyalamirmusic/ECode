@@ -9,10 +9,12 @@ nano_add_executable(ECodeCoreTests
             DocumentEditTests.cpp
             EditorTests.cpp
             FileTreeTests.cpp
+            LineMapTests.cpp
             SearchTests.cpp
             StyleTests.cpp
             TextEditTests.cpp
             TextFileTests.cpp
+            WrapMotionTests.cpp
         TARGETS ECodeCore)
 
 # Layout, hit-testing, capture and focus are plain logic over rectangles, so the
@@ -50,4 +52,5 @@ nano_add_executable(ECodeRenderTests
             RenderIntegrationTests.cpp
             SplitterRenderTests.cpp
             TestMain.cpp
+            WrapRenderTests.cpp
         TARGETS ECodeSyntax ECodeUI)   # ECodeUI links ECodeRender publicly

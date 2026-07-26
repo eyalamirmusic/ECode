@@ -1,5 +1,7 @@
 #include "Cursor.h"
 
+#include "LineMap.h"
+
 #include <algorithm>
 
 namespace ecode
@@ -95,11 +97,25 @@ std::size_t wordRight(const Document& document, std::size_t offset)
     return index;
 }
 
-std::size_t lineStart(const Document& document, std::size_t offset)
+std::size_t
+    lineStart(const Document& document, const LineMap& lines, std::size_t offset)
 {
     const auto line = document.lineAt(offset);
     const auto text = document.line(line);
     const auto begin = document.offsetAt(line, 0);
+
+    // A continuation row's own left edge comes first, so Home on a wrapped
+    // paragraph goes where the eye says it should. Only from there does the
+    // logical line's indent, and then its true start, come into play.
+    const auto row = lines.row(document, lines.rowOfOffset(document, offset));
+
+    if (row.isContinuation())
+    {
+        const auto rowBegin = document.offsetAt(line, row.start);
+
+        if (offset > rowBegin)
+            return rowBegin;
+    }
 
     // The first non-blank, unless the caret is already there or before it, in
     // which case go to the true start. That is the toggle a repeated Home press
@@ -115,33 +131,59 @@ std::size_t lineStart(const Document& document, std::size_t offset)
     return offset > begin + indent ? begin + indent : begin;
 }
 
-std::size_t lineEnd(const Document& document, std::size_t offset)
+std::size_t
+    lineEnd(const Document& document, const LineMap& lines, std::size_t offset)
 {
     const auto line = document.lineAt(offset);
+    const auto text = document.line(line);
+    const auto row = lines.row(document, lines.rowOfOffset(document, offset));
 
-    return document.offsetAt(line, document.line(line).size());
+    auto within = row.end;
+
+    // A wrapped row ends where the next one starts, and with no caret affinity
+    // a caret placed there is drawn at the left of the row below — so End would
+    // look like it had done nothing. Backing over the blanks the wrap left
+    // behind avoids that for every break word wrapping makes; a break inside a
+    // long token has no blank to back over and still lands below.
+    if (row.end < text.size())
+        while (within > row.start && isBlank(text[within - 1]))
+            --within;
+
+    // The row's end unless the caret is already there, in which case the line's
+    // — the same toggle Home gives, and what keeps the far end of a wrapped
+    // line reachable.
+    const auto rowEnd = document.offsetAt(line, within);
+
+    if (offset < rowEnd)
+        return rowEnd;
+
+    return document.offsetAt(line, text.size());
 }
 
-std::size_t vertical(const Document& document, Cursor& cursor, int lines)
+std::size_t vertical(const Document& document,
+                     const LineMap& lines,
+                     Cursor& cursor,
+                     int rows)
 {
-    const auto line = document.lineAt(cursor.head);
+    const auto row = lines.rowOfOffset(document, cursor.head);
 
     // The first vertical move of a run captures the column to hold; later ones
     // reuse it, so passing through a short line does not narrow the target.
     if (!cursor.holdsColumn)
     {
-        cursor.desiredColumn = document.columnAt(cursor.head);
+        cursor.desiredColumn = lines.columnOfOffset(document, cursor.head);
         cursor.holdsColumn = true;
     }
 
-    const auto count = static_cast<std::ptrdiff_t>(document.lineCount());
-    auto target = static_cast<std::ptrdiff_t>(line) + lines;
+    const auto count = static_cast<std::ptrdiff_t>(lines.rowCount(document));
+    auto target = static_cast<std::ptrdiff_t>(row) + rows;
 
     target = std::clamp(target, std::ptrdiff_t {0}, count - 1);
 
-    // offsetAt clamps the column to the target line's length, which is what
-    // makes a short line stop short without losing the held column.
-    return document.offsetAt(static_cast<std::size_t>(target), cursor.desiredColumn);
+    // offsetAtColumn clamps to the target row, which is what makes a short line
+    // stop short without losing the held column.
+    return lines.offsetAtColumn(
+        document, static_cast<std::size_t>(target), cursor.desiredColumn);
 }
 
 std::size_t documentStart(const Document&)

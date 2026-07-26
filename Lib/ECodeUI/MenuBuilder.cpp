@@ -49,22 +49,36 @@ Graphics::MenuItem itemFor(const std::string& id,
     if (command == nullptr)
         return Graphics::MenuItem::withAction(id);
 
-    return Graphics::MenuItem::withAction(
-        menuTitleFor(command->title, menuTitle),
+    const auto title = menuTitleFor(command->title, menuTitle);
 
-        // By value: the platform keeps this lambda for as long as the bar is
-        // installed, which outlives any dispatch the caller passed as a
-        // temporary.
-        [dispatch, id] { dispatch(id); },
-        toKeyEquivalent(keymap.chordFor(id)),
+    // By value: the platform keeps this lambda for as long as the bar is
+    // installed, which outlives any dispatch the caller passed as a temporary.
+    auto run = [dispatch, id] { dispatch(id); };
 
-        // Asked each time the menu opens, so this reads the command's own
-        // predicate live rather than sampling it when the bar was built.
+    const auto shortcut = toKeyEquivalent(keymap.chordFor(id));
+
+    // Asked each time the menu opens, so these read the command's own
+    // predicates live rather than sampling them when the bar was built.
+    auto enabled = [&commands, id]
+    {
+        const auto* current = commands.find(id);
+        return current != nullptr && current->isEnabled();
+    };
+
+    if (command->isChecked == nullptr)
+        return Graphics::MenuItem::withAction(title, run, shortcut, enabled);
+
+    return Graphics::MenuItem::withCheckableAction(
+        title,
+        run,
         [&commands, id]
         {
             const auto* current = commands.find(id);
-            return current != nullptr && current->isEnabled();
-        });
+            return current != nullptr && current->isChecked != nullptr
+                   && current->isChecked();
+        },
+        shortcut,
+        enabled);
 }
 } // namespace
 
@@ -157,6 +171,7 @@ Vector<MenuSpec> defaultMenus(bool withExit)
                 "view.focusExplorer",
                 separator,
                 "view.refreshExplorer",
+                "view.toggleWordWrap",
                 separator,
                 "workbench.showPalette"}});
 

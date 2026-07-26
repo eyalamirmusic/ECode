@@ -70,13 +70,16 @@ struct EditorTestView final : GPU::GPUView
         auto sprites =
             Sprites::SpriteRenderer {{viewWidth, viewHeight}, sampleCount()};
 
-        renderer->prepare(document, area, 0.f);
+        const auto view = documentView();
+
+        renderer->prepare(view, area, 0.f);
         atlas->commit();
 
         if (highlighter != nullptr)
-            highlighter->update(document,
-                                renderer->firstVisibleLine(0.f),
-                                renderer->lastVisibleLine(document, area, 0.f));
+            highlighter->update(
+                document,
+                lines.lineOfRow(document, renderer->firstVisibleRow(0.f)),
+                document.lineCount());
 
         // The context binds the sprite pipeline on first use and flushes the
         // glyph batch on destruction, so neither is done by hand here.
@@ -88,11 +91,20 @@ struct EditorTestView final : GPU::GPUView
         overlay.matches = matches;
         overlay.currentMatch = currentMatch;
 
-        renderer->draw(context, document, overlay, highlighter.get(), area, 0.f);
+        renderer->draw(context, view, overlay, area, 0.f);
+    }
+
+    // With wrapping off a LineMap stores nothing per line and answers from the
+    // document's own index, so a default-constructed one is correct for any
+    // document a test drops in. Only the wrapping tests touch it.
+    DocumentView documentView() const
+    {
+        return {document, lines, highlighter.get()};
     }
 
     TextTheme theme;
     Document document;
+    LineMap lines;
     OwningPointer<SyntaxHighlighter> highlighter;
     const Cursor* cursor = nullptr;
 
@@ -349,9 +361,10 @@ auto tHitTestRoundTrips =
         return;
 
     const auto document = Document::fromText("hello world\nsecond line");
+    const auto lines = LineMap {};
     const auto area = Graphics::Rect {0.f, 0.f, viewWidth, viewHeight};
     const auto gutter = view.renderer->gutterWidth(document.lineCount());
-    const auto lineHeight = view.renderer->lineHeight();
+    const auto lineHeight = view.renderer->rowHeight();
 
     for (std::size_t line = 0; line < document.lineCount(); ++line)
     {
@@ -362,7 +375,7 @@ auto tHitTestRoundTrips =
             const auto y = (static_cast<float>(line) + 0.5f) * lineHeight;
 
             const auto offset =
-                view.renderer->offsetAtPoint(document, {x, y}, area, 0.f);
+                view.renderer->offsetAtPoint({document, lines}, {x, y}, area, 0.f);
 
             check(document.lineAt(offset) == line);
             check(document.columnAt(offset) == column);
@@ -418,7 +431,7 @@ Graphics::Rect bandOfLine(const TextRenderer& renderer,
                           const Document& document,
                           std::size_t line)
 {
-    const auto lineHeight = renderer.lineHeight();
+    const auto lineHeight = renderer.rowHeight();
 
     return {renderer.gutterWidth(document.lineCount()) + 8.f,
             static_cast<float>(line) * lineHeight + 2.f,
@@ -624,20 +637,24 @@ auto tHitTestClamps = test("RenderIntegration/clicksOutsideTheTextClamp") = []
         return;
 
     const auto document = Document::fromText("short\nlonger line here");
+    const auto lines = LineMap {};
     const auto area = Graphics::Rect {0.f, 0.f, viewWidth, viewHeight};
 
     // Far right of the first line.
     const auto right = view.renderer->offsetAtPoint(
-        document, {viewWidth * 4.f, view.renderer->lineHeight() * 0.5f}, area, 0.f);
+        {document, lines},
+        {viewWidth * 4.f, view.renderer->rowHeight() * 0.5f},
+        area,
+        0.f);
 
     check(document.lineAt(right) == 0);
     check(document.columnAt(right) == document.line(0).size());
 
     // Above the first line, and far below the last.
     const auto above =
-        view.renderer->offsetAtPoint(document, {0.f, -500.f}, area, 0.f);
+        view.renderer->offsetAtPoint({document, lines}, {0.f, -500.f}, area, 0.f);
     const auto below =
-        view.renderer->offsetAtPoint(document, {0.f, 5000.f}, area, 0.f);
+        view.renderer->offsetAtPoint({document, lines}, {0.f, 5000.f}, area, 0.f);
 
     check(above == 0);
     check(document.lineAt(below) == document.lineCount() - 1);

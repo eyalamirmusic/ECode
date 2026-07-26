@@ -17,6 +17,7 @@ constexpr auto tabWidth = 4;
 
 constexpr auto gutterPadding = 12.f;
 constexpr auto textPadding = 8.f;
+constexpr auto caretWidth = 2.f;
 
 std::string lineNumberText(std::size_t line)
 {
@@ -70,9 +71,14 @@ TextRenderer::TextRenderer(Text::GlyphAtlas& atlasToUse, const TextTheme& themeT
     height = std::max(std::round(metrics.lineHeight() * 1.25f), 1.f);
 }
 
-float TextRenderer::lineHeight() const
+float TextRenderer::rowHeight() const
 {
     return height;
+}
+
+float TextRenderer::rowTop(std::size_t row) const
+{
+    return static_cast<float>(row) * height;
 }
 
 float TextRenderer::gutterWidth(std::size_t lineCount) const
@@ -82,12 +88,30 @@ float TextRenderer::gutterWidth(std::size_t lineCount) const
     return static_cast<float>(digits) * advance + gutterPadding * 2.f;
 }
 
-float TextRenderer::contentHeight(const Document& document) const
+float TextRenderer::contentHeight(const DocumentView& view) const
 {
-    return static_cast<float>(document.lineCount()) * height;
+    return rowTop(view.lines.rowCount(view.document));
 }
 
-std::size_t TextRenderer::firstVisibleLine(float scrollY) const
+std::size_t TextRenderer::wrapColumnsFor(const Graphics::Rect& viewport,
+                                         std::size_t lineCount) const
+{
+    if (advance <= 0.f)
+        return 0;
+
+    // The caret needs somewhere to sit past the last character, so the width is
+    // one column short of what would fit — otherwise a row filled exactly to the
+    // edge draws its caret in the gutter of the row below.
+    const auto text =
+        viewport.w - gutterWidth(lineCount) - textPadding * 2.f - caretWidth;
+
+    if (text < advance)
+        return 0;
+
+    return static_cast<std::size_t>(text / advance);
+}
+
+std::size_t TextRenderer::firstVisibleRow(float scrollY) const
 {
     if (scrollY >= 0.f || height <= 0.f)
         return 0;
@@ -95,16 +119,17 @@ std::size_t TextRenderer::firstVisibleLine(float scrollY) const
     return static_cast<std::size_t>(-scrollY / height);
 }
 
-std::size_t TextRenderer::lastVisibleLine(const Document& document,
-                                          const Graphics::Rect& viewport,
-                                          float scrollY) const
+std::size_t TextRenderer::lastVisibleRow(const DocumentView& view,
+                                         const Graphics::Rect& viewport,
+                                         float scrollY) const
 {
     if (height <= 0.f)
         return 0;
 
     const auto rows = static_cast<std::size_t>(viewport.h / height) + 2;
 
-    return std::min(firstVisibleLine(scrollY) + rows, document.lineCount());
+    return std::min(firstVisibleRow(scrollY) + rows,
+                    view.lines.rowCount(view.document));
 }
 
 void TextRenderer::prepareLine(std::string_view text)
@@ -120,23 +145,28 @@ void TextRenderer::prepareLine(std::string_view text)
     }
 }
 
-void TextRenderer::prepare(const Document& document,
+void TextRenderer::prepare(const DocumentView& view,
                            const Graphics::Rect& viewport,
                            float scrollY)
 {
-    const auto first = firstVisibleLine(scrollY);
-    const auto last = lastVisibleLine(document, viewport, scrollY);
+    const auto first = firstVisibleRow(scrollY);
+    const auto last = lastVisibleRow(view, viewport, scrollY);
 
-    for (auto line = first; line < last; ++line)
+    for (auto index = first; index < last; ++index)
     {
-        prepareLine(document.line(line));
-        prepareLine(lineNumberText(line));
+        const auto row = view.lines.row(view.document, index);
+
+        prepareLine(row.textIn(view.document));
+
+        if (!row.isContinuation())
+            prepareLine(lineNumberText(row.line));
     }
 }
 
 void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
                             std::string_view text,
                             const LineStyle* spans,
+                            std::size_t spanOffset,
                             float x,
                             float baseline,
                             const Graphics::Color& color,
@@ -156,7 +186,8 @@ void TextRenderer::drawLine(Text::GlyphRenderer& glyphs,
         auto glyphColor = color;
 
         if (spans != nullptr)
-            if (const auto* span = spanAt(*spans, glyphStart, spanCursor))
+            if (const auto* span =
+                    spanAt(*spans, spanOffset + glyphStart, spanCursor))
                 glyphColor = theme.colorFor(span->kind);
 
         if (codepoint == U'\t')
@@ -215,20 +246,28 @@ float TextRenderer::columnToX(std::string_view text, std::size_t column) const
     return x;
 }
 
-std::size_t TextRenderer::offsetAtPoint(const Document& document,
+std::size_t TextRenderer::offsetAtPoint(const DocumentView& view,
                                         const Graphics::Point& point,
                                         const Graphics::Rect& viewport,
                                         float scrollY) const
 {
+    const auto& document = view.document;
+
     const auto gutter = gutterWidth(document.lineCount());
     const auto relativeY = point.y - viewport.y - scrollY;
 
-    const auto row = static_cast<std::ptrdiff_t>(std::floor(relativeY / height));
-    const auto lastLine = static_cast<std::ptrdiff_t>(document.lineCount()) - 1;
-    const auto line =
-        static_cast<std::size_t>(std::clamp(row, std::ptrdiff_t {0}, lastLine));
+    const auto at = static_cast<std::ptrdiff_t>(std::floor(relativeY / height));
+    const auto lastRow =
+        static_cast<std::ptrdiff_t>(view.lines.rowCount(document)) - 1;
+    const auto rowIndex =
+        static_cast<std::size_t>(std::clamp(at, std::ptrdiff_t {0}, lastRow));
 
-    const auto text = document.line(line);
+    // Row-local from here on. A click past the end of a wrapped row lands on the
+    // row's end, which is the same offset the next row begins at — so the caret
+    // is drawn at the start of the row below. That is the affinity question no
+    // part of this models yet, and it is only visible at a wrap point.
+    const auto row = view.lines.row(document, rowIndex);
+    const auto text = row.textIn(document);
     const auto x = point.x - viewport.x - gutter - textPadding;
 
     // Nearest boundary rather than the one before, so clicking the right half
@@ -254,11 +293,16 @@ std::size_t TextRenderer::offsetAtPoint(const Document& document,
         index = next;
     }
 
-    return document.offsetAt(line, best);
+    return document.offsetAt(row.line, row.start + best);
 }
 
+// Paints a byte range as one band per visual row it covers.
+//
+// Per row rather than per line, because with wrap on a single logical line can
+// be several bands with different left edges — and because a range that begins
+// mid-row has to start where that row's text starts, not where its line does.
 void TextRenderer::fillRange(Sprites::SpriteRenderer& sprites,
-                             const Document& document,
+                             const DocumentView& view,
                              std::size_t rangeStart,
                              std::size_t rangeEnd,
                              const Graphics::Rect& textRect,
@@ -270,30 +314,45 @@ void TextRenderer::fillRange(Sprites::SpriteRenderer& sprites,
     if (rangeEnd <= rangeStart)
         return;
 
-    const auto from = document.lineAt(rangeStart);
-    const auto to = document.lineAt(rangeEnd);
+    const auto& document = view.document;
 
-    for (auto line = std::max(first, from); line < last && line <= to; ++line)
+    for (auto index = first; index < last; ++index)
     {
-        const auto text = document.line(line);
-        const auto lineBegin = document.offsetAt(line, 0);
+        const auto row = view.lines.row(document, index);
 
-        const auto startColumn =
-            line == from ? rangeStart - lineBegin : std::size_t {0};
-        const auto endColumn = line == to ? rangeEnd - lineBegin : text.size();
+        const auto rowStart = document.offsetAt(row.line, row.start);
+        const auto rowEnd = document.offsetAt(row.line, row.end);
 
-        const auto left = columnToX(text, startColumn);
+        // Rows run in document order, so once one starts past the range there
+        // is nothing further to draw.
+        if (rangeEnd <= rowStart)
+            break;
+
+        if (rangeStart > rowEnd)
+            continue;
+
+        const auto text = row.textIn(document);
+
+        const auto from = rangeStart > rowStart
+                              ? std::min(rangeStart - rowStart, row.length())
+                              : std::size_t {0};
+        const auto to = rangeEnd < rowEnd ? rangeEnd - rowStart : row.length();
 
         // A range crossing a line end shows the newline as a sliver of trailing
-        // width, so an empty selected line is still visible.
-        const auto right = line == to
-                               ? columnToX(text, endColumn)
-                               : columnToX(text, text.size()) + advance * 0.5f;
+        // width, so an empty selected line is still visible. Only at a real
+        // newline: a wrap point has the next row immediately below it, and a
+        // sliver there would draw a notch into the middle of a paragraph.
+        const auto endsTheLine = row.end >= document.line(row.line).size();
+        const auto spillsOver = rangeEnd > rowEnd && endsTheLine;
 
-        const auto y = textRect.y + scrollY + static_cast<float>(line) * height;
+        if (to <= from && !spillsOver)
+            continue;
+
+        const auto left = columnToX(text, from);
+        const auto right = columnToX(text, to) + (spillsOver ? advance * 0.5f : 0.f);
 
         sprites.fillRect({textRect.x + textPadding + left,
-                          y,
+                          textRect.y + scrollY + rowTop(index),
                           std::max(right - left, 1.f),
                           height},
                          color);
@@ -301,7 +360,7 @@ void TextRenderer::fillRange(Sprites::SpriteRenderer& sprites,
 }
 
 void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
-                               const Document& document,
+                               const DocumentView& view,
                                const EditorOverlay& overlay,
                                const Graphics::Rect& textRect,
                                float scrollY,
@@ -311,6 +370,7 @@ void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
     if (overlay.matches == nullptr || overlay.matches->empty())
         return;
 
+    const auto& document = view.document;
     const auto& matches = *overlay.matches;
 
     // Bounded by the viewport rather than by the match count. That is the
@@ -319,9 +379,18 @@ void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
     // thousands of skipped ranges back into every frame. The list is in document
     // order, so the visible run is contiguous and can be found rather than
     // filtered for.
-    const auto windowStart = document.offsetAt(first, 0);
-    const auto windowEnd =
-        last < document.lineCount() ? document.offsetAt(last, 0) : document.length();
+    const auto top = view.lines.row(document, first);
+    const auto windowStart = document.offsetAt(top.line, top.start);
+
+    const auto windowEnd = [&]
+    {
+        if (last >= view.lines.rowCount(document))
+            return document.length();
+
+        const auto bottom = view.lines.row(document, last);
+
+        return document.offsetAt(bottom.line, bottom.start);
+    }();
 
     auto visible = std::lower_bound(matches.begin(),
                                     matches.end(),
@@ -343,7 +412,7 @@ void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
         const auto index = static_cast<int>(std::distance(matches.begin(), match));
 
         fillRange(sprites,
-                  document,
+                  view,
                   match->start,
                   match->end,
                   textRect,
@@ -356,16 +425,16 @@ void TextRenderer::drawMatches(Sprites::SpriteRenderer& sprites,
 }
 
 void TextRenderer::draw(PaintContext& context,
-                        const Document& document,
+                        const DocumentView& view,
                         const EditorOverlay& overlay,
-                        Highlighter* highlighter,
                         const Graphics::Rect& viewport,
                         float scrollY)
 {
+    const auto& document = view.document;
     const auto* cursor = overlay.cursor;
 
-    const auto first = firstVisibleLine(scrollY);
-    const auto last = lastVisibleLine(document, viewport, scrollY);
+    const auto first = firstVisibleRow(scrollY);
+    const auto last = lastVisibleRow(view, viewport, scrollY);
     const auto gutter = gutterWidth(document.lineCount());
 
     auto& glyphs = context.glyphs();
@@ -383,23 +452,27 @@ void TextRenderer::draw(PaintContext& context,
     {
         const auto clip = ClipScope {context, textRect};
 
-        if (cursor != nullptr)
+        if (cursor != nullptr && !cursor->hasSelection())
         {
+            // The whole of the caret's logical line, however many rows it takes.
+            // Lighting only the row the caret is on would break a wrapped
+            // paragraph into a lit strip and an unlit one, which reads as two
+            // different lines rather than one.
             const auto caretLine = document.lineAt(cursor->head);
+            const auto from = view.lines.firstRowOfLine(caretLine);
+            const auto to = from + view.lines.rowsInLine(caretLine);
 
-            if (!cursor->hasSelection() && caretLine >= first && caretLine < last)
-            {
-                const auto y =
-                    textRect.y + scrollY + static_cast<float>(caretLine) * height;
-
-                context.sprites().fillRect({textRect.x, y, textRect.w, height},
+            for (auto row = std::max(first, from); row < std::min(last, to); ++row)
+                context.sprites().fillRect({textRect.x,
+                                            textRect.y + scrollY + rowTop(row),
+                                            textRect.w,
+                                            height},
                                            theme.currentLine);
-            }
         }
 
         if (cursor != nullptr && cursor->hasSelection())
             fillRange(context.sprites(),
-                      document,
+                      view,
                       cursor->start(),
                       cursor->end(),
                       textRect,
@@ -422,7 +495,7 @@ void TextRenderer::draw(PaintContext& context,
         // round, because none of them rendered a selection and a hit at once —
         // which is the only arrangement in which the bug exists.
         drawMatches(
-            context.sprites(), document, overlay, textRect, scrollY, first, last);
+            context.sprites(), view, overlay, textRect, scrollY, first, last);
     }
 
     // Each region draws under its own clip. The context flushes the glyph batch
@@ -431,10 +504,17 @@ void TextRenderer::draw(PaintContext& context,
     {
         const auto clip = ClipScope {context, gutterRect};
 
-        for (auto line = first; line < last; ++line)
+        for (auto index = first; index < last; ++index)
         {
-            const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
-            const auto number = lineNumberText(line);
+            const auto row = view.lines.row(document, index);
+
+            // A continuation row carries no number: the gutter numbers lines,
+            // and a wrapped line is one line. Repeating it down the rows is the
+            // single most obvious way to make wrapping look broken.
+            if (row.isContinuation())
+                continue;
+
+            const auto number = lineNumberText(row.line);
 
             // Right-aligned against the gutter's inner edge.
             const auto width = static_cast<float>(number.size()) * advance;
@@ -443,8 +523,9 @@ void TextRenderer::draw(PaintContext& context,
             drawLine(glyphs,
                      number,
                      nullptr,
+                     0,
                      x,
-                     y + ascent,
+                     viewport.y + scrollY + rowTop(index) + ascent,
                      theme.lineNumber,
                      backingScale);
         }
@@ -453,18 +534,20 @@ void TextRenderer::draw(PaintContext& context,
     {
         const auto clip = ClipScope {context, textRect};
 
-        for (auto line = first; line < last; ++line)
+        for (auto index = first; index < last; ++index)
         {
-            const auto y = viewport.y + scrollY + static_cast<float>(line) * height;
+            const auto row = view.lines.row(document, index);
 
-            const auto* spans =
-                highlighter != nullptr ? &highlighter->lineStyle(line) : nullptr;
+            const auto* spans = view.highlighter != nullptr
+                                    ? &view.highlighter->lineStyle(row.line)
+                                    : nullptr;
 
             drawLine(glyphs,
-                     document.line(line),
+                     row.textIn(document),
                      spans,
+                     row.start,
                      textRect.x + textPadding,
-                     y + ascent,
+                     viewport.y + scrollY + rowTop(index) + ascent,
                      theme.text,
                      backingScale);
         }
@@ -478,17 +561,22 @@ void TextRenderer::draw(PaintContext& context,
         // sit under the glyph that follows it after an edit.
         if (cursor != nullptr && overlay.caretVisible)
         {
-            const auto caretLine = document.lineAt(cursor->head);
+            const auto index = view.lines.rowOfOffset(document, cursor->head);
 
-            if (caretLine >= first && caretLine < last)
+            if (index >= first && index < last)
             {
-                const auto column = cursor->head - document.offsetAt(caretLine, 0);
-                const auto x = columnToX(document.line(caretLine), column);
-                const auto y =
-                    textRect.y + scrollY + static_cast<float>(caretLine) * height;
+                const auto row = view.lines.row(document, index);
+                const auto rowStart = document.offsetAt(row.line, row.start);
+                const auto within =
+                    cursor->head > rowStart ? cursor->head - rowStart : 0;
 
-                context.sprites().fillRect(
-                    {textRect.x + textPadding + x, y, 2.f, height}, theme.caret);
+                const auto x = columnToX(row.textIn(document), within);
+
+                context.sprites().fillRect({textRect.x + textPadding + x,
+                                            textRect.y + scrollY + rowTop(index),
+                                            caretWidth,
+                                            height},
+                                           theme.caret);
             }
         }
     }

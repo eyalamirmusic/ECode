@@ -49,6 +49,14 @@ public:
     }
     const Document& document() const { return file.document(); }
 
+    // --- soft wrap -------------------------------------------------------
+
+    // Wrapping is off by default, which is what a code editor wants: code is
+    // written to a column limit and a wrapped line hides the indentation that
+    // says what it belongs to.
+    void setWordWrap(bool shouldWrap);
+    bool isWordWrapped() const { return wordWrap; }
+
     // --- find and replace ------------------------------------------------
     //
     // The search lives here rather than in the find bar because everything it
@@ -129,10 +137,17 @@ public:
     std::function<void()> onStateChanged = [] {};
 
 private:
+    // What the renderer draws: the document, its row mapping and its colours.
+    DocumentView documentView() const;
+
+    // The wrap width follows the viewport, so it is recomputed rather than
+    // stored. Cheap because LineMap ignores a width it already has.
+    void updateWrapWidth();
+
     void clampScroll();
     void scrollToCaret();
-    void scrollToLine(std::size_t line);
-    int visibleLines() const;
+    void scrollToRow(std::size_t row);
+    int visibleRows() const;
 
     // Puts the caret on the current hit and brings it into view. The shared tail
     // of findNext, findPrevious and a replace that moves on.
@@ -152,6 +167,8 @@ private:
     Highlighter* highlighter = nullptr;
 
     float scrollY = 0.f;
+
+    bool wordWrap = false;
 
     bool caretVisible = true;
     int blinkPhase = 0;

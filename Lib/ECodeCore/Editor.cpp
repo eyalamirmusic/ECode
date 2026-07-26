@@ -9,6 +9,7 @@ void Editor::setDocument(Document documentToUse)
     doc = std::move(documentToUse);
     caret = {};
     history.clear();
+    rows.rebuild(doc);
     ++revision;
 
     onDocumentReplaced();
@@ -19,6 +20,7 @@ std::size_t
 {
     const auto edit = doc.replace(start, end, text);
 
+    rows.applyEdit(doc, edit);
     history.record(edit);
     ++revision;
 
@@ -112,6 +114,7 @@ void Editor::undo()
     for (const auto& edit: edits)
     {
         doc.apply(edit);
+        rows.applyEdit(doc, edit);
         onEdit(edit);
     }
 
@@ -131,6 +134,7 @@ void Editor::redo()
     for (const auto& edit: edits)
     {
         doc.apply(edit);
+        rows.applyEdit(doc, edit);
         onEdit(edit);
     }
 
@@ -223,7 +227,7 @@ void Editor::moveUp(bool extend, int lines)
 {
     // Vertical movement keeps the held column, so this does not go through
     // applyMotion, which clears it.
-    const auto offset = Motion::vertical(doc, caret, -lines);
+    const auto offset = Motion::vertical(doc, rows, caret, -lines);
 
     if (extend)
         caret.head = offset;
@@ -238,7 +242,7 @@ void Editor::moveUp(bool extend, int lines)
 
 void Editor::moveDown(bool extend, int lines)
 {
-    const auto offset = Motion::vertical(doc, caret, lines);
+    const auto offset = Motion::vertical(doc, rows, caret, lines);
 
     caret.head = offset;
 
@@ -250,12 +254,12 @@ void Editor::moveDown(bool extend, int lines)
 
 void Editor::moveToLineStart(bool extend)
 {
-    applyMotion(Motion::lineStart(doc, caret.head), extend);
+    applyMotion(Motion::lineStart(doc, rows, caret.head), extend);
 }
 
 void Editor::moveToLineEnd(bool extend)
 {
-    applyMotion(Motion::lineEnd(doc, caret.head), extend);
+    applyMotion(Motion::lineEnd(doc, rows, caret.head), extend);
 }
 
 void Editor::moveToDocumentStart(bool extend)

@@ -228,7 +228,7 @@ struct FindTestView final : GPU::GPUView
         const auto left = renderer->columnToX(text, column);
         const auto right = renderer->columnToX(text, column + word.size());
 
-        const auto lineHeight = renderer->lineHeight();
+        const auto lineHeight = renderer->rowHeight();
         const auto x = renderer->gutterWidth(file.document().lineCount()) + 8.f;
 
         return {x + left,

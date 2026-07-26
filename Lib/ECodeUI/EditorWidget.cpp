@@ -6,20 +6,52 @@ namespace ecode
 {
 using namespace eacp;
 
+DocumentView EditorWidget::documentView() const
+{
+    return {document(), editor().lineMap(), highlighter};
+}
+
 void EditorWidget::setRenderer(TextRenderer* rendererToUse)
 {
     renderer = rendererToUse;
 
-    // A new renderer means new metrics, so the offset that was in range for the
-    // old line height may not be for this one.
+    // A new renderer means new metrics: a different advance changes how many
+    // columns fit, and a different row height changes what offsets are in range.
+    updateWrapWidth();
     clampScroll();
     repaint();
 }
 
+void EditorWidget::setWordWrap(bool shouldWrap)
+{
+    if (wordWrap == shouldWrap)
+        return;
+
+    wordWrap = shouldWrap;
+
+    updateWrapWidth();
+
+    // The caret's row has moved even though its offset has not, so the view has
+    // to follow it — turning wrapping on scrolls what was on screen a long way
+    // down in a file with long lines.
+    scrollToCaret();
+    repaint();
+}
+
+void EditorWidget::updateWrapWidth()
+{
+    if (renderer == nullptr)
+        return;
+
+    editor().setWrapColumns(
+        wordWrap ? renderer->wrapColumnsFor(bounds(), document().lineCount()) : 0);
+}
+
 void EditorWidget::layout()
 {
-    // A window made taller can leave the document scrolled further than there
-    // is now content to justify.
+    // A narrower window wraps at fewer columns, and a taller one can leave the
+    // document scrolled further than there is now content to justify.
+    updateWrapWidth();
     clampScroll();
 }
 
@@ -28,33 +60,33 @@ void EditorWidget::clampScroll()
     if (renderer == nullptr)
         return;
 
-    const auto content = renderer->contentHeight(document());
+    const auto content = renderer->contentHeight(documentView());
 
-    // Stop at the last line rather than letting the document scroll off the
-    // top, but never push a short document around.
+    // Stop at the last row rather than letting the document scroll off the top,
+    // but never push a short document around.
     const auto lowest = std::min(0.f, bounds().h - content);
 
     scrollY = std::clamp(scrollY, lowest, 0.f);
 }
 
-void EditorWidget::scrollToLine(std::size_t line)
+void EditorWidget::scrollToRow(std::size_t row)
 {
     if (renderer == nullptr)
         return;
 
-    const auto lineHeight = renderer->lineHeight();
-    const auto top = static_cast<float>(line) * lineHeight;
+    const auto rowHeight = renderer->rowHeight();
+    const auto top = renderer->rowTop(row);
 
     // Already on screen: leave the view alone. Re-centring on every hit would
     // scroll the file out from under a match that was perfectly visible, and
     // ⌘G down a screenful of hits would judder rather than step.
-    if (top + scrollY >= 0.f && top + lineHeight + scrollY <= bounds().h)
+    if (top + scrollY >= 0.f && top + rowHeight + scrollY <= bounds().h)
         return;
 
     // Otherwise centre it rather than bringing it just inside the edge. A hit
     // revealed by the smallest possible scroll lands hard against the top or
     // bottom with no context on the side it arrived from.
-    scrollY = -top + (bounds().h - lineHeight) * 0.5f;
+    scrollY = -top + (bounds().h - rowHeight) * 0.5f;
 
     clampScroll();
 }
@@ -64,11 +96,12 @@ void EditorWidget::scrollToCaret()
     if (renderer == nullptr)
         return;
 
-    const auto line = document().lineAt(editor().cursor().head);
-    const auto lineHeight = renderer->lineHeight();
+    const auto row =
+        editor().lineMap().rowOfOffset(document(), editor().cursor().head);
+    const auto rowHeight = renderer->rowHeight();
 
-    const auto top = static_cast<float>(line) * lineHeight;
-    const auto bottom = top + lineHeight;
+    const auto top = renderer->rowTop(row);
+    const auto bottom = top + rowHeight;
 
     // Only move when the caret has actually left the viewport, so typing in the
     // middle of the screen does not drag the view around.
@@ -80,12 +113,12 @@ void EditorWidget::scrollToCaret()
     clampScroll();
 }
 
-int EditorWidget::visibleLines() const
+int EditorWidget::visibleRows() const
 {
-    if (renderer == nullptr || renderer->lineHeight() <= 0.f)
+    if (renderer == nullptr || renderer->rowHeight() <= 0.f)
         return 1;
 
-    return std::max(1, static_cast<int>(bounds().h / renderer->lineHeight()) - 1);
+    return std::max(1, static_cast<int>(bounds().h / renderer->rowHeight()) - 1);
 }
 
 void EditorWidget::wake()
@@ -169,7 +202,7 @@ void EditorWidget::goToCurrentMatch()
     caretVisible = true;
     blinkPhase = 0;
 
-    scrollToLine(document().lineAt(match->start));
+    scrollToRow(editor().lineMap().rowOfOffset(document(), match->start));
 
     onStateChanged();
     repaint();
@@ -256,16 +289,36 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
     if (!finder.query().isEmpty() && searchedVersion != editor().version())
         refreshSearch();
 
-    renderer->prepare(document(), bounds(), scrollY);
+    // Here as well as in layout(), because the width also moves with the
+    // *document*: the gutter widens the first time a file passes nine lines, and
+    // the text area loses a column to it. Costs nothing on the frames where
+    // nothing changed — LineMap ignores a width it already has.
+    updateWrapWidth();
+
+    const auto view = documentView();
+
+    renderer->prepare(view, bounds(), scrollY);
 
     // Highlight exactly the lines about to be drawn: tree-sitter parses the
     // whole file, but querying all of it would put scrolling cost back in
     // proportion to file size.
+    //
+    // Lines, not rows — a highlighter works in the document's own coordinates
+    // and knows nothing about wrapping — so the visible band is converted back
+    // through the map. The last visible row is exclusive and the last line has
+    // to be inclusive of it, which is the +1.
     if (highlighter != nullptr)
-        highlighter->update(
-            document(),
-            renderer->firstVisibleLine(scrollY),
-            renderer->lastVisibleLine(document(), bounds(), scrollY));
+    {
+        const auto& lines = editor().lineMap();
+
+        const auto first = renderer->firstVisibleRow(scrollY);
+        const auto last = renderer->lastVisibleRow(view, bounds(), scrollY);
+
+        highlighter->update(document(),
+                            lines.lineOfRow(document(), first),
+                            last > first ? lines.lineOfRow(document(), last - 1) + 1
+                                         : lines.lineOfRow(document(), first));
+    }
 }
 
 void EditorWidget::paint(PaintContext& context)
@@ -279,7 +332,7 @@ void EditorWidget::paint(PaintContext& context)
     overlay.matches = &finder.matches();
     overlay.currentMatch = finder.currentIndex();
 
-    renderer->draw(context, document(), overlay, highlighter, bounds(), scrollY);
+    renderer->draw(context, documentView(), overlay, bounds(), scrollY);
 }
 
 void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
@@ -288,7 +341,7 @@ void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
         return;
 
     const auto offset =
-        renderer->offsetAtPoint(document(), event.pos, bounds(), scrollY);
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), scrollY);
 
     if (event.button == Graphics::MouseButton::Right)
     {
@@ -322,7 +375,7 @@ void EditorWidget::mouseDragged(const Graphics::MouseEvent& event)
 
     // Always an extension: the anchor was set on mouse-down.
     editor().placeCaret(
-        renderer->offsetAtPoint(document(), event.pos, bounds(), scrollY), true);
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), scrollY), true);
 
     wake();
 }
@@ -336,7 +389,7 @@ bool EditorWidget::mouseWheel(const Graphics::MouseEvent& event)
     // widget knows how tall a line is.
     const auto points = event.preciseScrolling
                             ? event.delta.y
-                            : event.delta.y * renderer->lineHeight() * 3.f;
+                            : event.delta.y * renderer->rowHeight() * 3.f;
 
     scrollY += points;
     clampScroll();
@@ -382,11 +435,11 @@ bool EditorWidget::keyDown(const Graphics::KeyEvent& event)
             break;
 
         case Graphics::KeyCode::PageUp:
-            editor().moveUp(shift, visibleLines());
+            editor().moveUp(shift, visibleRows());
             break;
 
         case Graphics::KeyCode::PageDown:
-            editor().moveDown(shift, visibleLines());
+            editor().moveDown(shift, visibleRows());
             break;
 
         case Graphics::KeyCode::Delete:

@@ -4,6 +4,7 @@
 
 #include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
+#include <ECodeCore/LineMap.h>
 #include <ECodeCore/Search.h>
 #include <ECodeCore/Style.h>
 
@@ -71,18 +72,41 @@ struct EditorOverlay
     int currentMatch = -1;
 };
 
+// What is being drawn: the text, how its lines fall onto rows, and how it is
+// coloured.
+//
+// Grouped for the reason EditorOverlay was — draw() stood at seven arguments
+// and the line map would have made it eight — but also because the three are
+// only ever correct together. A map describes one document at one wrap width,
+// and passing them separately invites a caller to hand over a map built for
+// something else.
+//
+// `highlighter` may be null, in which case everything draws as plain text.
+struct DocumentView
+{
+    const Document& document;
+    const LineMap& lines;
+    Highlighter* highlighter = nullptr;
+};
+
 // Draws the visible slice of a Document through a glyph atlas.
 //
-// Only the lines actually on screen are touched — the loop is bounded by the
+// Only the rows actually on screen are touched — the loop is bounded by the
 // viewport, not by the document — so scrolling a 100 MB file costs the same as
 // scrolling a small one. That is the property the whole viewer milestone rests
 // on, and it is easy to lose by iterating the document and clipping late.
+//
+// Rows, not lines. With soft wrap on, one logical line is several rows, and
+// nothing here may assume otherwise: PLAN.md §7.3 names `row n at n *
+// lineHeight` as the assumption that gets more expensive the longer it is left
+// in. It now lives in exactly two places — LineMap for which text a row holds,
+// and rowTop() for where the row sits.
 class TextRenderer
 {
 public:
     TextRenderer(eacp::Text::GlyphAtlas& atlasToUse, const TextTheme& themeToUse);
 
-    // Lays out and draws the lines visible in `viewport` at the given scroll
+    // Lays out and draws the rows visible in `viewport` at the given scroll
     // offset. Clipping goes through the context rather than straight to the
     // pass: the gutter and the text each need their own clip, and both have to
     // be intersected with whatever the enclosing widget already narrowed the
@@ -92,50 +116,62 @@ public:
     // Every glyph the frame needs must already be in the atlas: call
     // prepare() first, then GlyphAtlas::commit(), then this. Uploading in the
     // middle of a pass would mutate a texture the earlier draws have bound.
-    // highlighter may be null, in which case everything draws as plain text.
     void draw(PaintContext& context,
-              const Document& document,
+              const DocumentView& view,
               const EditorOverlay& overlay,
-              Highlighter* highlighter,
               const eacp::Graphics::Rect& viewport,
               float scrollY);
 
     // Rasterizes the glyphs the next draw() will need, without drawing.
-    void prepare(const Document& document,
+    void prepare(const DocumentView& view,
                  const eacp::Graphics::Rect& viewport,
                  float scrollY);
 
-    float lineHeight() const;
+    float rowHeight() const;
+
+    // Where a row's top edge sits, before scrolling. The only multiplication by
+    // a row index in the codebase, and the seam a variable row height replaces.
+    float rowTop(std::size_t row) const;
 
     // Width of the line-number gutter for a document of this many lines.
     float gutterWidth(std::size_t lineCount) const;
 
-    // First and last document line touching the viewport at this scroll offset.
-    std::size_t firstVisibleLine(float scrollY) const;
-    std::size_t lastVisibleLine(const Document& document,
-                                const eacp::Graphics::Rect& viewport,
-                                float scrollY) const;
+    // First and last visual row touching the viewport at this scroll offset.
+    std::size_t firstVisibleRow(float scrollY) const;
+    std::size_t lastVisibleRow(const DocumentView& view,
+                               const eacp::Graphics::Rect& viewport,
+                               float scrollY) const;
 
     // Total height of the document, for the scroll range.
-    float contentHeight(const Document& document) const;
+    float contentHeight(const DocumentView& view) const;
+
+    // How many characters fit across the text area, which is the width soft
+    // wrap breaks at. Zero when there is no room for even one, so a viewport
+    // squeezed to nothing turns wrapping off rather than dividing by it.
+    std::size_t wrapColumnsFor(const eacp::Graphics::Rect& viewport,
+                               std::size_t lineCount) const;
 
     // Where a point in the viewport falls in the document, for click-to-place.
     // Clamps rather than failing, so a click in the margin lands on the nearest
     // real position.
-    std::size_t offsetAtPoint(const Document& document,
+    std::size_t offsetAtPoint(const DocumentView& view,
                               const eacp::Graphics::Point& point,
                               const eacp::Graphics::Rect& viewport,
                               float scrollY) const;
 
-    // The x offset of a column within its line, so the caret and selection can
-    // be placed without re-walking the glyphs.
+    // The x offset of a byte position within a row's own text, so the caret and
+    // selection can be placed without re-walking the glyphs. Row-local, because
+    // a continuation row starts at the left margin and its tab stops with it.
     float columnToX(std::string_view text, std::size_t column) const;
 
 private:
     // spans may be null for uniformly coloured text (the line-number gutter).
+    // `spanOffset` is where this text starts within the line the spans describe,
+    // which is non-zero for every row after a wrap.
     void drawLine(eacp::Text::GlyphRenderer& glyphs,
                   std::string_view text,
                   const LineStyle* spans,
+                  std::size_t spanOffset,
                   float x,
                   float baseline,
                   const eacp::Graphics::Color& color,
@@ -143,11 +179,11 @@ private:
 
     void prepareLine(std::string_view text);
 
-    // Paints one byte range as a band per line it covers, clipped to the lines
-    // on screen. A selection and a search hit are the same shape, so they are
-    // the same code — the only thing that differs is the colour.
+    // Paints one byte range as a band per row it covers, clipped to the rows on
+    // screen. A selection and a search hit are the same shape, so they are the
+    // same code — the only thing that differs is the colour.
     void fillRange(eacp::Sprites::SpriteRenderer& sprites,
-                   const Document& document,
+                   const DocumentView& view,
                    std::size_t from,
                    std::size_t to,
                    const eacp::Graphics::Rect& textRect,
@@ -157,7 +193,7 @@ private:
                    const eacp::Graphics::Color& color);
 
     void drawMatches(eacp::Sprites::SpriteRenderer& sprites,
-                     const Document& document,
+                     const DocumentView& view,
                      const EditorOverlay& overlay,
                      const eacp::Graphics::Rect& textRect,
                      float scrollY,

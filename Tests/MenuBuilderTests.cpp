@@ -37,6 +37,12 @@ struct Fixture
         // No category prefix, like the find bar's own entries.
         commands.add({"find.show", "Find", [this] { ran = "find.show"; }});
 
+        commands.add({"view.toggleWordWrap",
+                      "View: Toggle Word Wrap",
+                      [this] { wrapped = !wrapped; },
+                      [] { return true; },
+                      [this] { return wrapped; }});
+
         keymap.bind("cmd+s", "file.save");
         keymap.bind("cmd+shift+z", "edit.redo");
         keymap.bind("escape", "find.close");
@@ -53,6 +59,7 @@ struct Fixture
 
     std::string ran;
     bool canRevert = false;
+    bool wrapped = false;
 
     CommandDispatch dispatch = [this](std::string_view id)
     { dispatched = std::string {id}; };
@@ -337,6 +344,58 @@ auto tCommandWithoutPredicateIsEnabled =
     check(itemNamed(bar.menus[0], "Save")->isEnabled());
 };
 
+// --- toggles ----------------------------------------------------------------
+
+// A toggle's checkmark is read live for the same reason its greying is, and the
+// distinction that matters is null against false: a command that is not a
+// toggle must leave the predicate unset, or every ordinary item would carry an
+// empty checkbox.
+auto tToggleIsCheckable = test("MenuBuilder/aToggleCommandMakesACheckableItem") = []
+{
+    auto fixture = Fixture {};
+
+    const auto menus = Vector<MenuSpec> {MenuSpec {"View", {"view.toggleWordWrap"}}};
+
+    const auto bar =
+        buildMenuBar(menus, fixture.commands, fixture.keymap, fixture.dispatch);
+
+    const auto* item = itemNamed(bar.menus[0], "Toggle Word Wrap");
+
+    check(item != nullptr);
+    check(item->isChecked != nullptr);
+    check(!item->isChecked());
+
+    fixture.wrapped = true;
+
+    // Same item, no rebuild.
+    check(item->isChecked());
+};
+
+auto tOrdinaryCommandIsNotCheckable =
+    test("MenuBuilder/anOrdinaryCommandIsNotCheckable") = []
+{
+    auto fixture = Fixture {};
+
+    const auto bar = buildMenuBar(
+        fixture.fileMenu(), fixture.commands, fixture.keymap, fixture.dispatch);
+
+    check(itemNamed(bar.menus[0], "Save")->isChecked == nullptr);
+};
+
+// ⌥Z, and the only binding in the default keymap without Command. Worth pinning
+// because the conversion drops any chord it cannot express, and a dropped one is
+// silent: the item simply prints no shortcut and the keymap goes on handling it.
+auto tWordWrapConvertsToAltZ = test("MenuBuilder/wordWrapConvertsToAltZ") = []
+{
+    const auto equivalent = toKeyEquivalent(Chord::parse("alt+z"));
+
+    check(equivalent.has_value());
+    check(equivalent->key == "z");
+    check(equivalent->modifiers.alt);
+    check(!equivalent->modifiers.command);
+    check(!equivalent->modifiers.shift);
+};
+
 // --- the default menus ------------------------------------------------------
 
 auto tDefaultMenusAreOrdered = test("MenuBuilder/defaultMenusAreOrdered") = []
@@ -380,9 +439,7 @@ auto tExitIsOmittedWithoutIt = test("MenuBuilder/exitIsOmittedWithoutIt") = []
 // The default is the platform's, which is the whole point of the parameter
 // having one: App calls defaultMenus() with no argument.
 auto tExitDefaultsToWindows = test("MenuBuilder/exitDefaultsToWindows") = []
-{
-    check(hasCommand(defaultMenus()[0], "file.exit") == Platform::isWindows());
-};
+{ check(hasCommand(defaultMenus()[0], "file.exit") == Platform::isWindows()); };
 
 // The four the Edit menu offers are exactly the four a focused text box claims,
 // so every one of them can arrive at a field instead of the document. Pinned

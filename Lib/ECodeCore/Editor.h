@@ -2,6 +2,7 @@
 
 #include "Cursor.h"
 #include "Document.h"
+#include "LineMap.h"
 #include "TextEdit.h"
 
 #include <functional>
@@ -29,6 +30,24 @@ public:
 
     const Document& document() const { return doc; }
     const Cursor& cursor() const { return caret; }
+
+    // How the document's lines map onto rows on screen.
+    //
+    // Owned here, though a wrap width is a property of a view, because vertical
+    // movement is the map's first caller and the cursor is the editor's. A map
+    // kept outside would mean either the view reaching into the cursor — which
+    // PLAN.md §7.2 is explicit about not doing — or every mutation needing a
+    // subscriber that a caller can forget to attach.
+    //
+    // The price is that two views of one file would share a wrap width. That is
+    // the point at which this becomes a view model; until editor groups exist
+    // there is exactly one view per file.
+    const LineMap& lineMap() const { return rows; }
+
+    // Zero turns wrapping off. The view supplies it, since only the view knows
+    // how wide the text area is.
+    void setWrapColumns(std::size_t columns) { rows.setWrapColumns(doc, columns); }
+    std::size_t wrapColumns() const { return rows.wrapColumns(); }
 
     void setDocument(Document documentToUse);
 
@@ -120,6 +139,7 @@ private:
     Document doc;
     Cursor caret;
     EditHistory history;
+    LineMap rows;
 
     std::uint64_t revision = 0;
 };

@@ -9,9 +9,11 @@ menu bar and a right-click context menu all read from, ⌘O and ⇧⌘O open a f
 a project folder, and ⌘F finds and replaces with the hits lit up in the file.
 Right-click gives a context menu and the sidebar resizes by dragging its seam,
 with the pointer changing shape over both. Every widget the plan called for now
-exists (§7.4); what is left is structural — variable line height and damage
-tracking (§7.3). Sections 1–5 are the design and the research behind it; **§6 is
-where things stand and §7 is what to do next.**
+exists (§7.4), and ⌥Z soft-wraps, on a logical-to-visual line mapping that the
+renderer, the cursor and the scroll offset all now go through — the larger of
+the two structural debts §7.3 named. What is left there is damage tracking.
+Sections 1–5 are the design and the research behind it; **§6 is where things
+stand and §7 is what to do next.**
 
 ## Decisions taken
 
@@ -272,7 +274,7 @@ macOS — see §6.
 | 6 | ~~**Keycode table is incomplete.**~~ — **done.** Punctuation, Home/End/PageUp/PageDown, forward delete and the keypad added, with the Windows OEM mapping. Originally: No punctuation, brackets, semicolon, quote, slash, backslash, minus, equals; no Home/End/PageUp/PageDown/Insert; no keypad. | An editor needs all of these, everywhere. CowTerm works around it with hand-defined macOS raw virtual keycodes — a portability landmine we should not inherit. | Extend `KeyCode` and both platform translation tables. |
 | 7 | **No cursor-shape API.** Only `NSCursor` hide/unhide for mouse lock. | I-beam over text, col-resize over splitters, pointer over links. | Per-View cursor + `NSTrackingArea` / `cursorUpdate:`. |
 | 8 | **Backing scale is not publicly readable.** `platformBackingScale` is internal. | Glyphs must rasterize at the true device scale, and re-rasterize when the window moves between Retina and non-Retina displays. CowTerm captures scale once at atlas construction and never updates it. | Expose the accessor + a `onBackingScaleChanged` hook. |
-| 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables, and no case folding. | Cursor movement, selection, backspace all operate on graphemes, not bytes — and search's case-insensitive match folds ASCII only, so "Ä" does not match "ä". | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. `ecode::Utf8` now carries `next`, `previousBoundary` and `nextBoundary`, which is the shape the eacp version wants. |
+| 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables, and no case folding. | Cursor movement, selection, backspace all operate on graphemes, not bytes — and search's case-insensitive match folds ASCII only, so "Ä" does not match "ä". Soft wrap adds a consumer: with no width table a CJK character counts as one column rather than two, so a wrapped line of it breaks late. | Either add to eacp or vendor a small UTF-8/grapheme library into `ECodeCore`. `ecode::Utf8` now carries `next`, `previousBoundary` and `nextBoundary`, which is the shape the eacp version wants. |
 | 10 | **No file watching, no directory enumeration.** | File tree, external-change detection. | FSEvents on macOS; app-level is acceptable initially. ECode polls `File::modificationTime` once a second for the open file, and enumerates directories through `std::filesystem` behind `eacp::toStdPath`. The seams FSEvents replaces are `TextFile::hasChangedOnDisk` and `FileTreeModel::refresh`. |
 
 **Not a gap, contrary to first impressions:** instanced rendering is first-class —
@@ -412,7 +414,8 @@ Ghostty has only CPU-side dirty tracking. Follow Alacritty.
   `isSelected` test do not generalize; plan for N selections from the beginning.
 - **Logical ↔ visual line mapping.** Soft wrap, folding, and variable line heights all break the
   `row * cellH` assumption. This is the single biggest structural difference from a terminal grid,
-  and the mapping layer should exist even in the read-only milestone.
+  and the mapping layer should exist even in the read-only milestone. **Done** —
+  `LineMap`, with soft wrap as its first consumer; see §7.3.
 - **Syntax:** tree-sitter (C library, CPM-friendly), incremental reparse on edit, styles attached
   to ranges rather than baked into cells.
 
@@ -630,7 +633,7 @@ assigns no mnemonics — a title needs an explicit `&` — and separately
 one. That is pre-existing keyboard plumbing rather than menu work, and guessing
 at it blind is how the other six bugs would have got in.
 
-**Done in ECode** (405 tests): `Document` with an incremental line index,
+**Done in ECode** (445 tests): `Document` with an incremental line index,
 `TextEdit`/`EditHistory` with step grouping, `Cursor`/`Editor`, `TextRenderer`
 drawing only the visible slice with clipped gutter and text, `GlyphRenderer`
 batching, tree-sitter highlighting with incremental reparse, the full typing
@@ -643,7 +646,8 @@ reads both through a shared `TextField` — find/replace: a `Search` model,
 a `FindBar`, match highlighting in the renderer and grouped undo for
 replace-all — the menu bar: `MenuBuilder`, ⌘O and ⇧⌘O, and one dispatcher that
 the keymap and the menus both arrive at — and the last two widgets: a right-click
-`ContextMenu` and a draggable `Splitter`.
+`ContextMenu` and a draggable `Splitter` — and `LineMap`, the logical-to-visual
+row mapping, with soft wrap on ⌥Z as the consumer that proves it.
 
 **Proven elsewhere**: CowTerm ported onto `eacp-text` (−904/+208), rendering
 CJK and colour emoji correctly. That was the test of whether the extraction was
@@ -725,6 +729,11 @@ rather than the couple of hours it would be today. What keeps it from getting
 worse: **anything new that touches the cursor should go through `Editor`, not
 reach into `Editor::cursor()`**. Today the renderer takes a `const Cursor*`,
 which becomes a span. Keep that surface as narrow as it is.
+
+Soft wrap was the first change since to test that rule, and it is the reason
+`Editor` owns the line map rather than the view: moving by visual rows is cursor
+movement, so it stayed behind `moveUp`/`moveDown` instead of the widget
+computing an offset and calling `placeCaret`. The surface did not widen.
 
 ### 7.3 The widget layer — foundation done, concrete widgets next
 
@@ -821,17 +830,90 @@ header band is a separate case that the `Rect` fix moved from the bottom to the
 top, where it was always meant to be.
 
 Two things still to get right, because both are painful later:
-- **Variable line height.** `TextRenderer` places row *n* at `n * lineHeight`.
-  Soft wrap, folding, inline diagnostics and image lines all break that
-  assumption, and it is the single biggest structural difference between a
-  terminal grid and an editor. A logical-line to visual-line mapping should
-  exist before anything else is built on the current assumption.
+- ~~**Variable line height.**~~ — the mapping half is **done**; see below.
 - **Damage tracking.** Every frame redraws everything visible. That was a
   future worry when the sidebar was an empty rectangle; the file tree is on
   screen now, so a caret blink repaints every visible row of it. Virtualisation
   caps the cost at a screenful rather than at the file count, which is why this
   is still affordable — but it is the next thing to bite, and the honest fix is
   a dirty-region pass rather than more clever painting.
+
+**Done: the logical-to-visual line mapping, with soft wrap as its consumer.**
+`LineMap` in `ECodeCore` answers which text a row holds and which row an offset
+is on; `TextRenderer` draws rows, `Editor` moves the cursor by rows, and
+`EditorWidget` scrolls by them. ⌥Z toggles wrapping and the View menu carries a
+checkmark for it.
+
+The mapping was the part that could not be retrofitted, and it is worth being
+precise about what is and is not done: **row height is still uniform.** It now
+lives behind one function (`TextRenderer::rowTop`) instead of being multiplied
+out at eight call sites, which is what makes a per-row height a change to a
+class that already has one entry per screen strip. The debt this section named
+was the assumption, not the arithmetic.
+
+Decisions worth recording, because each went against the obvious version:
+
+- **`Editor` owns the map, though a wrap width is a property of a view.**
+  Vertical movement is its first caller and the cursor is the editor's, so the
+  alternative is either a view reaching into the cursor — which §7.2 is explicit
+  about not doing — or a subscriber on `onEdit` that a caller can forget to
+  attach, in a class where forgetting means drawing the text as it was before
+  the keystroke. The price is that two views of one file would share a wrap
+  width, which is the point at which this becomes a view model.
+- **Wrapping is measured in display columns, not pixels.** A tab is one byte and
+  four columns, so bytes are wrong; pixels would drag font metrics into
+  `ECodeCore`. Columns are exactly right for a monospace editor and are the seam
+  a proportional one replaces. The same walk now serves `columnToX`, which had
+  its own copy of the tab-stop arithmetic.
+- **Only per-line row *counts* are stored; break positions are recomputed.**
+  One `size_t` per line, the same shape and the same cost as `Document`'s line
+  index, repaired the same incremental way — and a one-line cache, because the
+  draw loop asks for consecutive rows of one line and recomputing per row would
+  make a wrapped paragraph quadratic in its length. Storing every break would
+  have been ~10 MB on a wrapped 100 MB file, on top of the line index.
+- **`LineMap::rebuildCount()` exists for the tests, and it earns its keep.** An
+  incremental update that quietly fell back to a full rebuild agrees with a full
+  rebuild on every input — so the oracle §9 recommends cannot, on its own, tell
+  the fast path from the slow one. The counter is what makes the oracle test
+  fail when the optimisation is deleted, which it was confirmed to do.
+- **A caret at a wrap point is genuinely ambiguous, and it is settled twice.**
+  The offset ending one row is the offset starting the next, and nothing here
+  models affinity. End backs over the blank the wrap left behind, and a held
+  column that would land on a continuation row's far edge backs up one
+  character. Both keep the caret on the row it was aimed at. What is left is the
+  case with no blank to back over — a break inside a long token — where clicking
+  past the end of a row still puts the caret at the start of the row below.
+- **The gutter numbers lines, so a continuation row carries no number.** That
+  one falls straight out of a gutter loop that still thinks in lines, and it is
+  the single most obvious way to make wrapping look wrong.
+- **A toggle command needs a third predicate.** `Command::isChecked` is the one
+  `std::function` here deliberately left null by default, because null is "not a
+  toggle" and no value of the predicate says that — false would put an empty
+  checkbox beside every ordinary command. eacp's `MenuChecked` had already drawn
+  the same distinction the same way; this only routes it through.
+
+Not done, and deliberately: **continuation rows are not indented.** VSCode's
+default aligns a wrapped row with its line's indentation, which matters much
+more for code than for prose. It is a `LineMap` change — a per-line indent
+added to the row's left edge and subtracted from its width — and it wants the
+renderer to know about it too, so it is a change worth making on its own.
+
+**Verified three ways, and the third one is the reason.** `LineMapTests` pin the
+model against an oracle; `WrapRenderTests` render the assembled thing off-screen
+and read the pixels back, which is what catches a map that is right and a
+renderer that ignores it. Then the picture was dumped to a file and looked at,
+which is where the tab stops, the mid-word break on a long token and the shape
+of a selection spanning a wrap point were actually confirmed. Four mutation
+checks stand behind the model tests and three behind the render tests; two of
+the original tests passed against deleted code and had to be rebuilt — see §9.
+
+The menu was driven live, since that is the half `renderToImage` cannot see:
+the item runs the command and the checkmark follows it, confirmed through the
+accessibility API on both sides of a toggle. **⌥Z itself is not confirmed by a
+keystroke** — ECode would not come to the front to receive one — only that the
+menu carries the chord as a native key equivalent, which is what macOS matches
+before a window sees a key. See §9; the reading took considerably longer to get
+right than the feature did.
 
 ### 7.4 IDE chrome, on top of the widget layer
 
@@ -1308,6 +1390,53 @@ Recorded because each of these cost something to find out.
   title, because the shortcut colour is lighter than the disabled one. Both are
   now pinned by tests that fail without the fix. Tests answer the questions you
   thought to ask.
+
+- **An oracle cannot see a fallback.** The incremental line map is compared
+  against a full rebuild after every edit, which is the right shape — and it
+  passes with the whole optimisation replaced by `rebuild()`, because a rebuild
+  agrees with a rebuild. Confirmed by doing exactly that. What makes the test
+  real is a counter of full rebuilds, asserted not to move. Any optimisation
+  whose fallback is the thing it optimises needs that second assertion, and the
+  general form is: an oracle proves the answer, never the path.
+- **Pick the input where the two implementations disagree.** Two word-wrap tests
+  passed with word breaking deleted outright, because at the widths chosen the
+  greedy *character* break happened to land on a space anyway. Wrapping "the
+  quick brown fox" at ten columns cannot tell character wrap from word wrap;
+  at thirteen it can. When a test compares two algorithms, the width, the
+  length and the spacing are not decoration — they are the test.
+- **A guard can be reachable only by a route you have to construct.** The
+  correction that keeps a held column from falling through to the row below
+  survived deletion at first, because reaching it needs the column to be held
+  *across* an intervening row: a caret already on a full continuation row can
+  never be at its end, since that offset belongs to the row beneath. It takes
+  three rows and two presses of Up. When a mutation does not go red, the useful
+  question is not "is the test weak" but "what state does this code actually
+  need", and the answer is worth writing into the test.
+- **An observer that does not disturb the state may not read it either.** The
+  new View-menu checkmark looked broken for a long time: toggle word wrap, read
+  the item's `AXMenuItemMarkChar`, get nothing. It had been correct the whole
+  time. A checkmark is set inside `validateMenuItem:`, which AppKit calls when a
+  menu is about to be *drawn* — so reading the attribute reports whatever the
+  last draw set, and the attribute read does not itself cause one. Addressing
+  the item by name (`menu item "X" of menu 1 of …`) never opens the menu and so
+  always reads stale; enumerating all of `menu items` does open it, which is why
+  the one reading that worked was the one written as a loop. §9 already says the
+  automation can be the thing that changed the state; the other half is that it
+  can also be the thing that failed to. Two `fprintf`s — one in the command, one
+  in the predicate — answered in a single run what an afternoon of reading the
+  attribute could not: `checked=0`, then the command, then `checked=1`.
+- **And ECode still would not come to the front.** ⌥Z sent through System Events
+  went to Terminal, which is the same wall §9 already ends on. The menu carries
+  the chord as a native key equivalent — read back through AX as `Z` with the
+  Option-without-Command mask — and macOS matches those before the window sees a
+  key at all, so the path is as verified as this machine allows. It has not been
+  pressed by a person.
+- **A snapshot at a scale the harness does not share is a lie.** The wrapped
+  view dumped through `renderToImage(2.f)` came back with the right half of
+  every row missing, which looked exactly like a clipping bug in the new code.
+  It was the test view passing `1.f` to `PaintContext` while rendering at 2× —
+  geometry scaled, scissor did not. The app passes its real backing scale. Dump
+  at the scale the context was built with, or fix the context.
 
 - **Run the app.** The red-text bug — an R8 mask through a tint-multiplying
   shader — passed every test that existed and was obvious in one screenshot.

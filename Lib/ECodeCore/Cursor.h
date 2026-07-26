@@ -6,6 +6,8 @@
 
 namespace ecode
 {
+class LineMap;
+
 // A caret and, when the two differ, a selection.
 //
 // One type for both, because in an editor they are the same thing: a caret is
@@ -25,6 +27,11 @@ struct Cursor
     // should return to column 40, not to the short line's end. That only works
     // if the intended column outlives the lines it passes through, so it is
     // remembered here and cleared by any horizontal movement.
+    //
+    // A *display* column measured from the start of the caret's own visual row,
+    // not a byte offset into its logical line — the number is being used to
+    // land the caret under where it looked like it was, and a tab is one byte
+    // and four columns wide. See LineMap.
     std::size_t desiredColumn = 0;
     bool holdsColumn = false;
 
@@ -75,13 +82,29 @@ std::size_t wordRight(const Document& document, std::size_t offset);
 // Home and End. `lineStart` stops at the first non-blank rather than column
 // zero when the caret is already past it, matching what editors do with a
 // first Home press on an indented line.
-std::size_t lineStart(const Document& document, std::size_t offset);
-std::size_t lineEnd(const Document& document, std::size_t offset);
+//
+// On a wrapped line both stop at the visual row's own edges first: Home on a
+// continuation row goes to where that row begins on screen, and End to where it
+// ends. Pressing Home again from there falls through to the logical line, which
+// is the behaviour VSCode has and the one that makes a wrapped paragraph
+// navigable without counting rows.
+std::size_t
+    lineStart(const Document& document, const LineMap& lines, std::size_t offset);
+std::size_t
+    lineEnd(const Document& document, const LineMap& lines, std::size_t offset);
 
-// Up or down by `lines`, honouring the cursor's held column and setting it if
+// Up or down by `rows`, honouring the cursor's held column and setting it if
 // this is the first vertical move of a run. Mutates the cursor's column state,
 // which is why it takes the cursor rather than an offset.
-std::size_t vertical(const Document& document, Cursor& cursor, int lines);
+//
+// Visual rows, not logical lines. On a wrapped line the two differ, and moving
+// by lines there means one press of Down skipping a whole paragraph — the caret
+// leaving the screen position it was at is the thing vertical movement is
+// supposed to preserve.
+std::size_t vertical(const Document& document,
+                     const LineMap& lines,
+                     Cursor& cursor,
+                     int rows);
 
 std::size_t documentStart(const Document& document);
 std::size_t documentEnd(const Document& document);

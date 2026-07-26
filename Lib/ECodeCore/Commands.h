@@ -32,6 +32,19 @@ struct Command
     // not runnable — undo with an empty history, save with nothing to save.
     // Defaulted so a command that is always available says nothing.
     std::function<bool()> isEnabled = [] { return true; };
+
+    // Set only by a command that turns something on and off, and the reason a
+    // menu item for it can show a checkmark. Without it, "Toggle Word Wrap"
+    // runs and the only way to find out whether it took is to look at the text.
+    //
+    // The one std::function here that is deliberately null by default, against
+    // the house rule that they carry a no-op. Null means "this is not a toggle",
+    // which is a different thing from a toggle that is currently off, and there
+    // is no value of the predicate that says it: false would put an empty
+    // checkbox beside every ordinary command. eacp's MenuChecked draws the same
+    // distinction the same way, so a check at the call site is unavoidable
+    // whatever this does.
+    std::function<bool()> isChecked = nullptr;
 };
 
 // The four editing commands a focused text box claims for itself.

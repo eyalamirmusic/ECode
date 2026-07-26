@@ -546,6 +546,16 @@ struct EditorView final : GPU::GPUView
         commands.add({"view.refreshExplorer",
                       "View: Refresh Explorer",
                       [this] { layout.files.refresh(); }});
+
+        commands.add({"view.toggleWordWrap",
+                      "View: Toggle Word Wrap",
+                      [this]
+                      {
+                          layout.editor.setWordWrap(!layout.editor.isWordWrapped());
+                          updateChrome();
+                      },
+                      [] { return true; },
+                      [this] { return layout.editor.isWordWrapped(); }});
     }
 
     // The default keymap. A table rather than a chain of ifs, and the shape a
@@ -569,6 +579,11 @@ struct EditorView final : GPU::GPUView
         keymap.bind("cmd+shift+g", "find.previous");
         keymap.bind("cmd+1", "view.focusEditor");
         keymap.bind("cmd+shift+e", "view.focusExplorer");
+
+        // VSCode's chord, and the one place a binding without Command matters:
+        // handleShortcut runs before the editor sees the key, so ⌥Z toggles
+        // wrapping rather than typing the Ω that macOS resolves it to.
+        keymap.bind("alt+z", "view.toggleWordWrap");
     }
 
     void togglePalette()
