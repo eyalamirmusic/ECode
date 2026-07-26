@@ -89,6 +89,12 @@ void Workspace::connect(OpenFile& entry)
     editor.onDocumentReplaced = [target] { target->reset(); };
 }
 
+void Workspace::refillIfEmpty()
+{
+    if (files.size() == 0)
+        connect(files.createNew());
+}
+
 int Workspace::indexOf(const FilePath& path) const
 {
     if (path.empty())
@@ -173,8 +179,7 @@ void Workspace::closeDiscarding(int index)
 
     files.removeAt(index);
 
-    if (files.size() == 0)
-        files.createNew();
+    refillIfEmpty();
 
     // Closing the tab you were on lands on the one that took its place, and
     // closing the last tab lands on its neighbour to the left — which is where
@@ -184,6 +189,49 @@ void Workspace::closeDiscarding(int index)
         --current;
 
     current = std::clamp(current, 0, files.size() - 1);
+
+    onChanged();
+}
+
+OwningPointer<OpenFile> Workspace::take(int index)
+{
+    if (index < 0 || index >= files.size())
+        return {};
+
+    auto taken = std::move(files[index]);
+
+    files.removeAt(index);
+    refillIfEmpty();
+
+    // The same arithmetic closeDiscarding does, and for the same reason: taking
+    // a tab before the active one leaves the same file active rather than
+    // sliding the selection along with the list.
+    if (index < current)
+        --current;
+
+    current = std::clamp(current, 0, files.size() - 1);
+
+    onChanged();
+
+    return taken;
+}
+
+void Workspace::adopt(OwningPointer<OpenFile> incoming)
+{
+    if (incoming.get() == nullptr)
+        return;
+
+    if (isScratch(active()))
+    {
+        files[current] = std::move(incoming);
+    }
+    else
+    {
+        const auto position = std::clamp(current + 1, 0, files.size());
+
+        files.insertAt(position) = std::move(incoming);
+        current = position;
+    }
 
     onChanged();
 }

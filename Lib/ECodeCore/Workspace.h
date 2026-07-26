@@ -103,6 +103,28 @@ public:
     CloseResult close(int index);
     void closeDiscarding(int index);
 
+    // --- moving a file between groups ------------------------------------
+    //
+    // The pair EditorGroups moves a tab with. Ownership is handed over rather
+    // than the file being copied out and back in, and that is the whole reason
+    // these exist as a pair instead of as a re-open in the destination: an
+    // OpenFile that changes address takes its Editor with it, and connect()
+    // captured that editor by pointer — so a file rebuilt on the other side
+    // would arrive with its undo history, its syntax tree and its dirty flag
+    // reset, and with the old group's callbacks pointing into freed memory.
+    // Moving the OwningPointer leaves every address exactly where it was.
+
+    // Removes the file at `index` and hands it over. Null for an index that
+    // names no tab. The set is still never empty afterwards, so taking the only
+    // file leaves the same untitled buffer closing the last tab does.
+    eacp::OwningPointer<OpenFile> take(int index);
+
+    // Takes ownership of a file another group let go of, and activates it.
+    // Replaces a scratch buffer rather than sitting beside one, the same rule
+    // open() follows — otherwise a file moved into a freshly split group lands
+    // next to the dead "Untitled" the split created.
+    void adopt(eacp::OwningPointer<OpenFile> incoming);
+
     void activate(int index);
 
     // Wrap at both ends, so ⌃Tab through a workspace of two is a toggle.
@@ -131,6 +153,14 @@ private:
     bool isScratch(const OpenFile& entry) const;
 
     OpenFile& insertAfterActive();
+
+    // Puts the untitled buffer back after the last tab goes, connected like any
+    // other. Shared by close and take rather than written at each, because the
+    // half that is easy to leave out is the connect: a buffer with no
+    // highlighter draws plain forever and looks exactly like a file whose
+    // language has no grammar. Same failure the constructor's factory argument
+    // exists to prevent, one method along.
+    void refillIfEmpty();
 
     // Points a fresh entry's editor at its own highlighter, so an edit reparses
     // that document's tree and a wholesale replacement resets it.

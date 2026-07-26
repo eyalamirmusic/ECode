@@ -76,6 +76,16 @@ void TabBar::setActiveTab(int index)
     repaint();
 }
 
+void TabBar::setGroupActive(bool isActive)
+{
+    if (groupActive == isActive)
+        return;
+
+    groupActive = isActive;
+
+    repaint();
+}
+
 void TabBar::layout()
 {
     // A narrower strip both changes every tab's width and can leave the offset
@@ -177,8 +187,13 @@ void TabBar::paint(PaintContext& context)
         if (isActive)
         {
             context.sprites().fillRect(area, theme.activeTab);
+
+            // The fill stays: the tab is still the file this pane is showing.
+            // Only the accent is muted, so an inactive group reads as "this is
+            // the file over here" rather than as having no selection at all.
             context.sprites().fillRect(area.withHeight(accentHeight),
-                                       theme.activeTabAccent);
+                                       groupActive ? theme.activeTabAccent
+                                                   : theme.inactiveGroupAccent);
         }
         else if (index == hovered)
         {

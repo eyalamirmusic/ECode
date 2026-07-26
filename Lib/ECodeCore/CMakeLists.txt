@@ -6,6 +6,7 @@ add_library(ECodeCore STATIC
         Cursor.cpp
         Document.cpp
         Editor.cpp
+        EditorGroups.cpp
         FileTree.cpp
         LineMap.cpp
         Search.cpp

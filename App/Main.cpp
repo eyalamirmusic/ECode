@@ -1,6 +1,7 @@
 #include <ECodeUI/Chrome.h>
 #include <ECodeUI/CommandPalette.h>
 #include <ECodeUI/ContextMenu.h>
+#include <ECodeUI/EditorGroupView.h>
 #include <ECodeUI/EditorWidget.h>
 #include <ECodeUI/FileTreeView.h>
 #include <ECodeUI/FindBar.h>
@@ -9,6 +10,7 @@
 #include <ECodeUI/Splitter.h>
 #include <ECodeUI/Theme.h>
 #include <ECodeUI/WidgetHost.h>
+#include <ECodeCore/EditorGroups.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <eacp/Core/App/App.h>
@@ -53,31 +55,22 @@ eacp::Vector<FilePath> filesToOpen()
     return paths;
 }
 
-// The window's whole layout. Activity bar and sidebar off the left, tab strip
-// off the top, status bar off the bottom, editor taking what is left — which is
-// exactly what Rect's splitters express, and only reads correctly now that they
-// are y-down.
+// The window's whole layout. Activity bar and sidebar off the left, status bar
+// off the bottom, and the editor groups sharing what is left — which is exactly
+// what Rect's splitters express, and only reads correctly now that they are
+// y-down.
+//
+// The tab strip is no longer here: it belongs to a group, and there is one strip
+// per group.
 struct WindowLayout final : Widget
 {
-    WindowLayout(OpenFile& file,
+    WindowLayout(EditorGroups& groupsToShow,
                  const CommandRegistry& commands,
                  const Keymap& keymap)
-        : editor(file)
+        : groups(&groupsToShow)
         , palette(theme, commands, keymap)
         , contextMenu(theme, commands, keymap)
     {
-        addChild(activityBar);
-        addChild(sidebar);
-        addChild(files);
-        addChild(tabs);
-        addChild(status);
-        addChild(editor);
-
-        // After both panes, so its grab band is found before the sidebar and
-        // the editor it sits between — widgetAt takes the last child that
-        // contains the point.
-        addChild(sidebarSplitter);
-
         sidebarSplitter.setPosition(activityBarWidth + sidebarWidth);
 
         sidebarSplitter.onMoved = [this](float)
@@ -86,7 +79,143 @@ struct WindowLayout final : Widget
             repaint();
         };
 
-        // After the editor, so it draws over the text it is searching.
+        rebuildGroups();
+    }
+
+    // --- the editor groups ------------------------------------------------
+
+    // One pane per group, remade whenever there is a different number of them.
+    //
+    // Remade rather than adjusted: a split is a deliberate, occasional act, and
+    // the whole cost of starting over is the row caches of the panes that did
+    // not change — one frame of laying out a screenful of text each. Keeping
+    // them would mean matching old views to new groups by identity, which is
+    // bookkeeping to be got wrong in exchange for something nobody can see.
+    void rebuildGroups()
+    {
+        views.clear();
+        seams.clear();
+        weights.clear();
+
+        const auto count = std::max(1, groups->count());
+
+        for (auto index = 0; index < count; ++index)
+        {
+            views.createNew(theme, groups->at(index));
+
+            // Even shares. A split that preserved the ratios would have to
+            // decide which pane pays for the new one, and "all of them" — which
+            // is what an even redistribution means — is the only answer that
+            // does not depend on which pane was split from.
+            weights.add(1.f / static_cast<float>(count));
+        }
+
+        for (auto index = 0; index + 1 < count; ++index)
+        {
+            auto& seam = seams.createNew(theme, Splitter::Orientation::Vertical);
+
+            seam.onMoved = [this, index](float position)
+            { moveSeam(index, position); };
+        }
+
+        rebuildChildren();
+        layout();
+    }
+
+    int groupCount() const { return views.size(); }
+
+    EditorGroupView& groupView(int index)
+    {
+        return *views[std::clamp(index, 0, views.size() - 1)];
+    }
+
+    EditorGroupView& activeGroupView() { return groupView(groups->activeIndex()); }
+    EditorWidget& activeEditor() { return activeGroupView().editor(); }
+
+    // Which pane a point is in, or -1. What a click needs in order to make the
+    // group it landed in the active one — focus alone cannot answer it, since a
+    // click on a tab strip focuses nothing.
+    int groupViewAt(const Graphics::Point& point) const
+    {
+        for (auto index = 0; index < views.size(); ++index)
+            if (views[index]->bounds().contains(point))
+                return index;
+
+        return -1;
+    }
+
+    // Pushes each group's workspace into its own pane, and marks the one being
+    // worked in.
+    void refreshGroups()
+    {
+        for (auto index = 0; index < views.size(); ++index)
+        {
+            views[index]->refresh();
+            views[index]->setGroupActive(index == groups->activeIndex());
+        }
+    }
+
+    // Each pane gets its own TextRenderer off the shared atlas. Null before the
+    // view is on a display, which every pane tolerates.
+    void setAtlas(Text::GlyphAtlas* atlas, const TextTheme& textTheme, float scale)
+    {
+        for (auto& view: views)
+            view->setAtlas(atlas, textTheme, scale);
+    }
+
+    // Whether another pane would still leave every one of them usable. Asked by
+    // the split command's predicate, so a window too narrow to divide again
+    // greys the command out rather than making a pane nobody can read.
+    bool canSplit() const
+    {
+        const auto each =
+            groupRow.w / static_cast<float>(std::max(1, views.size() + 1));
+
+        return each >= minEditorWidth;
+    }
+
+    // A seam dragged: the two panes either side of it trade width and nothing
+    // else moves. Kept as shares of the row rather than as positions, so a
+    // window resize divides what is there proportionally instead of pushing
+    // every seam against its limit.
+    void moveSeam(int seam, float position)
+    {
+        if (seam < 0 || seam + 1 >= views.size() || groupRow.w <= 0.f)
+            return;
+
+        const auto pair = weights[seam] + weights[seam + 1];
+        const auto left = (position - views[seam]->bounds().x) / groupRow.w;
+
+        weights[seam] = std::clamp(left, 0.f, pair);
+        weights[seam + 1] = pair - weights[seam];
+
+        layout();
+        repaint();
+    }
+
+    // Z-order, and it is the whole reason this is a function rather than a
+    // constructor body: the panes come and go, and everything painted over them
+    // has to be re-added behind them each time.
+    void rebuildChildren()
+    {
+        removeAllChildren();
+
+        addChild(activityBar);
+        addChild(sidebar);
+        addChild(files);
+        addChild(status);
+
+        for (auto& view: views)
+            addChild(*view);
+
+        // After the panes, so a grab band is found before the two editors it
+        // sits between — widgetAt takes the last child containing the point.
+        for (auto& seam: seams)
+            addChild(*seam);
+
+        addChild(sidebarSplitter);
+
+        // After the editors, so it draws over the text it is searching.
         addChild(find);
 
         addChild(palette);
@@ -140,24 +269,68 @@ struct WindowLayout final : Widget
              Splitter::grabThickness,
              area.h});
 
-        // Tabs belong to the editor group, so they start where the sidebar
-        // ends rather than spanning the window.
-        tabs.setBounds(area.removeFromTop(tabBarHeight));
-        editor.setBounds(area);
+        // What is left is shared between the groups. Each pane puts its own tab
+        // strip along its own top edge, so a strip starts where its pane does
+        // rather than spanning the window.
+        groupRow = area;
+        layoutGroups();
 
-        // Over the editor's top-right corner rather than given a slice of it.
-        // The bar covers a few lines instead of pushing the file down, which is
-        // what stops the line being read from moving the moment ⌘F is pressed.
+        // Over the *active* pane's top-right corner rather than given a slice
+        // of it. The bar covers a few lines instead of pushing the file down,
+        // which is what stops the line being read from moving the moment ⌘F is
+        // pressed.
         //
-        // Its bounds are the box itself and not the editor's width, or it would
+        // Its bounds are the box itself and not the pane's width, or it would
         // swallow every click meant for the text beneath it — widgetAt only asks
         // whether a point is inside the bounds.
-        const auto barWidth = std::min(find.barWidth(), area.w);
+        const auto text = activeGroupView().editorArea();
+        const auto barWidth = std::min(find.barWidth(), text.w);
 
-        find.setBounds({std::max(area.x, area.right() - findMargin - barWidth),
-                        area.y,
+        find.setBounds({std::max(text.x, text.right() - findMargin - barWidth),
+                        text.y,
                         barWidth,
                         find.barHeight()});
+    }
+
+    void layoutGroups()
+    {
+        auto x = groupRow.x;
+
+        for (auto index = 0; index < views.size(); ++index)
+        {
+            // The last pane takes what is left rather than its own share, so
+            // rounding cannot leave a column of background down the far edge.
+            const auto width = index + 1 == views.size()
+                                   ? groupRow.right() - x
+                                   : groupRow.w * weights[index];
+
+            views[index]->setBounds({x, groupRow.y, width, groupRow.h});
+
+            x += width;
+        }
+
+        // A second pass, because a seam's limits are the far edges of the two
+        // panes it divides and the one to its right has only just been placed.
+        for (auto index = 0; index < seams.size(); ++index)
+        {
+            const auto left = views[index]->bounds();
+            const auto right = views[index + 1]->bounds();
+            const auto divider = right.x;
+
+            seams[index]->setPosition(divider);
+
+            seams[index]->setLimits(
+                left.x + minEditorWidth,
+                std::max(left.x + minEditorWidth, right.right() - minEditorWidth));
+
+            // Straddles the seam rather than taking a slice of it, so neither
+            // pane loses width to the divider and the grab band reaches into
+            // both.
+            seams[index]->setBounds({divider - Splitter::grabThickness * 0.5f,
+                                     groupRow.y,
+                                     Splitter::grabThickness,
+                                     groupRow.h});
+        }
     }
 
     static constexpr auto activityBarWidth = 48.f;
@@ -170,8 +343,12 @@ struct WindowLayout final : Widget
     // filename. The editor's floor matters more: a sidebar dragged over the
     // whole window would leave nothing to type in and no obvious way back.
     static constexpr auto minSidebarWidth = 120.f;
+
+    // The floor for a single editor pane, and now for every one of them: a
+    // sidebar dragged over the whole window would leave nothing to type in, and
+    // a window split five ways at 200 points each is the same mistake spread
+    // out.
     static constexpr auto minEditorWidth = 240.f;
-    static constexpr auto tabBarHeight = 35.f;
     static constexpr auto statusBarHeight = 22.f;
 
     // Clear of the right edge, where a vertical scrollbar will go.
@@ -185,9 +362,21 @@ struct WindowLayout final : Widget
     // tree's own fill, so the empty space below the last row is still sidebar.
     Panel sidebar {theme.sidebar};
     FileTreeView files {theme};
-    TabBar tabs {theme};
     StatusBar status {theme};
-    EditorWidget editor;
+
+    // Never null and never owned: the groups outlive the window layout, and are
+    // constructed before it for exactly that reason.
+    EditorGroups* groups;
+
+    OwnedVector<EditorGroupView> views;
+    OwnedVector<Splitter> seams;
+
+    // Each pane's share of the row, summing to one. See moveSeam.
+    Vector<float> weights;
+
+    // What the panes divide between them, kept from the last layout so a seam
+    // drag can turn a position back into shares.
+    Graphics::Rect groupRow;
 
     Splitter sidebarSplitter {theme, Splitter::Orientation::Vertical};
 
@@ -209,12 +398,13 @@ struct EditorView final : GPU::GPUView
         host.setRoot(layout);
         layout.onRepaintNeeded = [this] { repaint(); };
 
-        workspace.onChanged = [this] { showActiveFile(); };
+        groups.onGroupsChanged = [this] { rebuildGroupViews(); };
+        groups.onChanged = [this] { showActiveFile(); };
 
         registerCommands();
         bindKeys();
         connectFindBar();
-        connectTabs();
+        connectGroups();
 
         layout.palette.onClosed = [this]
         {
@@ -222,7 +412,7 @@ struct EditorView final : GPU::GPUView
             // rather than to nothing: a window with focus nowhere swallows the
             // next keystroke silently.
             host.setFocus(focusBeforePalette != nullptr ? focusBeforePalette
-                                                        : &layout.editor);
+                                                        : &layout.activeEditor());
             repaint();
         };
 
@@ -231,9 +421,7 @@ struct EditorView final : GPU::GPUView
 
         // Left on the first, not the last: the first name on the command line
         // is the one that was meant, and the rest are context.
-        workspace.activate(0);
-
-        layout.editor.onStateChanged = [this] { updateChrome(); };
+        groups.active().activate(0);
 
         // The tree is rooted at the open file's directory, which is the closest
         // thing to a project until there is a folder-open command.
@@ -251,7 +439,7 @@ struct EditorView final : GPU::GPUView
             // Focus follows the open: the point of clicking a file is to type
             // in it, and leaving focus in the tree means the first keystroke
             // moves the selection instead.
-            host.setFocus(&layout.editor);
+            host.setFocus(&layout.activeEditor());
             repaint();
         };
 
@@ -259,42 +447,75 @@ struct EditorView final : GPU::GPUView
 
         // The editor starts focused; a window that opens with no caret reads
         // as broken.
-        host.setFocus(&layout.editor);
+        host.setFocus(&layout.activeEditor());
     }
 
-    Editor& editor() { return workspace.editor(); }
-    TextFile& activeFile() { return workspace.active().file; }
+    Editor& editor() { return groups.editor(); }
+    TextFile& activeFile() { return groups.active().active().file; }
 
-    // Points the view at whatever the workspace made active, and pushes the
-    // change into the chrome around it.
+    // Pushes whatever the groups made active into the chrome around them.
     //
     // Every route that opens, closes or switches a file arrives here through
-    // Workspace::onChanged rather than by remembering to call it — which is the
-    // difference between a tab switch that always redraws the strip and one
+    // EditorGroups::onChanged rather than by remembering to call it — which is
+    // the difference between a tab switch that always redraws the strip and one
     // that redraws it wherever somebody thought to.
     void showActiveFile()
     {
-        layout.editor.setFile(workspace.active());
+        pendingCloseGroup = -1;
 
-        pendingClose = -1;
-
-        // Which also puts the active tab in the strip; see updateChrome.
+        // Which points each pane at its own active file and puts the active tab
+        // in each strip; see updateChrome.
         updateChrome();
         repaint();
     }
 
-    void connectTabs()
+    // A group was added or removed, so there is a different number of panes.
+    //
+    // Every pane is destroyed and remade, which means everything the host is
+    // holding a pointer into is about to stop existing — and the clear has to
+    // happen while those widgets are still there, since dropping a hover tells
+    // the widget it was left.
+    void rebuildGroupViews()
     {
-        layout.tabs.onTabSelected = [this](int index)
+        host.forgetTargets();
+
+        layout.rebuildGroups();
+        layout.setAtlas(atlas.get(), textTheme, builtAtScale);
+
+        connectGroups();
+
+        host.setFocus(&layout.activeEditor());
+        repaint();
+    }
+
+    // Wires every pane to the group it shows. Re-run after a rebuild rather
+    // than installed once, because the index a callback needs is the pane's
+    // position and the panes are made fresh each time.
+    void connectGroups()
+    {
+        for (auto index = 0; index < layout.groupCount(); ++index)
         {
-            workspace.activate(index);
+            auto& view = layout.groupView(index);
 
-            // Focus follows the click, for the same reason it follows one in
-            // the tree: the point of switching to a file is to type in it.
-            host.setFocus(&layout.editor);
-        };
+            view.tabBar().onTabSelected = [this, index](int tab)
+            {
+                groups.activate(index);
+                groups.at(index).activate(tab);
 
-        layout.tabs.onTabClosed = [this](int index) { closeFile(index); };
+                // Focus follows the click, for the same reason it follows one
+                // in the tree: the point of switching to a file is to type in
+                // it.
+                host.setFocus(&layout.activeEditor());
+            };
+
+            view.tabBar().onTabClosed = [this, index](int tab)
+            { closeFile(index, tab); };
+
+            view.editor().onStateChanged = [this] { updateChrome(); };
+
+            view.editor().onContextMenuRequested = [this](const Graphics::Point& at)
+            { showContextMenu(at); };
+        }
     }
 
     // The find bar reports what was typed and which button was pressed; the
@@ -306,28 +527,28 @@ struct EditorView final : GPU::GPUView
     {
         layout.find.onQueryChanged = [this]
         {
-            layout.editor.setSearchQuery(layout.find.query(), searchOrigin);
+            layout.activeEditor().setSearchQuery(layout.find.query(), searchOrigin);
             updateFindCount();
             repaint();
         };
 
         layout.find.onFindNext = [this]
         {
-            layout.editor.findNext();
+            layout.activeEditor().findNext();
             updateFindCount();
             repaint();
         };
 
         layout.find.onFindPrevious = [this]
         {
-            layout.editor.findPrevious();
+            layout.activeEditor().findPrevious();
             updateFindCount();
             repaint();
         };
 
         layout.find.onReplace = [this]
         {
-            layout.editor.replaceCurrent(layout.find.replacement());
+            layout.activeEditor().replaceCurrent(layout.find.replacement());
 
             updateFindCount();
             updateChrome();
@@ -336,7 +557,7 @@ struct EditorView final : GPU::GPUView
 
         layout.find.onReplaceAll = [this]
         {
-            layout.editor.replaceAllMatches(layout.find.replacement());
+            layout.activeEditor().replaceAllMatches(layout.find.replacement());
 
             updateFindCount();
             updateChrome();
@@ -353,9 +574,9 @@ struct EditorView final : GPU::GPUView
         {
             // The highlight goes with the bar. Leaving it up would mean a file
             // covered in orange with nothing on screen explaining why.
-            layout.editor.clearSearch();
+            layout.activeEditor().clearSearch();
 
-            host.setFocus(&layout.editor);
+            host.setFocus(&layout.activeEditor());
 
             // The bar no longer occupies the corner it did.
             layout.layout();
@@ -379,22 +600,25 @@ struct EditorView final : GPU::GPUView
                 "find.show"};
     }
 
+    // A right-click in any pane. Wired per pane in connectGroups, since the
+    // panes are remade on every split and a callback installed once would be
+    // installed on a widget that no longer exists.
+    void showContextMenu(const Graphics::Point& at)
+    {
+        // Focus moves to the menu, so the caret stops blinking under it and
+        // the arrow keys drive the menu rather than the document.
+        focusBeforeMenu = host.focused();
+
+        layout.contextMenu.show(at, editorMenuCommands());
+
+        if (layout.contextMenu.isOpen())
+            host.setFocus(&layout.contextMenu);
+
+        repaint();
+    }
+
     void connectContextMenu()
     {
-        layout.editor.onContextMenuRequested = [this](const Graphics::Point& at)
-        {
-            // Focus moves to the menu, so the caret stops blinking under it and
-            // the arrow keys drive the menu rather than the document.
-            focusBeforeMenu = host.focused();
-
-            layout.contextMenu.show(at, editorMenuCommands());
-
-            if (layout.contextMenu.isOpen())
-                host.setFocus(&layout.contextMenu);
-
-            repaint();
-        };
-
         // Through the dispatcher, exactly like the menu bar: the command may
         // belong to a focused text box rather than to the document.
         layout.contextMenu.onCommandChosen = [this](std::string_view id)
@@ -403,7 +627,7 @@ struct EditorView final : GPU::GPUView
         layout.contextMenu.onClosed = [this]
         {
             host.setFocus(focusBeforeMenu != nullptr ? focusBeforeMenu
-                                                     : &layout.editor);
+                                                     : &layout.activeEditor());
             repaint();
         };
     }
@@ -429,7 +653,7 @@ struct EditorView final : GPU::GPUView
 
     void updateFindCount()
     {
-        const auto& search = layout.editor.search();
+        const auto& search = layout.activeEditor().search();
 
         layout.find.setMatchCount(search.currentNumber(), search.count());
     }
@@ -469,9 +693,9 @@ struct EditorView final : GPU::GPUView
         }
 
         if (backwards)
-            layout.editor.findPrevious();
+            layout.activeEditor().findPrevious();
         else
-            layout.editor.findNext();
+            layout.activeEditor().findNext();
 
         updateFindCount();
         repaint();
@@ -503,9 +727,11 @@ struct EditorView final : GPU::GPUView
 
         commands.add({"file.saveAs", "File: Save As…", [this] { saveFileAs(); }});
 
-        commands.add({"file.close",
-                      "File: Close Editor",
-                      [this] { closeFile(workspace.activeIndex()); }});
+        commands.add(
+            {"file.close",
+             "File: Close Editor",
+             [this]
+             { closeFile(groups.activeIndex(), groups.active().activeIndex()); }});
 
         commands.add({"file.revert",
                       "File: Revert File",
@@ -583,27 +809,27 @@ struct EditorView final : GPU::GPUView
                       "Find: Find Previous",
                       [this] { findNextOrOpen(true); }});
 
-        commands.add({"find.replaceAll",
-                      "Find: Replace All",
-                      [this]
-                      {
-                          layout.editor.replaceAllMatches(layout.find.replacement());
+        commands.add(
+            {"find.replaceAll",
+             "Find: Replace All",
+             [this]
+             {
+                 layout.activeEditor().replaceAllMatches(layout.find.replacement());
 
-                          updateFindCount();
-                          updateChrome();
-                      },
-                      [this]
-                      {
-                          // Listed but unavailable rather than hidden: a command
-                          // that vanishes is harder to understand than one that
-                          // is visibly not ready.
-                          return layout.find.isOpen()
-                                 && !layout.find.query().isEmpty();
-                      }});
+                 updateFindCount();
+                 updateChrome();
+             },
+             [this]
+             {
+                 // Listed but unavailable rather than hidden: a command
+                 // that vanishes is harder to understand than one that
+                 // is visibly not ready.
+                 return layout.find.isOpen() && !layout.find.query().isEmpty();
+             }});
 
         commands.add({"view.focusEditor",
                       "View: Focus Editor",
-                      [this] { host.setFocus(&layout.editor); }});
+                      [this] { host.setFocus(&layout.activeEditor()); }});
 
         commands.add({"view.focusExplorer",
                       "View: Focus Explorer",
@@ -614,13 +840,48 @@ struct EditorView final : GPU::GPUView
         // one that is visibly not applicable yet.
         commands.add({"view.nextTab",
                       "View: Next Editor",
-                      [this] { workspace.activateNext(); },
-                      [this] { return workspace.count() > 1; }});
+                      [this] { groups.active().activateNext(); },
+                      [this] { return groups.active().count() > 1; }});
 
         commands.add({"view.previousTab",
                       "View: Previous Editor",
-                      [this] { workspace.activatePrevious(); },
-                      [this] { return workspace.count() > 1; }});
+                      [this] { groups.active().activatePrevious(); },
+                      [this] { return groups.active().count() > 1; }});
+
+        // --- editor groups ------------------------------------------------
+
+        commands.add({"view.splitEditor",
+                      "View: Split Editor",
+                      [this] { groups.split(); },
+
+                      // Greyed rather than making a pane too narrow to read. The
+                      // floor is the same one the sidebar is held to, and it is
+                      // the only reason there is no hard cap on the number of
+                      // groups: how many fit is a question about the window.
+                      [this] { return layout.canSplit(); }});
+
+        commands.add({"view.focusNextGroup",
+                      "View: Focus Next Editor Group",
+                      [this] { groups.activateNext(); },
+                      [this] { return groups.count() > 1; }});
+
+        commands.add({"view.focusPreviousGroup",
+                      "View: Focus Previous Editor Group",
+                      [this] { groups.activatePrevious(); },
+                      [this] { return groups.count() > 1; }});
+
+        // What fills a split. A file lives in exactly one group — see
+        // EditorGroups — so "show this one over there" is the move that is
+        // actually available, and it is the reason a split opens empty.
+        commands.add({"view.moveEditorToNextGroup",
+                      "View: Move Editor Into Next Group",
+                      [this] { groups.moveActiveFile(1); },
+                      [this] { return canMoveEditor(1); }});
+
+        commands.add({"view.moveEditorToPreviousGroup",
+                      "View: Move Editor Into Previous Group",
+                      [this] { groups.moveActiveFile(-1); },
+                      [this] { return canMoveEditor(-1); }});
 
         commands.add({"view.refreshExplorer",
                       "View: Refresh Explorer",
@@ -630,11 +891,24 @@ struct EditorView final : GPU::GPUView
                       "View: Toggle Word Wrap",
                       [this]
                       {
-                          layout.editor.setWordWrap(!layout.editor.isWordWrapped());
+                          layout.activeEditor().setWordWrap(
+                              !layout.activeEditor().isWordWrapped());
                           updateChrome();
                       },
                       [] { return true; },
-                      [this] { return layout.editor.isWordWrapped(); }});
+                      [this] { return layout.activeEditor().isWordWrapped(); }});
+    }
+
+    // Whether there is anywhere for the active file to go, which is either a
+    // group already that way or room to make one. The model refuses the move
+    // that would change nothing; this refuses the one there is no room for.
+    bool canMoveEditor(int direction) const
+    {
+        if (const auto target = groups.activeIndex() + direction;
+            target >= 0 && target < groups.count())
+            return true;
+
+        return groups.active().count() > 1 && layout.canSplit();
     }
 
     // The default keymap. A table rather than a chain of ifs, and the shape a
@@ -678,6 +952,22 @@ struct EditorView final : GPU::GPUView
         // rather than claiming one macOS would match before the window.
         keymap.bind("ctrl+tab", "view.nextTab");
         keymap.bind("ctrl+shift+tab", "view.previousTab");
+
+        // VSCode's chord for splitting, and unlike the arrows it *is* a single
+        // character, so the menu takes it as a native key equivalent and macOS
+        // matches it before the window. That is the right side of the trade for
+        // a command that has no business reaching the document.
+        keymap.bind("cmd+\\", "view.splitEditor");
+
+        // VSCode spells these ⌘K ⌘→, which is a chord *sequence* and there is
+        // no such thing here. ⌥⌘← / → are the nearest free pair, and the
+        // shifted ones move the file rather than the focus, which is the same
+        // shift-means-take-it-with-you the arrow keys already mean in the
+        // document.
+        keymap.bind("cmd+alt+right", "view.focusNextGroup");
+        keymap.bind("cmd+alt+left", "view.focusPreviousGroup");
+        keymap.bind("cmd+alt+shift+right", "view.moveEditorToNextGroup");
+        keymap.bind("cmd+alt+shift+left", "view.moveEditorToPreviousGroup");
 
         // VSCode's chord, and the one place a binding without Command matters:
         // handleShortcut runs before the editor sees the key, so ⌥Z toggles
@@ -747,7 +1037,7 @@ struct EditorView final : GPU::GPUView
 
         // Focus follows the open, as it does from the tree: the point of
         // opening a file is to type in it.
-        host.setFocus(&layout.editor);
+        host.setFocus(&layout.activeEditor());
         repaint();
     }
 
@@ -776,16 +1066,17 @@ struct EditorView final : GPU::GPUView
     }
 
     // Opens the file into a new tab, or brings its tab forward if it is already
-    // open. Workspace::onChanged does the rest.
-    void openFile(const FilePath& path) { workspace.open(path); }
+    // open — in whichever group has it, since a path lives in exactly one.
+    // EditorGroups::onChanged does the rest.
+    void openFile(const FilePath& path) { groups.open(path); }
 
     // A new empty buffer with nowhere to save to yet, which is what Save As is
     // for. Also what closing the last tab leaves behind, so the two arrived
     // together.
     void newFile()
     {
-        workspace.addUntitled();
-        host.setFocus(&layout.editor);
+        groups.active().addUntitled();
+        host.setFocus(&layout.activeEditor());
     }
 
     // Whether a "close without saving?" put to the person is still the question
@@ -797,32 +1088,38 @@ struct EditorView final : GPU::GPUView
     // arrive from a keystroke, a menu paste or an undo, and only the first of
     // those runs the editor's own key handling — a callback hung off one route
     // would leave the other two asking about text that is gone.
-    bool closeIsPending(int index) const
+    // The pane as well as the tab, now that a tab number means nothing on its
+    // own: two panes both have a tab 0, and a ⌘W in one of them must not answer
+    // a question that was asked in the other.
+    bool closeIsPending(int group, int index) const
     {
-        return index >= 0 && pendingClose == index
-               && pendingCloseState == workspace.at(index).file.editor().stateId();
+        return group >= 0 && index >= 0 && pendingCloseGroup == group
+               && pendingCloseTab == index
+               && pendingCloseState
+                      == groups.at(group).at(index).file.editor().stateId();
     }
 
     // Refuses a file with unsaved edits and says so in the title, which is the
     // same shape ⌘S over a conflict already takes: there is no dialog to ask
     // in, so the title carries the question and a second ⌘W answers it.
-    void closeFile(int index)
+    void closeFile(int group, int index)
     {
-        if (closeIsPending(index))
+        if (closeIsPending(group, index))
         {
-            pendingClose = -1;
-            workspace.closeDiscarding(index);
+            pendingCloseGroup = -1;
+            groups.closeFileDiscarding(group, index);
 
             return;
         }
 
-        if (workspace.close(index) == CloseResult::hasUnsavedChanges)
+        if (groups.closeFile(group, index) == CloseResult::hasUnsavedChanges)
         {
             // Only ever one tab is armed: arming every refused close would mean
             // a ⌘W aimed at one file discarding another that had been refused
             // ten minutes earlier.
-            pendingClose = index;
-            pendingCloseState = workspace.at(index).file.editor().stateId();
+            pendingCloseGroup = group;
+            pendingCloseTab = index;
+            pendingCloseState = groups.at(group).at(index).file.editor().stateId();
 
             updateChrome();
             repaint();
@@ -846,21 +1143,12 @@ struct EditorView final : GPU::GPUView
         repaint();
     }
 
-    // The name a file goes by in a tab or a title. Untitled is what a buffer
-    // with no path is called everywhere, and it has to be called something.
-    static std::string displayName(const TextFile& file)
-    {
-        auto name = file.name();
-
-        return name.empty() ? "Untitled" : name;
-    }
-
     // What the window's title bar should read. A pure function of the active
     // file's state, so App can ask for it once at startup and then let
     // onTitleChanged push every later change.
     std::string windowTitle() const
     {
-        const auto& file = workspace.active().file;
+        const auto& file = groups.active().active().file;
 
         auto name = displayName(file);
 
@@ -873,48 +1161,39 @@ struct EditorView final : GPU::GPUView
         if (file.isConflicted())
             name += "  —  changed on disk. ⌘S again to overwrite";
 
-        if (closeIsPending(workspace.activeIndex()))
+        if (closeIsPending(groups.activeIndex(), groups.active().activeIndex()))
             name += "  —  unsaved. ⌘W again to close anyway";
 
         return name;
     }
 
-    // Pushes the workspace's state into the chrome that displays it. Cheap
-    // enough to call on every keystroke: the tab strip and the status bar both
+    // Pushes the groups' state into the chrome that displays it. Cheap enough
+    // to call on every keystroke: every tab strip and the status bar all
     // compare before they store, so an unchanged state asks for no frame.
+    //
+    // Every pane, not only the active one — a dirty dot in the pane nobody is
+    // typing in still has to appear, and a file changed on disk under an
+    // inactive pane still has to say so.
     void updateChrome()
     {
-        auto tabs = eacp::Vector<TabItem> {};
+        layout.refreshGroups();
 
-        for (auto index = 0; index < workspace.count(); ++index)
-        {
-            const auto& file = workspace.at(index).file;
+        auto& editor = layout.activeEditor();
 
-            auto tab = TabItem {};
-            tab.title = displayName(file);
-            tab.modified = file.isDirty();
-            tab.conflicted = file.isConflicted();
-
-            tabs.add(std::move(tab));
-        }
-
-        layout.tabs.setTabs(std::move(tabs));
-        layout.tabs.setActiveTab(workspace.activeIndex());
-
-        auto position = "Ln " + std::to_string(layout.editor.caretLine()) + ", Col "
-                        + std::to_string(layout.editor.caretColumn());
+        auto position = "Ln " + std::to_string(editor.caretLine()) + ", Col "
+                        + std::to_string(editor.caretColumn());
 
         // The only place that says the mode is on when the other carets have
         // been scrolled off the screen. Without it, a keystroke lands in places
         // nobody can see with nothing on screen to explain it.
-        if (const auto count = layout.editor.editor().cursors().count(); count > 1)
+        if (const auto count = editor.editor().cursors().count(); count > 1)
             position += "  (" + std::to_string(count) + " cursors)";
 
         // A file that lost its colours on the way past the size limit has to say
         // so. Drawn plain, it is indistinguishable from a language with no
         // grammar — and the person watching just watched it happen, so silence
         // reads as the highlighter having broken rather than as a decision.
-        const auto* const highlighter = layout.editor.highlighter();
+        const auto* const highlighter = editor.highlighter();
         const auto tooLarge =
             highlighter != nullptr && highlighter->isTooLargeToHighlight();
 
@@ -940,11 +1219,17 @@ struct EditorView final : GPU::GPUView
     // The atlas rasterizes at the display's real scale, so it cannot be built
     // until the view is on a display — and must be rebuilt if it moves to one
     // with a different scale.
+    //
+    // One atlas for the window and one TextRenderer per pane. The atlas is
+    // shared because a glyph is a glyph wherever it is drawn and the whole point
+    // of it is that it is uploaded once; the renderers are not, because each
+    // owns a RowCache of the rows *its own* pane is showing. See
+    // EditorGroupView.
     void ensureRenderer()
     {
         const auto scale = backingScale();
 
-        if (renderer && builtAtScale == scale)
+        if (atlas && builtAtScale == scale)
             return;
 
         auto request = Text::FontRequest {};
@@ -960,11 +1245,10 @@ struct EditorView final : GPU::GPUView
         atlas = makeOwned<Text::GlyphAtlas>(
             OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 4096);
 
-        renderer.emplace(*atlas, textTheme, scale);
         glyphs.emplace();
         builtAtScale = scale;
 
-        layout.editor.setRenderer(&renderer.value());
+        layout.setAtlas(atlas.get(), textTheme, scale);
     }
 
     void resized() override
@@ -1024,16 +1308,17 @@ struct EditorView final : GPU::GPUView
     // Standing in for file watching, which eacp does not have: one stat a
     // second per open file, which is nothing next to a frame.
     //
-    // Every open file, not only the visible one: a tab switched to an hour
-    // after a git checkout should show what is on disk now, and finding out at
-    // the moment it is switched to would mean discovering it too late to warn
-    // about a conflict.
+    // Every open file in every group, not only the visible ones: a tab switched
+    // to an hour after a git checkout should show what is on disk now, and
+    // finding out at the moment it is switched to would mean discovering it too
+    // late to warn about a conflict.
     void checkDisk()
     {
         auto changed = false;
 
-        for (auto index = 0; index < workspace.count(); ++index)
-            changed |= workspace.at(index).file.pollDisk();
+        for (auto group = 0; group < groups.count(); ++group)
+            for (auto index = 0; index < groups.at(group).count(); ++index)
+                changed |= groups.at(group).at(index).file.pollDisk();
 
         if (!changed)
             return;
@@ -1062,7 +1347,7 @@ struct EditorView final : GPU::GPUView
         // catching up only at the next keystroke. Found by running the app:
         // pasting into a fresh tab through the Edit menu left the tab looking
         // clean over text that was not.
-        layout.editor.wake();
+        layout.activeEditor().wake();
 
         repaint();
     }
@@ -1150,6 +1435,16 @@ struct EditorView final : GPU::GPUView
 
     void mouseDown(const Graphics::MouseEvent& event) override
     {
+        // Which pane the press landed in decides which group is being worked
+        // in, and it is decided *before* the press is routed. Focus alone
+        // cannot answer it: a click on a tab strip focuses nothing, so a tab
+        // selected in one pane while another was active would switch the wrong
+        // file. An open overlay covers every pane, so a click on the palette
+        // must not count as a click on whatever is behind it.
+        if (modalOverlay() == nullptr)
+            if (const auto group = layout.groupViewAt(event.pos); group >= 0)
+                groups.activate(group);
+
         host.mouseDown(event);
     }
 
@@ -1201,7 +1496,7 @@ struct EditorView final : GPU::GPUView
 
         auto pass = frame.beginPass({textTheme.background});
 
-        if (!sprites || !renderer || !atlas || !glyphs)
+        if (!sprites || !atlas || !glyphs)
             return;
 
         glyphs->setViewportSize({getLocalBounds().w, getLocalBounds().h});
@@ -1220,7 +1515,7 @@ struct EditorView final : GPU::GPUView
 
     TextTheme textTheme;
 
-    // Ahead of the layout, which is constructed against the active file.
+    // Ahead of the layout, which builds one pane per group.
     //
     // One highlighter per open file rather than one for the workspace: a shared
     // one would have to reparse from scratch on every switch, which is the cold
@@ -1231,7 +1526,7 @@ struct EditorView final : GPU::GPUView
     // highlighter allowed to finish decides when the window first appears; given
     // 2 ms it hands the frame back and the text is on screen and scrollable
     // immediately, with the colours arriving over the next few frames.
-    Workspace workspace {[]
+    EditorGroups groups {[]
                          {
                              auto syntax = makeOwned<SyntaxHighlighter>(
                                  SyntaxHighlighter::frameParseBudget);
@@ -1248,7 +1543,7 @@ struct EditorView final : GPU::GPUView
     CommandRegistry commands;
     Keymap keymap;
 
-    WindowLayout layout {workspace.active(), commands, keymap};
+    WindowLayout layout {groups, commands, keymap};
     WidgetHost host;
 
     // Where focus was when the palette opened, so closing it puts the keyboard
@@ -1268,21 +1563,23 @@ struct EditorView final : GPU::GPUView
     std::function<void(const std::string&)> onTitleChanged =
         [](const std::string&) {};
 
+    // The atlas and the glyph batch are the window's; the renderers belong to
+    // the panes, since each keeps a cache of the rows it is showing.
     std::optional<Sprites::SpriteRenderer> sprites;
     OwningPointer<Text::GlyphAtlas> atlas;
-    std::optional<TextRenderer> renderer;
     std::optional<Text::GlyphRenderer> glyphs;
 
     float builtAtScale = 1.f;
 
     std::string shownTitle;
 
-    // The one tab whose close was refused for having unsaved edits, or -1, and
-    // the text it was refused over. See closeIsPending.
-    int pendingClose = -1;
+    // The one tab whose close was refused for having unsaved edits, which pane
+    // it is in, and the text it was refused over. See closeIsPending.
+    int pendingCloseGroup = -1;
+    int pendingCloseTab = -1;
     std::uint64_t pendingCloseState = 0;
 
-    Threads::Timer blink {[this] { layout.editor.tickCaretBlink(); }, 2};
+    Threads::Timer blink {[this] { layout.activeEditor().tickCaretBlink(); }, 2};
     Threads::Timer diskWatch {[this] { checkDisk(); }, 1};
 };
 

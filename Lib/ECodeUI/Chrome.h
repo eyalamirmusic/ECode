@@ -59,6 +59,16 @@ public:
     int activeTab() const { return active; }
     int tabCount() const { return tabs.size(); }
 
+    // Whether this strip belongs to the group being worked in.
+    //
+    // Split the window and every group still has an active tab, so the accent
+    // that says "this is the file" appears once per pane and none of them says
+    // which pane the keyboard is in. Muting the accent everywhere else is what
+    // VSCode does, and it is the one signal that survives the caret being
+    // invisible half the time and off-screen the rest.
+    void setGroupActive(bool isActive);
+    bool isGroupActive() const { return groupActive; }
+
     std::function<void(int)> onTabSelected = [](int) {};
     std::function<void(int)> onTabClosed = [](int) {};
 
@@ -112,6 +122,10 @@ private:
 
     int hovered = -1;
     bool hoveredClose = false;
+
+    // True until told otherwise, so a window with one group needs to say
+    // nothing — and so does every test written before groups existed.
+    bool groupActive = true;
 
     // The tab a press armed for closing, and whether the press was a middle
     // click rather than a hit on the ×.

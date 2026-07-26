@@ -27,6 +27,12 @@ struct ChromeTheme
     // active without relying on the fill alone.
     eacp::Graphics::Color activeTabAccent {0.35f, 0.55f, 0.85f};
 
+    // The same accent on a group that is not the one being worked in. Grey
+    // rather than a dimmer blue: two brightnesses of the same hue is the
+    // comparison a person has to make by looking back and forth, and the answer
+    // has to be readable from whichever pane the eye is already on.
+    eacp::Graphics::Color inactiveGroupAccent {0.32f, 0.34f, 0.40f};
+
     // An inactive tab under the pointer, and the rule between two tabs. The
     // rule earns its place only once there is more than one file open: two
     // inactive tabs share a fill with the strip behind them, so without it a

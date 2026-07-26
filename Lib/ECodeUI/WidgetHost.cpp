@@ -36,10 +36,21 @@ void WidgetHost::setRoot(Widget& newRoot)
     rootWidget = &newRoot;
 
     // The old tree's widgets are about to stop existing as far as this host is
-    // concerned, and both of these are raw pointers into it.
+    // concerned, and all three of these are raw pointers into it.
+    forgetTargets();
+}
+
+void WidgetHost::forgetTargets()
+{
+    // Told it has been left while it is still there to be told. Assigning
+    // hoveredWidget directly would skip that, which is right here but wrong at
+    // every other call site, and one setter that is sometimes right is worse
+    // than one that always is.
+    setHovered(nullptr);
+
     capturedWidget = nullptr;
-    focusedWidget = nullptr;
-    hoveredWidget = nullptr;
+
+    setFocus(nullptr);
 }
 
 void WidgetHost::setBounds(const Graphics::Rect& bounds)

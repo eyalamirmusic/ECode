@@ -15,6 +15,15 @@ public:
     void setRoot(Widget& newRoot);
     Widget* root() const { return rootWidget; }
 
+    // Drops the capture, the hover and the focus, leaving the tree alone.
+    //
+    // For a caller about to destroy part of that tree — splitting the window
+    // remakes every editor pane — and it has to be called *before* the widgets
+    // go, not after: setHovered tells the widget it left, and a hover dropped
+    // afterwards would say so to freed memory. setRoot does the same three
+    // clears for the same reason, which is what named this.
+    void forgetTargets();
+
     // Resizes the root, which lays out the tree beneath it.
     void setBounds(const eacp::Graphics::Rect& bounds);
 

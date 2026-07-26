@@ -296,6 +296,41 @@ auto tClosingDirtyIsRefused =
     std::filesystem::remove_all(dir);
 };
 
+// The buffer left behind when the last tab goes is a place to type, so it needs
+// wiring like any other. It had none: closing the last tab called createNew
+// where every other route calls connect(), so the file that came back was
+// permanently uncoloured — and drawn plain it is indistinguishable from a
+// language with no grammar, so nothing about it looks wrong. The same failure
+// the constructor's factory argument exists to prevent, one method along.
+auto tTheRefilledBufferIsConnected =
+    test("Workspace/theBufferLeftByClosingTheLastTabStillGetsAHighlighter") = []
+{
+    auto dir = scratch("refill");
+    const auto a = write(dir / "a.txt", "a\n");
+
+    auto made = 0;
+
+    auto workspace = Workspace {
+        [&made]
+        {
+            return eacp::OwningPointer<Highlighter> {new CountingHighlighter {made}};
+        }};
+
+    workspace.open(a);
+    workspace.closeDiscarding(0);
+
+    check(workspace.count() == 1);
+    check(workspace.active().highlighter.get() != nullptr);
+
+    // And connected, not merely present: an edit has to arrive.
+    workspace.editor().insert("typed");
+
+    check(static_cast<CountingHighlighter&>(*workspace.active().highlighter).edits
+          == 1);
+
+    std::filesystem::remove_all(dir);
+};
+
 auto tNextAndPreviousWrap = test("Workspace/nextAndPreviousWrapAtBothEnds") = []
 {
     auto dir = scratch("cycle");
