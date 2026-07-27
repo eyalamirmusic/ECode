@@ -423,11 +423,19 @@ struct EditorView final : GPU::GPUView
         connectFindBar();
         connectGroups();
 
+        // Settings written before they moved to the platform's application-data
+        // directory, brought across. Ahead of the first read for the obvious
+        // reason, and ahead of the watcher's first poll for a subtler one: a
+        // file appearing is a change, and the reload it would trigger a second
+        // after launch is exactly what stamping the watcher at construction
+        // exists to prevent.
+        migrateSettings(legacySettingsPath(), settingsWatch.path());
+
         // Before the first file is opened, so the window has never been drawn
         // in a theme nobody asked for — and the only thing that fills in the
         // keymap, since the defaults are what a settings file is layered onto
         // rather than something applied separately first.
-        applyConfiguration(loadConfiguration(settingsWatch.path()));
+        reloadSettings();
 
         layout.palette.onClosed = [this]
         {
@@ -924,6 +932,14 @@ struct EditorView final : GPU::GPUView
                       "Preferences: Reload Settings",
                       [this] { reloadSettings(); }});
 
+        // VSCode spells this ⌘K ⌘T, which is a chord *sequence* and there is no
+        // such thing here — see PLAN.md §5.1. So it is left unbound rather than
+        // given some near-miss chord: this is a command reached once in a while
+        // and found by name, which is what the palette is for.
+        commands.add({"preferences.selectTheme",
+                      "Preferences: Color Theme",
+                      [this] { chooseTheme(); }});
+
         // --- the editor font ------------------------------------------------
         //
         // The document's size, not the window's: the tabs, the tree and the
@@ -983,6 +999,59 @@ struct EditorView final : GPU::GPUView
         focusBeforePalette = host.focused();
 
         layout.palette.show();
+        host.setFocus(&layout.palette.keyboardTarget());
+
+        repaint();
+    }
+
+    // The theme picker: the same box as the palette, over the built-in names
+    // rather than over the registry, with every row previewing itself.
+    //
+    // Peek, which is the whole reason this is worth a widget instead of a
+    // command per theme: arrowing re-themes the window live, Enter keeps what is
+    // showing and Escape puts back what was there. A theme cannot be judged from
+    // its name — the only way to know is to look at a file drawn in it.
+    void chooseTheme()
+    {
+        const auto before = themeChoice.name();
+
+        auto items = Vector<PaletteItem> {};
+        auto current = 0;
+
+        for (const auto& name: themeNames())
+        {
+            if (name == before)
+                current = items.size();
+
+            auto item = PaletteItem {};
+
+            item.title = name;
+
+            // The one in force, marked where a command prints its chord. The
+            // highlight opens on it, so this is what still says which row it is
+            // once a query has moved the highlight somewhere else.
+            item.hint = name == before ? "current" : std::string {};
+
+            item.preview = [this, name] { showTheme(name); };
+
+            // Choosing is what previewing already did *plus* writing it down,
+            // and that is the whole difference between the two: arrowing shows
+            // this window a theme, Enter says to keep it.
+            item.run = [this, name] { keepTheme(name); };
+
+            items.push_back(std::move(item));
+        }
+
+        focusBeforePalette = host.focused();
+
+        layout.palette.show(std::move(items),
+                            "Select Color Theme",
+                            [this, before] { showTheme(before); });
+
+        // On the theme in force rather than on the first row, so opening the
+        // picker previews what is already on screen and changes nothing.
+        layout.palette.selectItem(current);
+
         host.setFocus(&layout.palette.keyboardTarget());
 
         repaint();
@@ -1318,15 +1387,37 @@ struct EditorView final : GPU::GPUView
     // session, and a save of the settings file — which may not even have been
     // theirs — has no business undoing it; that is the whole reason the zoom is
     // a separate number from the configured size. See FontSettings.
-    void applyConfiguration(const Configuration& config)
+    //
+    // A theme picked from the palette survives it too, by a rule that is
+    // ThemeChoice's rather than this function's.
+    void applySettings(std::string text)
     {
+        settingsText = std::move(text);
+
+        const auto config = configurationFromJson(settingsText);
+
         font.family = config.settings.font.family;
         font.pointSize = config.settings.font.pointSize;
 
         applyKeymap(config);
 
-        textTheme = config.theme.text;
-        layout.setChromeTheme(config.theme.chrome);
+        themeChoice.fileSaid(config.settings.theme);
+
+        applyTheme();
+    }
+
+    // Resolves the palette in force and hands it to everything that draws in it.
+    //
+    // Through themeFromJson rather than themeByName, because the file's colour
+    // blocks are layered onto whichever palette is chosen — asking for the named
+    // theme alone would drop every override the file makes on the way past, so
+    // picking a theme would silently un-set colours the file still specifies.
+    void applyTheme()
+    {
+        const auto resolved = themeFromJson(settingsText, themeChoice.name());
+
+        textTheme = resolved.text;
+        layout.setChromeTheme(resolved.chrome);
 
         // Not something ensureRenderer will get to on its own: it rebuilds when
         // the font or the display scale has moved, and a colour is neither. Each
@@ -1338,6 +1429,43 @@ struct EditorView final : GPU::GPUView
         layout.setAtlas(editorAtlas.get(), textTheme, builtAtScale);
 
         repaint();
+    }
+
+    // A theme shown to this window and nowhere else, which is what a preview is.
+    // Nothing is written: arrowing past a theme is not a decision about it.
+    void showTheme(std::string name)
+    {
+        if (name == themeChoice.name())
+            return;
+
+        themeChoice.pick(std::move(name));
+        applyTheme();
+    }
+
+    // A theme chosen, which means written down.
+    //
+    // Only the one key, and only through the parsed document — see
+    // settingsWith. Everything else in the file stays where it was, including
+    // the colour blocks that no reflected struct could put back.
+    //
+    // A write that fails leaves the theme showing anyway. It is already on
+    // screen, and taking it away to report a disk that could not be written to
+    // would be the least useful thing to do about it.
+    void keepTheme(std::string name)
+    {
+        showTheme(name);
+
+        if (!writeSetting(settingsWatch.path(), themeKey, std::move(name)))
+        {
+            LOG("could not write the theme to " + settingsWatch.path().str());
+            return;
+        }
+
+        // Our own write, read back and absorbed. Absorbed so the poll a second
+        // later does not take it for somebody else's edit; read back rather
+        // than assumed, so the file stays the answer and this stays a copy of
+        // it — including when what landed is not quite what was asked for.
+        reloadSettings();
     }
 
     // Opens the settings file in ECode itself, writing a starter one first if
@@ -1372,7 +1500,7 @@ struct EditorView final : GPU::GPUView
     void reloadSettings()
     {
         settingsWatch.poll();
-        applyConfiguration(loadConfiguration(settingsWatch.path()));
+        applySettings(readSettings(settingsWatch.path()));
     }
 
     // A step of the editor's font size, from ⌘+ or ⌘-.
@@ -1465,7 +1593,7 @@ struct EditorView final : GPU::GPUView
         // opened one, and reloading it means re-theming the window rather than
         // replacing a buffer.
         if (settingsWatch.poll())
-            applyConfiguration(loadConfiguration(settingsWatch.path()));
+            applySettings(readSettings(settingsWatch.path()));
 
         auto changed = false;
 
@@ -1771,6 +1899,16 @@ struct EditorView final : GPU::GPUView
     // does not read as a change on the first tick and re-theme the window a
     // second after it opened.
     SettingsWatcher settingsWatch {settingsPath()};
+
+    // The settings file exactly as it was last read, kept because the colour
+    // blocks in it have to be layered again every time the theme underneath
+    // them changes. A few hundred bytes against going back to the disk for a
+    // file that may have been edited since. See themeFromJson.
+    std::string settingsText;
+
+    // What the file's "theme" key said when it was last read, and what has been
+    // picked from the palette since.
+    ThemeChoice themeChoice;
 
     Threads::Timer blink {[this] { layout.activeEditor().tickCaretBlink(); }, 2};
     Threads::Timer diskWatch {[this] { checkDisk(); }, 1};

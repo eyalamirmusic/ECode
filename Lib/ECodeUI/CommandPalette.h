@@ -14,7 +14,41 @@
 
 namespace ecode
 {
-// The command palette: a query, the commands that fuzzy-match it, and Enter.
+// One thing the palette can offer.
+//
+// A command was the only kind for a while, and is still the kind the palette is
+// named after — but the box is a query over a list of things with an action
+// each, and a theme picker is that same box over a different list. So an item
+// carries its action rather than an index into somewhere, and the palette needs
+// to know nothing about where the list came from.
+struct PaletteItem
+{
+    std::string title;
+
+    // Right-aligned against the box's edge, the way a menu prints a shortcut. A
+    // command puts its chord here; a list with nothing to say leaves it empty.
+    std::string hint;
+
+    std::function<void()> run = [] {};
+
+    // Asked at paint time rather than when the list was built, so a command
+    // that becomes unavailable while the palette is open greys out where it
+    // stands.
+    std::function<bool()> isEnabled = [] { return true; };
+
+    // Shows what choosing this would do, without choosing it.
+    //
+    // CowTerm's *peek*: arrow through and the thing behind the palette changes
+    // live, Enter keeps it, Escape puts back what was there. It is what makes a
+    // theme worth picking here rather than from a menu, since the only way to
+    // judge one is to look at a file drawn in it.
+    //
+    // Nothing for a command, and deliberately: running one *is* its effect, and
+    // a previewed Save has already happened.
+    std::function<void()> preview = [] {};
+};
+
+// The command palette: a query, the things that fuzzy-match it, and Enter.
 //
 // It is a child of the root widget covering the whole window, rather than a
 // popup. PaintContext has no notion of a layer escaping its parent's clip —
@@ -35,9 +69,26 @@ public:
 
     void themeChanged() override;
 
-    // Opens with an empty query, so the palette always starts by offering
-    // everything rather than resuming a filter the person has forgotten typing.
+    // Opens over the registry, with an empty query — so the palette always
+    // starts by offering everything rather than resuming a filter the person
+    // has forgotten typing.
     void show();
+
+    // Opens over a list of the caller's own.
+    //
+    // `restore` is the half of the peek pattern that cannot live on an item: an
+    // item knows how to show itself, and only the caller knows what was on
+    // screen before the first arrow key moved. It runs when the palette is
+    // dismissed without choosing anything, and never when something was chosen.
+    //
+    // Both of these are per-opening rather than wiring, which is why they are
+    // arguments rather than members: show() takes the default and so a command
+    // palette opened after a picker cannot inherit the picker's undo.
+    void show(
+        eacp::Vector<PaletteItem> itemsToOffer,
+        std::string prompt,
+        std::function<void()> restore = [] {});
+
     void hide();
     bool isOpen() const { return isVisible(); }
 
@@ -59,31 +110,46 @@ public:
     void setQuery(std::string text);
     const std::string& query() const { return input.text(); }
 
-    // One command that survived the filter, with where in its title the query
+    // One item that survived the filter, with where in its title the query
     // matched so the palette can pick those characters out.
     struct Entry
     {
-        // Index into the registry, which is int-indexed like every eacp
-        // Vector. ListView counts its rows in size_t, so the cast happens at
-        // that boundary and nowhere else.
-        int command = 0;
+        // Index into items(), which is int-indexed like every eacp Vector.
+        // ListView counts its rows in size_t, so the cast happens at that
+        // boundary and nowhere else.
+        int item = 0;
 
         FuzzyMatch match;
-
-        // The chord that runs it, already rendered. Cached here because it
-        // depends on the keymap rather than on the query, and recomputing a
-        // string per visible row per frame is work with no reason.
-        std::string shortcut;
     };
 
-    // What the palette is currently offering, best match first. Public because
-    // it is the honest way to test the filter without a device.
+    // Everything this opening is offering, unfiltered and in the order it was
+    // given. A snapshot: the registry is read when the palette opens, not per
+    // keystroke, which is also what makes each item's hint a string resolved
+    // once rather than a chord looked up per visible row per frame.
+    const eacp::Vector<PaletteItem>& items() const { return offered; }
+
+    // What survived the query, best match first. Public because it is the
+    // honest way to test the filter without a device.
     const eacp::Vector<Entry>& entries() const { return matches; }
+
+    const PaletteItem& itemOf(const Entry& entry) const
+    {
+        return offered[entry.item];
+    }
 
     int selectedEntry() const { return list.selectedRow(); }
 
-    // Runs the highlighted command and closes. Nothing happens when there is no
-    // selection or the command is disabled, and in particular the palette stays
+    // Highlights whichever entry stands for `item`, previewing it, and does
+    // nothing when the query has filtered it out.
+    //
+    // For a picker that should open on the value already in force rather than
+    // on its first row — which is where the highlight otherwise starts, and
+    // would mean opening the theme picker immediately previewed some other
+    // theme.
+    void selectItem(int item);
+
+    // Runs the highlighted item and closes. Nothing happens when there is no
+    // selection or the item is disabled, and in particular the palette stays
     // open — closing on a keystroke that did nothing reads as a dropped input.
     void acceptSelection();
 
@@ -109,7 +175,29 @@ public:
     eacp::Graphics::Rect resultsBounds() const;
 
 private:
+    // Every registered command as an item, with the chord that runs it.
+    eacp::Vector<PaletteItem> commandItems() const;
+
+    // Shared by both show()s and by acceptSelection, which is the one closing
+    // that must not run `restore`.
+    void open(eacp::Vector<PaletteItem> itemsToOffer,
+              std::string prompt,
+              std::string emptyText,
+              std::function<void()> restore);
+
+    void close(bool accepted);
+
     void refilter();
+
+    // Runs the highlighted item's preview, unless it is already what was last
+    // previewed.
+    //
+    // Not left to ListView::onSelectionChanged, which reports a moved *row*: a
+    // keystroke that refilters can leave the highlight on row 0 while row 0 has
+    // become a different item, and a preview hung off the row alone would go on
+    // showing whatever was highlighted before the query narrowed.
+    void previewSelection();
+
     void paintRow(PaintContext& context,
                   std::size_t index,
                   const eacp::Graphics::Rect& area,
@@ -129,7 +217,17 @@ private:
     const CommandRegistry& registry;
     const Keymap& keymap;
 
+    eacp::Vector<PaletteItem> offered;
     eacp::Vector<Entry> matches;
+
+    // What the query line reads when nothing has been typed, and what the box
+    // says when nothing matched. Both belong to the opening rather than to the
+    // widget: "No matching commands" is wrong over a list of themes.
+    std::string emptyMessage;
+
+    // What the last dismissal has to undo, and the item its preview last ran.
+    std::function<void()> restoreOnCancel = [] {};
+    int previewed = -1;
 
     TextField input;
     ScrollView results;

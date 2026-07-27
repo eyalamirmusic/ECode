@@ -10,6 +10,7 @@
 #include <Miro/Reflect.h>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -30,11 +31,17 @@ namespace ecode
 //       "keybindings": { "cmd+p": "workbench.showPalette", "cmd+d": "" }
 //   }
 //
-// Nothing writes this file behind the person editing it. ECode reads it, and
-// the only thing it ever writes is a starter template, and only when there is
-// no file there at all — so a comment-free JSON round trip can never eat a
-// block someone hand-wrote. It is also why ⌘+ does not persist: see
-// FontSettings.
+// ECode writes this file only where someone asked it to — the starter template
+// when there is nothing there, and a setting a picker was used to change. Never
+// by re-serialising this struct: reflection writes the fields of Settings, and
+// the two colour blocks are fields of nothing, so a round trip would delete them
+// along with every key a later version of ECode learns. What a write does
+// instead is edit the *parsed document* and print it back, which leaves every
+// key it does not name where it was. See settingsWith.
+//
+// The zoom still does not persist, and that is now a decision about the zoom
+// rather than about the file: it is a thing done to one window, and two windows
+// disagreeing about it is the point. See FontSettings.
 struct Settings
 {
     FontSettings font;
@@ -88,10 +95,76 @@ struct Configuration
     Keymap keymap;
 };
 
-// Where the file lives. `~/.config/ecode.json`, matching CowTerm's
-// `~/.config/cowterm.json` — the two are sibling projects on one machine, and a
-// developer who has found one should not have to hunt for the other.
+// Which theme is in force: what the file said, and what has been picked from
+// inside the app since.
+//
+// Two fields rather than one, because telling them apart *is* the rule. A theme
+// picked from the palette outlives a re-read of the settings file, for the same
+// reason the font zoom does — it is something someone did to this session, and
+// the poll that stats the file once a second has no business undoing it. But the
+// file wins whenever its own answer has moved, because editing "theme" is a
+// deliberate act too, and the later of the two.
+//
+// Here rather than in the application for the reason the keymap table is: it is
+// a rule, and a rule belongs where a test can read it. Nothing in it is written
+// back to the file — see Settings.
+class ThemeChoice
+{
+public:
+    const std::string& name() const { return picked.empty() ? fromFile : picked; }
+
+    // The file has been read again. Takes a picked theme away only when the
+    // file's answer has changed since the last read, which is what separates
+    // someone editing the key from the poll finding the same value there.
+    void fileSaid(std::string name)
+    {
+        if (name == fromFile)
+            return;
+
+        fromFile = std::move(name);
+        picked.clear();
+    }
+
+    void pick(std::string name) { picked = std::move(name); }
+
+private:
+    std::string fromFile;
+    std::string picked;
+};
+
+// The key the theme is stored under, named once because two places spell it —
+// the reflected field of Settings that reads it, and the writer that sets it.
+// A drift between them is silent in the expensive direction: the write lands,
+// the file looks right, and the key it wrote is one nothing reads.
+inline constexpr auto themeKey = std::string_view {"theme"};
+
+// Where the file lives: `ECode/settings.json` under the platform's per-user
+// application data — Application Support on macOS, Roaming AppData on Windows,
+// the XDG data home on Linux.
+//
+// Where the platform puts it rather than `~/.config`, which is where these
+// started and is a convention from one of the three. It also matters more now
+// than it did when nothing was written: an app that writes belongs in the
+// directory the platform backs up and migrates, and on macOS `~/.config` is
+// neither.
 eacp::FilePath settingsPath();
+
+// Where the file used to live. Only migrateSettings has any business with it.
+eacp::FilePath legacySettingsPath();
+
+// Moves a settings file to where settings live now, if and only if there is
+// nothing at the destination and something at the source. Answers whether it
+// moved anything, which is true at most once per machine.
+//
+// Both paths are arguments rather than being looked up, because the looked-up
+// ones cannot be pointed anywhere else for a test: FilePath's directories come
+// from the platform's own API and ignore $HOME. This way the whole of the rule
+// is exercised against a scratch directory and only the two call arguments are
+// not.
+//
+// The copy is written before the original is removed, so a remove that fails
+// costs a stale file rather than the settings.
+bool migrateSettings(const eacp::FilePath& from, const eacp::FilePath& to);
 
 // Parses settings text. The whole of the reading logic, with no filesystem in
 // it, which is what makes the layering testable without a home directory.
@@ -102,9 +175,25 @@ eacp::FilePath settingsPath();
 // so that the file can be edited back.
 Configuration configurationFromJson(std::string_view text);
 
-// The file at `path`, or the defaults if there is nothing readable there.
-Configuration loadConfiguration(const eacp::FilePath& path);
-Configuration loadConfiguration();
+// The palette `name` resolves to, with this file's own colour blocks layered on
+// top of it.
+//
+// The two steps configurationFromJson takes for the name the *file* gives,
+// named so they can be taken against a different base — which is what a theme
+// chosen from inside the app is. Re-theming any other way means calling
+// themeByName and assigning, and that silently drops every override the file
+// makes: someone who had set one colour would watch it disappear the moment
+// they picked a theme, with the file still saying what they had asked for.
+Theme themeFromJson(std::string_view text, std::string_view name);
+
+// The settings file's text, or empty when there is nothing readable there.
+//
+// The application keeps the text rather than only the Configuration it parses
+// to, because the colour blocks have to be layered again whenever the theme
+// changes underneath them — see themeFromJson — and reading the disk a second
+// time would answer with whatever the file says *now* rather than with what is
+// currently in force.
+std::string readSettings(const eacp::FilePath& path);
 
 // Writes a starter file at `path` if — and only if — nothing is there, and
 // answers whether the path now holds a file.
@@ -121,6 +210,28 @@ bool writeSettingsTemplateIfAbsent(const eacp::FilePath& path);
 
 // The template's text, so a test can read it without a filesystem.
 std::string settingsTemplate();
+
+// The settings text with one top-level string key set, and every other key left
+// exactly as it was.
+//
+// Through the parsed document rather than through the reflected struct, which is
+// the whole reason it exists — see Settings. Nothing is lost that this function
+// does not name: not the colour blocks, not the keybindings, not a key some
+// later version writes and this one has never heard of.
+//
+// Nothing when there is text and it is not a JSON object. That is somebody's
+// file caught halfway through an edit, and overwriting it is the one mistake
+// they cannot undo — whereas a file that is *absent* is not that case at all, so
+// blank text starts from the template and the answer is a file that looks like
+// one somebody could have written.
+std::optional<std::string>
+    settingsWith(std::string_view text, std::string_view key, std::string value);
+
+// settingsWith, applied to the file at `path`. False when the file is there and
+// unreadable as an object, or when the write failed.
+bool writeSetting(const eacp::FilePath& path,
+                  std::string_view key,
+                  std::string value);
 
 // One stat of the settings file, so a poll can tell whether it moved.
 //

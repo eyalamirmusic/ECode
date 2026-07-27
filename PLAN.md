@@ -11,8 +11,10 @@ multi-cursor selection, undo, clipboard and mouse, finds and replaces, soft-wrap
 saves atomically, and notices external changes. The chrome is a widget tree drawn
 entirely on the GPU: sidebar file tree, per-pane tab strips, status bar, command
 palette, find bar, context menu, draggable splitters, native menu bar. Configured
-from `~/.config/ecode.json` — colours, font and keybindings — which it opens in
-itself and re-reads on save. 664 tests.
+from `ECode/settings.json` in the platform's application-data directory —
+colours, font and keybindings — which it opens in itself and re-reads on save,
+and whose theme can be picked from the palette, previewed row by row, and written
+back. 683 tests.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -89,7 +91,8 @@ Lib/ECodeUI/       the widget tree inside the single GPUView
   Chrome            Panel, TabBar, StatusBar
   Theme             ChromeTheme — the colours around a document
   Themes            the built-in palettes, by name
-  Settings          the file: what it says, and what it resolves to
+  Settings          the file: what it says, what it resolves to, and — in
+                    ThemeChoice — which theme a re-read of it leaves in force
   FileTreeView, ScrollView, ListView, TextField, FindBar,
   CommandPalette, ContextMenu, Splitter, MenuBuilder, Keymap
 
@@ -145,13 +148,6 @@ Beyond the numbered gaps:
   Windows draws no text at all. Porting notes are in its header. This is the
   first thing between ECode and a second platform, and the only item here that
   cannot be verified on this machine.
-- **`Files::readFile` reads a file into 4.9× its size.** A 100 MB file costs
-  490 MB of RSS, all of it the read: an `std::ostringstream` grown by doubling,
-  then `buffer.str()` on an lvalue copying the whole thing out, and none of it
-  returned to the OS. `Document::fromText` adds 4 MB on top, so this is the whole
-  of what a large file costs in memory. The fix is to stat the size, resize a
-  string once and read into it — not a one-liner, because the current version
-  opens in **text** mode and a binary read changes CRLF handling on Windows.
 - **`command` is the Windows key on Windows.** `Keyboard::isCommandPressed`
   reports `VK_LWIN`/`VK_RWIN`, so every ECode binding — all `cmd+…` — would need
   Win+S rather than Ctrl+S there, while the menu bar prints "Ctrl+S" because that
@@ -281,14 +277,31 @@ spends. And **the deferral is safe because the mutation API is narrow**:
 `replace(start, end, text)` plus `line(i)`, so the storage can change without the
 renderer or the highlighter noticing.
 
-**Config and theming.** The file is `~/.config/ecode.json`: font, theme name,
-two partial colour blocks and a partial keybindings block, read through Miro
-reflection. Why each of those is shaped the way it is lives in `Settings.h`,
-`ColorJson.h`, `Themes.cpp` and `Keymap.h`. What is left:
+**Config and theming.** The file is `ECode/settings.json` under the platform's
+per-user application data — Application Support, Roaming AppData, the XDG data
+home — holding font, theme name, two partial colour blocks and a partial
+keybindings block, read through Miro reflection. A file left at the old
+`~/.config/ecode.json` is moved there once, by `migrateSettings`. Why each of
+those is shaped the way it is lives in `Settings.h`, `ColorJson.h`, `Themes.cpp`
+and `Keymap.h`.
 
-- **A theme cannot be chosen from inside the app.** There is no picker and no
-  cycle command; `"theme"` is edited in the file. The table is there and
-  `themeNames()` already answers, so this is a widget rather than a design.
+**A write is now allowed, and only one shape of it.** `Preferences: Color Theme`
+opens the palette over `themeNames()` with each row previewing itself — the
+window re-themes as the highlight moves, Enter keeps it, Escape puts back what
+was there — and Enter writes `"theme"` to the file so it outlives the window.
+
+The rule that makes writing safe is `settingsWith`: it edits the *parsed
+document* and prints it back, so every key it does not name survives, including
+the two colour blocks and anything a later version writes. Re-serialising
+`Settings` would delete all of them, and nothing would say so — reflection knows
+only its own fields. Nothing else writes: previews do not, and the zoom still
+does not, which is now a decision about the zoom rather than about the file.
+
+`ThemeChoice` is what holds the two apart while a picker is open: a preview
+outlives every re-read of the file, and the file takes it back the moment its
+own `"theme"` moves — which is what a commit makes happen a moment later.
+
+What is left:
 - **The window's title bar is not themed.** It follows the system appearance, so
   a light theme opens under a dark title bar. That is a window-options gap in
   eacp rather than anything here.
@@ -319,8 +332,11 @@ diagnostics, completion and go-to-definition after the chrome settles.
 
 ### 5.2 Performance, in the order the numbers say
 
-- **`Files::readFile`** — §3. The largest number left on a big file, and it is
-  upstream.
+- **`Files::readFile` used to be the largest number left on a big file** — 4.9×
+  the file in RSS, all of it the read. Fixed upstream (eacp `12817bb`, "stop
+  reading a file at four times its own size"): it stats the size, resizes once
+  and reads into that, with the short-read case handled because the stream stays
+  in text mode and Windows turns CRLF into one character. Not re-measured here.
 - **The first ⌃Tab onto a large tab**: 8.6 ms, spread over 2 ms frames. Nothing
   parses a file until it is looked at, so the whole cost lands on the switch.
   Starting it at open, in slices off the same budget, would move it somewhere
@@ -373,9 +389,12 @@ diagnostics, completion and go-to-definition after the chrome settles.
   `SessionView`'s recursive split-pane tree in CowTerm is the shape if that is
   wanted, and a row is a strict subset of it — the weights and the seam-drag
   arithmetic are what a tree would keep.
-- **No file preview on highlight in the palette.** CowTerm's *peek* pattern —
-  navigating the list live-switches the background view, Enter commits, Esc
-  restores — means nothing for a list of commands but maps directly onto this.
+- **No file preview on highlight in the palette.** The *peek* half is built —
+  a `PaletteItem` carries a `preview` alongside its `run`, and `show(items, …)`
+  takes what a dismissal has to undo — and the theme picker is the first thing
+  using it. What a file list would add is the cost: a preview that opens a
+  document is a parse and a row cache rather than an assignment, so it wants the
+  budgeted highlighter the ⌃Tab item in §5.2 wants.
 - **There is no dialog widget**, so two questions are carried by the window
   title and answered by pressing the same chord again: a save that would clobber
   an external write (⌘S) and a close with unsaved edits (⌘W). Both go stale on
@@ -434,7 +453,11 @@ worth trusting, and they keep coming back — several were learned twice.
   `| tail -3` cut off the "(Failed)" line, so thirteen mutations came back green.
   A pipeline's exit code is the last command's.
 - **A mutation that goes red by *crashing* has not been checked.** The tell is a
-  red run with no FAIL line in it. Find out which assertion broke.
+  red run with no FAIL line in it. Find out which assertion broke — and note
+  that the usual cause is the test itself: a count checked and then indexed
+  reads off the end as soon as the count is wrong, which is exactly when it
+  matters. Two mutations of the palette's preview came back this way. Asserting
+  on the whole sequence as one joined string cannot do it, and says more.
 - **Check it fails in the direction that costs you something.** A wrong answer
   usually only hurts one way: falsely *clean* skips the save and loses the work,
   while falsely dirty writes a file twice.
@@ -644,15 +667,20 @@ worth trusting, and they keep coming back — several were learned twice.
   nothing, three times running. Enumerate, then click in a separate step. A
   command that appears to do nothing under automation is not evidence.
 - **The settings file cannot be pointed somewhere else for a run.**
-  `FilePath::homeDirectory()` is `NSHomeDirectory()`, which comes from the user
-  record and ignores `$HOME` — verified, because a run under a scratch home read
-  the real path and reported nothing, which looks identical to the feature not
-  working. So there is no way to exercise the configured app without writing to
-  the actual `~/.config`, and that is the argument for `configurationFromJson`
-  taking *text*: everything the file decides is testable, and only the wiring
-  between the load and the window is not.
+  `FilePath`'s directories come from the platform's own API —
+  `NSHomeDirectory()`, `NSSearchPathForDirectoriesInDomains` — which read the
+  user record and ignore `$HOME`. Verified, because a run under a scratch home
+  read the real path and reported nothing, which looks identical to the feature
+  not working. So there is no way to exercise the configured app without writing
+  to the real Application Support, and that is the argument for every rule here
+  taking *text* or *paths*: `configurationFromJson`, `settingsWith` and
+  `migrateSettings` are each testable against a scratch directory, and only the
+  wiring between them and the window is not.
 - **ECode will not reliably come to the front**, and captures come back showing
-  another application. Chords that are single characters become native menu key
+  another application. What that does not say, and cost something to find out:
+  the keystrokes still go somewhere. A driving script has to *check* that ECode
+  is frontmost before every send and give up otherwise, or it types a command
+  name into whatever application is. Chords that are single characters become native menu key
   equivalents, matched by macOS before the window sees a key at all — verified
   through AX as far as this machine allows, and not pressed by a person.
 

@@ -77,7 +77,12 @@ struct Fixture
 
     std::string titleOf(int entry) const
     {
-        return registry.commands()[palette.entries()[entry].command].title;
+        return palette.itemOf(palette.entries()[entry]).title;
+    }
+
+    std::string hintOf(int entry) const
+    {
+        return palette.itemOf(palette.entries()[entry]).hint;
     }
 
     std::string selectedTitle() const { return titleOf(palette.selectedEntry()); }
@@ -547,10 +552,10 @@ auto tPalettePrintsTheConfiguredChords =
     fixture.type("save");
 
     check(fixture.selectedTitle() == "File: Save");
-    check(fixture.palette.entries()[0].shortcut == "⌘E");
+    check(fixture.hintOf(0) == "⌘E");
 
     fixture.palette.setQuery("show all");
-    check(fixture.palette.entries()[0].shortcut == "⇧⌘P");
+    check(fixture.hintOf(0) == "⇧⌘P");
 };
 
 auto tPaletteDropsAnUnboundChord =
@@ -565,5 +570,185 @@ auto tPaletteDropsAnUnboundChord =
     fixture.type("save");
 
     check(fixture.selectedTitle() == "File: Save");
-    check(fixture.palette.entries()[0].shortcut.empty());
+    check(fixture.hintOf(0).empty());
+};
+
+// --- a list of the caller's own ---------------------------------------------
+//
+// The box over something that is not the registry, which is what the theme
+// picker is. Everything above is the command case; what changes here is that the
+// items carry their own actions, that highlighting one *shows* it, and that a
+// dismissal has to put back what the showing changed.
+
+namespace
+{
+// Three items that record what was previewed and what was run.
+//
+// The previews are recorded as one joined string rather than as a list, and that
+// is not tidiness: a count that fails would be followed by an index off the end
+// of it, and a mutation that kills a test by crashing it has not been checked —
+// §7. One comparison of one string cannot do that, and it says which previews
+// ran and in what order, which is what two of these tests are about.
+struct PickFixture : Fixture
+{
+    eacp::Vector<PaletteItem> items(int count)
+    {
+        auto list = eacp::Vector<PaletteItem> {};
+
+        for (auto index = 0; index < count; ++index)
+        {
+            const auto name = "Theme " + std::to_string(index);
+
+            auto item = PaletteItem {};
+
+            item.title = name;
+            item.hint = index == 0 ? "current" : "";
+            item.run = [this, name] { chosen = name; };
+
+            item.preview = [this, name]
+            { previews += (previews.empty() ? "" : ", ") + name; };
+
+            list.push_back(std::move(item));
+        }
+
+        return list;
+    }
+
+    void pick(int count = 3)
+    {
+        palette.show(items(count), "Select Color Theme", [this] { ++restores; });
+        host.setFocus(&palette.keyboardTarget());
+    }
+
+    std::string previews;
+    std::string chosen;
+    int restores = 0;
+};
+} // namespace
+
+auto tPickOffersItsOwnList =
+    test("Palette/offersTheListItWasGivenRatherThanTheRegistry") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    check(fixture.palette.entries().size() == 3);
+    check(fixture.titleOf(0) == "Theme 0");
+    check(fixture.hintOf(0) == "current");
+
+    // The registry is still there and still has commands in it — this is the
+    // same widget, opened over something else.
+    check(fixture.registry.commands().size() == 4);
+
+    fixture.type("2");
+
+    check(fixture.palette.entries().size() == 1);
+    check(fixture.selectedTitle() == "Theme 2");
+};
+
+// Opening previews nothing: the caller is already showing what the first row
+// stands for. The expensive direction is a picker that changes the window the
+// moment it opens, before anyone has chosen anything.
+auto tPickOpeningPreviewsNothing = test("Palette/openingAPickerPreviewsNothing") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    check(fixture.previews.empty());
+};
+
+// The peek: arrowing shows each row, Enter keeps what is showing, and the
+// restore is *not* run — the thing it would put back is what was just chosen.
+auto tPickEnterCommits = test("Palette/enterKeepsWhatTheHighlightWasShowing") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    fixture.press(Graphics::KeyCode::DownArrow, "");
+    fixture.press(Graphics::KeyCode::DownArrow, "");
+
+    check(fixture.previews == "Theme 1, Theme 2");
+
+    fixture.press(Graphics::KeyCode::Return, "\r");
+
+    check(fixture.chosen == "Theme 2");
+    check(fixture.restores == 0);
+    check(!fixture.palette.isOpen());
+};
+
+// And the other half, which is the half a preview cannot do without: Escape
+// puts back what was there and runs nothing.
+auto tPickEscapeRestores = test("Palette/escapeUndoesWhatThePreviewsChanged") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    fixture.press(Graphics::KeyCode::DownArrow, "");
+    fixture.press(Graphics::KeyCode::Escape, "\x1b");
+
+    check(fixture.chosen.empty());
+    check(fixture.restores == 1);
+    check(!fixture.palette.isOpen());
+};
+
+// A click outside is a dismissal like any other, and has to undo as much.
+auto tPickClickAwayRestores = test("Palette/aClickOutsideAPickerUndoesItToo") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    fixture.press(Graphics::KeyCode::DownArrow, "");
+    fixture.palette.mouseDown(mouseAt(20.f, 700.f));
+
+    check(fixture.restores == 1);
+};
+
+// The case a preview hung off the *row* cannot see. Typing narrows the list
+// while the highlight stays on row 0, so the row does not move and the item
+// under it does — and a picker that only heard about moved rows would go on
+// showing whatever was highlighted before the query.
+auto tPickPreviewsWhatTheQueryLandsOn =
+    test("Palette/aQueryThatChangesTheHighlightedItemPreviewsIt") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    fixture.type("2");
+
+    check(fixture.palette.selectedEntry() == 0);
+    check(fixture.previews == "Theme 2");
+};
+
+// What the theme picker opens with: the value already in force, wherever it
+// sits in the list. Its own preview runs — the caller is what decides that
+// re-showing the current value is a no-op — and nothing before it does.
+auto tPickSelectItem = test("Palette/selectItemOpensOnAValueOtherThanTheFirst") = []
+{
+    auto fixture = PickFixture {};
+    fixture.pick();
+
+    fixture.palette.selectItem(2);
+
+    check(fixture.palette.selectedEntry() == 2);
+    check(fixture.previews == "Theme 2");
+};
+
+// The undo belongs to the opening, not to the widget. A command palette opened
+// after a picker was dismissed must not inherit the picker's restore — Escape
+// out of ⌘⇧P would otherwise put the theme back to whatever the picker had been
+// opened over, minutes later and with nothing to connect the two.
+auto tPickRestoreDoesNotOutliveTheOpening =
+    test("Palette/aCommandPaletteDoesNotInheritAPickersUndo") = []
+{
+    auto fixture = PickFixture {};
+
+    fixture.pick();
+    fixture.press(Graphics::KeyCode::Escape, "\x1b");
+
+    check(fixture.restores == 1);
+
+    fixture.show();
+    fixture.press(Graphics::KeyCode::Escape, "\x1b");
+
+    check(fixture.restores == 1);
 };

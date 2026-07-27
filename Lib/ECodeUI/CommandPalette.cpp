@@ -23,8 +23,13 @@ constexpr auto borderWidth = 1.f;
 // never covers the file it is being used on.
 constexpr auto maxVisibleRows = std::size_t {12};
 
-constexpr auto placeholder = "Type a command";
-constexpr auto emptyMessage = "No matching commands";
+constexpr auto commandPrompt = "Type a command";
+constexpr auto noCommands = "No matching commands";
+
+// What a list that is not the registry says instead. A picker offers a handful
+// of named things rather than everything the editor can do, so "commands" would
+// be a claim about a list it is not looking at.
+constexpr auto noResults = "No matching results";
 } // namespace
 
 CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
@@ -38,7 +43,6 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
 {
     setVisible(false);
 
-    input.setPlaceholder(placeholder);
     input.setHorizontalPadding(padding);
 
     themeChanged();
@@ -66,13 +70,13 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
 
     list.prepareRow = [this](Text::GlyphAtlas& atlas, std::size_t index)
     {
-        const auto& entry = matches[static_cast<int>(index)];
+        const auto& item = itemOf(matches[static_cast<int>(index)]);
 
-        UIText::prepare(atlas, registry.commands()[entry.command].title);
-        UIText::prepare(atlas, entry.shortcut);
+        UIText::prepare(atlas, item.title);
+        UIText::prepare(atlas, item.hint);
     };
 
-    // A click runs the command under the pointer rather than only selecting it,
+    // A click runs the item under the pointer rather than only selecting it,
     // which is what every palette does and what a single click is for.
     list.onRowClicked = [this](std::size_t, int) { acceptSelection(); };
 
@@ -80,6 +84,8 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
     {
         if (row >= 0)
             results.scrollToShow(static_cast<float>(row) * rowHeight, rowHeight);
+
+        previewSelection();
     };
 
     results.setContent(list);
@@ -99,8 +105,60 @@ void CommandPalette::themeChanged()
                       theme.paletteSelected});
 }
 
+Vector<PaletteItem> CommandPalette::commandItems() const
+{
+    auto items = Vector<PaletteItem> {};
+
+    for (const auto& command: registry.commands())
+    {
+        auto item = PaletteItem {};
+
+        item.title = command.title;
+
+        // Resolved once per opening rather than once per keystroke, which is
+        // what it was when the entry carried it: the keymap cannot move while
+        // the palette is up.
+        item.hint = keymap.chordFor(command.id).display();
+
+        item.run = command.run;
+        item.isEnabled = command.isEnabled;
+
+        items.push_back(std::move(item));
+    }
+
+    return items;
+}
+
 void CommandPalette::show()
 {
+    open(commandItems(), commandPrompt, noCommands, [] {});
+}
+
+void CommandPalette::show(Vector<PaletteItem> itemsToOffer,
+                          std::string prompt,
+                          std::function<void()> restore)
+{
+    open(std::move(itemsToOffer), std::move(prompt), noResults, std::move(restore));
+}
+
+void CommandPalette::open(Vector<PaletteItem> itemsToOffer,
+                          std::string prompt,
+                          std::string emptyText,
+                          std::function<void()> restore)
+{
+    offered = std::move(itemsToOffer);
+    emptyMessage = std::move(emptyText);
+    restoreOnCancel = std::move(restore);
+
+    // Whatever the caller has on screen is taken to be what the first row would
+    // show, so opening previews nothing. A picker that opens on some other value
+    // says so with selectItem, and the row it moves to is then the first thing
+    // previewed — which is what stops the theme picker flicking through a theme
+    // nobody asked for on its way to the one already in force.
+    previewed = offered.size() > 0 ? 0 : -1;
+
+    input.setPlaceholder(std::move(prompt));
+
     setVisible(true);
     setQuery({});
     repaint();
@@ -108,10 +166,23 @@ void CommandPalette::show()
 
 void CommandPalette::hide()
 {
+    close(false);
+}
+
+void CommandPalette::close(bool accepted)
+{
     if (!isVisible())
         return;
 
     setVisible(false);
+
+    // Before onClosed, which is about where the keyboard goes rather than about
+    // what is on screen. A dismissal has to put back whatever the previews
+    // changed; an acceptance is the one closing that must not, since the thing
+    // being restored is precisely what was just chosen.
+    if (!accepted)
+        restoreOnCancel();
+
     onClosed();
     repaint();
 }
@@ -132,27 +203,24 @@ void CommandPalette::refilter()
 {
     matches.clear();
 
-    for (auto index = 0; index < registry.commands().size(); ++index)
+    for (auto index = 0; index < offered.size(); ++index)
     {
-        const auto& command = registry.commands()[index];
-
-        auto match = fuzzyMatch(input.text(), command.title);
+        auto match = fuzzyMatch(input.text(), offered[index].title);
 
         if (!match)
             continue;
 
         auto entry = Entry {};
-        entry.command = index;
+        entry.item = index;
         entry.match = std::move(*match);
-        entry.shortcut = keymap.chordFor(command.id).display();
 
         matches.push_back(std::move(entry));
     }
 
-    // Stable, so commands that score the same stay in registration order —
-    // which is the order they were meant to be offered in, and the order an
-    // empty query shows, so the list does not reshuffle under a first keystroke
-    // that separates nothing.
+    // Stable, so items that score the same stay in the order they were given —
+    // which for commands is registration order, the order they were meant to be
+    // offered in and the order an empty query shows, so the list does not
+    // reshuffle under a first keystroke that separates nothing.
     std::stable_sort(matches.begin(),
                      matches.end(),
                      [](const Entry& a, const Entry& b)
@@ -164,14 +232,45 @@ void CommandPalette::refilter()
     // wanted is at the top, and Enter should take it without an arrow key.
     list.setSelectedRow(matches.empty() ? -1 : 0);
 
+    // And say what that row is, which setSelectedRow cannot: the highlight sits
+    // on row 0 through most of a query being typed, so it reports no change
+    // while the item under it changes with every keystroke.
+    previewSelection();
+
     results.setScrollPosition(0.f);
+}
+
+void CommandPalette::previewSelection()
+{
+    const auto selected = list.selectedRow();
+
+    const auto item =
+        selected >= 0 && selected < matches.size() ? matches[selected].item : -1;
+
+    if (item == previewed)
+        return;
+
+    previewed = item;
+
+    if (item >= 0)
+        offered[item].preview();
+}
+
+void CommandPalette::selectItem(int item)
+{
+    for (auto index = 0; index < matches.size(); ++index)
+        if (matches[index].item == item)
+        {
+            list.setSelectedRow(index);
+            return;
+        }
 }
 
 float CommandPalette::resultsHeight() const
 {
-    // An empty result set still gets a row, which is what "No matching
-    // commands" is drawn in. A box that collapsed to the query field would look
-    // like the palette had closed.
+    // An empty result set still gets a row, which is what the "no matches"
+    // line is drawn in. A box that collapsed to the query field would look like
+    // the palette had closed.
     const auto rows = std::clamp(
         static_cast<std::size_t>(matches.size()), std::size_t {1}, maxVisibleRows);
 
@@ -272,7 +371,7 @@ void CommandPalette::drawTitle(PaintContext& context,
                                float baseline,
                                const Graphics::Color& base) const
 {
-    const auto title = std::string_view {registry.commands()[entry.command].title};
+    const auto title = std::string_view {itemOf(entry).title};
     const auto& positions = entry.match.positions;
 
     auto pen = x;
@@ -313,8 +412,8 @@ void CommandPalette::paintRow(PaintContext& context,
                               bool selected)
 {
     const auto& entry = matches[static_cast<int>(index)];
-    const auto& command = registry.commands()[entry.command];
-    const auto enabled = command.isEnabled();
+    const auto& item = itemOf(entry);
+    const auto enabled = item.isEnabled();
 
     if (selected)
         context.sprites().fillRect(area, theme.paletteSelected);
@@ -330,13 +429,10 @@ void CommandPalette::paintRow(PaintContext& context,
 
     // Right-aligned against the box edge, the way a menu prints its shortcut,
     // so the column lines up whatever the titles are.
-    const auto width = UIText::width(context.atlas(), entry.shortcut);
+    const auto width = UIText::width(context.atlas(), item.hint);
 
-    UIText::draw(context,
-                 entry.shortcut,
-                 inner.right() - width,
-                 baseline,
-                 theme.paletteHintText);
+    UIText::draw(
+        context, item.hint, inner.right() - width, baseline, theme.paletteHintText);
 }
 
 void CommandPalette::acceptSelection()
@@ -346,19 +442,19 @@ void CommandPalette::acceptSelection()
     if (selected < 0 || selected >= matches.size())
         return;
 
-    const auto& command = registry.commands()[matches[selected].command];
+    const auto& item = itemOf(matches[selected]);
 
-    if (!command.isEnabled())
+    if (!item.isEnabled())
         return;
 
-    // The palette closes *before* the command runs, so a command that opens the
+    // The palette closes *before* the item runs, so an item that opens the
     // palette again — or moves focus — is not undone by the close that would
-    // otherwise follow it. The action is copied out first because hide() fires
-    // onClosed, and nothing here should depend on what that leaves the registry
-    // holding.
-    const auto action = command.run;
+    // otherwise follow it. The action is copied out first because closing fires
+    // onClosed, and nothing here should depend on what that leaves the item
+    // list holding.
+    const auto action = item.run;
 
-    hide();
+    close(true);
     action();
 }
 

@@ -347,6 +347,99 @@ auto tOverridesWorkWithoutAThemeName =
     check(same(config.theme.text.background, darkText.background));
 };
 
+// The same layering against a base the file did not choose, which is what a
+// theme picked from inside the app is.
+//
+// The failure this exists to catch is the obvious way to write the picker:
+// themeByName and an assignment. That draws the right palette and quietly
+// discards every colour the file overrode — so someone who had set one entry
+// would watch it vanish on picking a theme, with the file still saying what they
+// asked for and nothing anywhere reporting it.
+auto tThemeFromJsonKeepsTheOverrides =
+    test("Settings/pickingAThemeKeepsTheFilesOwnColours") = []
+{
+    constexpr auto text = R"({
+        "theme": "dark",
+        "chromeColors": { "statusBar": "#7c3aed" },
+        "textColors": { "keyword": "#ff5555" }
+    })";
+
+    const auto picked = themeFromJson(text, "light");
+    const auto light = themeByName("light");
+
+    // The overrides survive the base changing under them.
+    check(same(picked.chrome.statusBar, fromHexColor("#7c3aed", Color {})));
+    check(same(picked.text.keyword, fromHexColor("#ff5555", Color {})));
+
+    // And everything else is the palette that was asked for rather than the one
+    // the file names — said against both, for the reason the layering test says
+    // it twice: `light` catches a base that was mangled, and the file's own
+    // "dark" catches the name being ignored.
+    check(same(picked.text.background, light.text.background));
+    check(!same(picked.text.background, darkText.background));
+};
+
+// And the name it is given is held to the same rule the file's is: an unknown
+// one falls back rather than failing, since a picker is not the only caller and
+// nothing here is in a position to report anything.
+auto tThemeFromJsonFallsBack =
+    test("Settings/anUnknownPickedThemeFallsBackWithTheOverridesIntact") = []
+{
+    const auto picked =
+        themeFromJson(R"({"textColors": {"caret": "#00ff00"}})", "solarized");
+
+    check(same(picked.text.caret, Color {0.f, 1.f, 0.f}));
+    check(same(picked.text.background, darkText.background));
+};
+
+// --- which theme is in force ------------------------------------------------
+
+// The rule the picker rests on, and the one thing about it that is not obvious:
+// a poll re-reading the same file must not undo a choice, while an edit to the
+// file must.
+//
+// Both directions matter and they fail differently. Forgetting the first makes
+// the picker look broken — pick a theme, wait a second, watch it revert, with
+// the settings file the only clue and nobody looking at it. Forgetting the
+// second makes the *file* look broken, which is worse: editing "theme" would do
+// nothing for the rest of the session, and the obvious next move is to save it
+// again.
+auto tThemeChoiceKeepsAPickAcrossAReRead =
+    test("Settings/aPickedThemeSurvivesTheFileBeingReadAgain") = []
+{
+    auto choice = ThemeChoice {};
+
+    choice.fileSaid("dark");
+    check(choice.name() == "dark");
+
+    choice.pick("light");
+    check(choice.name() == "light");
+
+    // The once-a-second poll, finding what it found last time.
+    choice.fileSaid("dark");
+    check(choice.name() == "light");
+};
+
+auto tThemeChoiceYieldsToAnEditedFile =
+    test("Settings/anEditedThemeKeyTakesThePickBack") = []
+{
+    auto choice = ThemeChoice {};
+
+    choice.fileSaid("dark");
+    choice.pick("light");
+
+    // Somebody has edited the file. It is the later of the two deliberate acts,
+    // so it wins — and it wins even though what it now names is not what the
+    // pick was made against.
+    choice.fileSaid("solarized");
+    check(choice.name() == "solarized");
+
+    // And having yielded once, the choice is gone rather than lying in wait to
+    // come back on the next poll.
+    choice.fileSaid("solarized");
+    check(choice.name() == "solarized");
+};
+
 // A key nobody has heard of is ignored, so a file can be grown and shared
 // between versions.
 auto tUnknownKeysAreIgnored = test("Settings/unknownKeysAreIgnored") = []
@@ -533,21 +626,174 @@ auto tTemplateIsWrittenOnce = test("Settings/theTemplateNeverOverwritesAFile") =
     const auto path = eacp::FilePath {dir / "ecode.json"};
 
     check(writeSettingsTemplateIfAbsent(path));
-    check(loadConfiguration(path).settings.theme == defaultThemeName);
+    check(configurationFromJson(readSettings(path)).settings.theme
+          == defaultThemeName);
 
     writeTo(dir / "ecode.json", R"({"theme": "light"})");
 
     // The command behind this is one somebody can press twice.
     check(writeSettingsTemplateIfAbsent(path));
-    check(loadConfiguration(path).settings.theme == "light");
+    check(configurationFromJson(readSettings(path)).settings.theme == "light");
 };
 
 auto tMissingFileIsDefaults = test("Settings/aPathWithNothingAtItIsTheDefaults") = []
 {
     const auto dir = scratch("missing");
-    const auto config = loadConfiguration(eacp::FilePath {dir / "nothing.json"});
+    const auto config =
+        configurationFromJson(readSettings(eacp::FilePath {dir / "nothing.json"}));
 
     check(config.settings.theme == defaultThemeName);
+};
+
+// --- writing one setting back -----------------------------------------------
+//
+// What the theme picker does when something is chosen rather than previewed. The
+// whole risk here is the *rest* of the file, so that is what these are about.
+
+// The obvious implementation — fill in a Settings, print it — passes any test
+// that only reads the key back. What it destroys is everything reflection does
+// not know about, which is both colour blocks, and they are not fields of
+// anything so nothing would say so.
+//
+// Read back through configurationFromJson rather than by looking for substrings,
+// because that is the only oracle that answers the question actually being asked:
+// does the file still *mean* what it meant, with one thing changed.
+auto tWriteKeepsTheRestOfTheFile =
+    test("Settings/settingTheThemeKeepsEverythingElseInTheFile") = []
+{
+    constexpr auto before = R"({
+        "theme": "dark",
+        "font": { "family": "Menlo", "pointSize": 15 },
+        "chromeColors": { "statusBar": "#7c3aed" },
+        "textColors": { "keyword": "#ff5555" },
+        "keybindings": { "cmd+e": "file.save" },
+        "somethingALaterVersionWrote": 7
+    })";
+
+    const auto after = settingsWith(before, themeKey, "light");
+
+    check(after.has_value());
+
+    const auto config = configurationFromJson(*after);
+
+    // The one thing that was asked for — and asked for through themeKey, so a
+    // key that did not match the reflected field would come back "dark" here.
+    check(config.settings.theme == "light");
+
+    // And everything that was not. The colour blocks are the point: they are
+    // layered onto the *new* theme, so this also says the write left them where
+    // the reader can still find them.
+    check(same(config.theme.chrome.statusBar, fromHexColor("#7c3aed", Color {})));
+    check(same(config.theme.text.keyword, fromHexColor("#ff5555", Color {})));
+    check(same(config.theme.text.background, themeByName("light").text.background));
+
+    check(config.settings.font.family == "Menlo");
+    check(config.settings.font.size() == 15.f);
+    check(config.keymap.chordFor("file.save").display() == "⌘E");
+
+    // Including the key this version has never heard of, which is the one no
+    // struct could have carried across.
+    check(after->find("somethingALaterVersionWrote") != std::string::npos);
+};
+
+// The expensive direction, and the reason a write can refuse. A file someone is
+// halfway through editing does not parse, and replacing it with a tidy document
+// holding one key is the single mistake they cannot undo.
+auto tWriteRefusesABrokenFile =
+    test("Settings/aFileThatDoesNotParseIsNotWrittenOver") = []
+{
+    check(!settingsWith(R"({"theme": "dark",)", themeKey, "light").has_value());
+    check(!settingsWith("not json at all", themeKey, "light").has_value());
+
+    // An array parses and is not a file this can edit either.
+    check(!settingsWith("[1, 2, 3]", themeKey, "light").has_value());
+};
+
+// A file that is not there is not a broken file, and picking a theme before
+// ever opening the settings has to work. What it leaves behind is a file
+// somebody could have written, blocks and all, rather than a lone key.
+auto tWriteStartsFromTheTemplate =
+    test("Settings/settingAThemeWithNoFileYetStartsFromTheTemplate") = []
+{
+    const auto written = settingsWith("", themeKey, "light");
+
+    check(written.has_value());
+    check(configurationFromJson(*written).settings.theme == "light");
+
+    check(written->find("chromeColors") != std::string::npos);
+    check(written->find("textColors") != std::string::npos);
+};
+
+auto tWriteSettingRoundTrips =
+    test("Settings/aWrittenThemeIsThereOnTheNextRead") = []
+{
+    const auto dir = scratch("write");
+    const auto path = eacp::FilePath {dir / "settings.json"};
+
+    // No file at all, which is what a fresh machine has.
+    check(writeSetting(path, themeKey, "light"));
+    check(configurationFromJson(readSettings(path)).settings.theme == "light");
+
+    // And again, over the file the first one made.
+    check(writeSetting(path, themeKey, "dark"));
+    check(configurationFromJson(readSettings(path)).settings.theme
+          == defaultThemeName);
+};
+
+// --- moving to where settings live now --------------------------------------
+
+auto tMigrationMovesTheFile =
+    test("Settings/settingsAreMovedFromTheOldLocation") = []
+{
+    const auto dir = scratch("migrate");
+    const auto from = eacp::FilePath {dir / "ecode.json"};
+    const auto to = eacp::FilePath {dir / "ECode" / "settings.json"};
+
+    writeTo(dir / "ecode.json", R"({"theme": "light"})");
+
+    check(migrateSettings(from, to));
+    check(configurationFromJson(readSettings(to)).settings.theme == "light");
+
+    // The old one is gone rather than left as a second file that is read by
+    // nothing and edited by someone.
+    check(!std::filesystem::exists(dir / "ecode.json"));
+
+    // And it happens once: with nothing left to move, there is nothing to do.
+    check(!migrateSettings(from, to));
+};
+
+// The direction that would cost something: a machine that has already been set
+// up here must not have its settings replaced by whatever an old install left
+// behind. Both files exist, and the newer location wins without being touched.
+auto tMigrationLeavesAnExistingFile =
+    test("Settings/anExistingFileIsNotMigratedOver") = []
+{
+    const auto dir = scratch("migrate-existing");
+    const auto from = eacp::FilePath {dir / "ecode.json"};
+    const auto to = eacp::FilePath {dir / "ECode" / "settings.json"};
+
+    writeTo(dir / "ecode.json", R"({"theme": "light"})");
+
+    std::filesystem::create_directories(dir / "ECode");
+    writeTo(dir / "ECode" / "settings.json", R"({"theme": "dark"})");
+
+    check(!migrateSettings(from, to));
+    check(configurationFromJson(readSettings(to)).settings.theme
+          == defaultThemeName);
+
+    // And the old file is still there, untouched: nothing was moved, so nothing
+    // was removed.
+    check(std::filesystem::exists(dir / "ecode.json"));
+};
+
+auto tMigrationWithNothingToMove =
+    test("Settings/migratingWithNoOldFileDoesNothing") = []
+{
+    const auto dir = scratch("migrate-none");
+    const auto to = eacp::FilePath {dir / "ECode" / "settings.json"};
+
+    check(!migrateSettings(eacp::FilePath {dir / "ecode.json"}, to));
+    check(!std::filesystem::exists(dir / "ECode" / "settings.json"));
 };
 
 // --- the watcher ----------------------------------------------------------

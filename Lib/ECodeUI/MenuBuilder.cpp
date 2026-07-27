@@ -146,7 +146,8 @@ Vector<MenuSpec> defaultMenus(bool withExit)
                                      "file.close",
                                      separator,
                                      "preferences.open",
-                                     "preferences.reload"};
+                                     "preferences.reload",
+                                     "preferences.selectTheme"};
 
     // Below a separator and last, which is where Windows puts it.
     if (withExit)
