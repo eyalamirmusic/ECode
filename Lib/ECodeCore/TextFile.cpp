@@ -130,10 +130,25 @@ SaveResult TextFile::saveAs(const eacp::FilePath& newPath)
     return result;
 }
 
+void TextFile::setText(std::string text)
+{
+    ed.setDocument(Document::fromText(std::move(text)));
+
+    // Not markSaved(): nothing has been written, so the disk stamp must stay as
+    // it was — a file that changed underneath us is still changed, and a stamp
+    // refreshed here would swallow that. Only the dirty flag moves, and only
+    // when there is a path for the buffer to differ *from*: an untitled buffer
+    // handed a string to display has nothing on disk to disagree with, and a
+    // host embedding a viewer should not get an unsaved-work marker for the
+    // text it just supplied.
+    replaced = !filePath.empty();
+}
+
 void TextFile::markSaved()
 {
     savedState = ed.stateId();
     onDisk = stateOf(filePath);
+    replaced = false;
 
     // Whatever the conflict was about, this is now the version on disk — so the
     // question the title was asking has been answered and must stop being

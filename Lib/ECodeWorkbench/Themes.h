@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Theme.h"
+#include <ECodeWidgets/Theme.h>
 
 #include <ECodeRender/TextTheme.h>
 

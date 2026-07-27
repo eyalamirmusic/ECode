@@ -1,6 +1,6 @@
-#include <ECodeUI/CommandPalette.h>
-#include <ECodeUI/Settings.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/CommandPalette.h>
+#include <ECodeWorkbench/Settings.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

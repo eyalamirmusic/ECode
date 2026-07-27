@@ -1,6 +1,7 @@
-#include <ECodeUI/Chrome.h>
-#include <ECodeUI/EditorWidget.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/Chrome.h>
+#include <ECodeCore/Workspace.h>
+#include <ECodeEditor/EditorWidget.h>
+#include <ECodeWidgets/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <NanoTest/NanoTest.h>

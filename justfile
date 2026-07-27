@@ -21,8 +21,20 @@ build: configure
     cmake --build {{build_dir}} --target ECode
 
 [macos]
-run: build
-    open {{build_dir}}/App/ECode.app
+run *path: build
+    open {{build_dir}}/Apps/ECode/ECode.app --args {{path}}
+
+# The test app: one file in a window, built out of ECode::Editor not the workbench.
+viewer: configure
+    cmake --build {{build_dir}} --target CodeViewer
+
+[macos]
+run-viewer *path: viewer
+    open {{build_dir}}/Apps/CodeViewer/CodeViewer.app --args {{path}}
+
+test: configure
+    cmake --build {{build_dir}}
+    cd {{build_dir}} && ctest --output-on-failure
 
 clean:
     rm -rf {{build_dir}}

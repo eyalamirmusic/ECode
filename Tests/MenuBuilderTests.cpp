@@ -1,6 +1,6 @@
-#include <ECodeUI/MenuBuilder.h>
-#include <ECodeUI/TextField.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/MenuBuilder.h>
+#include <ECodeWidgets/TextField.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

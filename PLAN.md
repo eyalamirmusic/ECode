@@ -15,7 +15,11 @@ splitters, native menu bar. Configured from `ECode/settings.json` in the
 platform's application-data directory — colours, font and keybindings, the last
 of them including VSCode's two-key sequences — which it opens in itself and
 re-reads on save, and whose theme can be picked from the palette, previewed row
-by row, and written back. 714 tests.
+by row, and written back. 728 tests.
+
+It is also a **library**. `ECode::Editor` is a single-file code view — read-only
+or editable, with no tabs, sidebar, palette or command registry — that another
+project embeds by constructing one `CodeEditorView`. See §2.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -65,7 +69,8 @@ Lib/ECodeCore/     no GPU, no platform, fully unit-testable
   Cursor            CursorSet — sorted, non-overlapping, never empty
   LineMap           logical lines ↔ visual rows (soft wrap)
   Search            find/replace model
-  TextFile          path, dirty flag, disk stamp, save/reload
+  TextFile          path, dirty flag, disk stamp, save/reload/setText
+  OpenFile          one file, its highlighter and its scroll offset
   Workspace         the files open in one pane, and which is active
   EditorGroups      how many panes there are, and which one a path belongs to
   FileTree          directory model
@@ -86,20 +91,82 @@ Lib/ECodeRender/   the glyph pipeline
   TextTheme         a document's colours: gutter, caret, one per TokenKind
   ColorJson         Color ⇄ "#rrggbb", and the hook that teaches Miro it
 
-Lib/ECodeUI/       the widget tree inside the single GPUView
+Lib/ECodeWidgets/  the widget toolkit inside a single GPUView
   Widget/WidgetHost layout, hit-testing, capture, focus, hover
-  EditorGroupView   one pane: tab strip + editor + its own TextRenderer
-  EditorWidget      the text view and its input handling
-  Chrome            Panel, TabBar, StatusBar
+  Chord             one keystroke, and a sequence of them
   Theme             ChromeTheme — the colours around a document
+  ScrollView, ListView, TextField, Splitter, UIText
+
+Lib/ECodeEditor/   the embeddable editor — what another project links
+  EditorWidget      the text view and its input handling
+  CodeEditorView    a GPUView owning the atlas, sprites and glyph batch
+
+Lib/ECodeWorkbench/ what makes it an IDE rather than a text view
+  EditorGroupView   one pane: tab strip + editor + its own TextRenderer
+  Chrome            Panel, TabBar, StatusBar
   Themes            the built-in palettes, by name
+  Keymap            the binding table, ChordMatcher, defaultKeymap
   Settings          the file: what it says, what it resolves to, and — in
                     ThemeChoice — which theme a re-read of it leaves in force
-  FileTreeView, ScrollView, ListView, TextField, FindBar,
-  CommandPalette, ContextMenu, Splitter, MenuBuilder, Keymap
+  FileTreeView, FindBar, CommandPalette, ContextMenu, MenuBuilder
 
-App/Main.cpp       the shell: GPU resources, the window layout, the commands
+Apps/ECode/        the shell: the window layout, the commands, the timers
+Apps/CodeViewer/   one file in a window, built out of ECode::Editor
 ```
+
+**Why the widget layer is three targets and not one.** ECode is consumed as a
+library, and the thing a consumer wants is a single file on screen — read-only or
+not — without tabs, a palette or a command registry. That only means anything if
+the dependency is actually smaller, so the split is verified by the link rather
+than asserted.
+
+**`ECodeEditorTests` and `ECodeEditorRenderTests` are where it is enforced.**
+Both link `ECodeEditor` alone — no workbench, no grammar — so if showing a file
+ever starts needing a command registry, a chrome theme or tree-sitter, they stop
+building. That is the only cheap way to notice: an accidental dependency costs an
+embedder link size and build time, and neither is visible in a picture of the
+running app.
+
+`Apps/CodeViewer` is the same claim at application scale, and the app to run when
+changing anything in ECodeEditor or below. It links `ECode::Editor` and
+`ECode::Syntax`, drives the whole embedding API by hand from a native menu bar —
+`setReadOnly`, `setWordWrap`, `setFont`, `setTheme`, `setHighlighter`, `loadFile`,
+`save` — and comes out at 6.9 MB with zero workbench symbols against the app's
+9.2 MB. It cannot make the *no-grammar* claim, which is why that one lives in the
+test targets; what it catches instead is everything a headless test cannot, since
+a view that draws correctly into `renderToImage` can still come up blank on a
+Retina display or ignore a menu command.
+
+Its menus are eacp's own `Graphics::MenuBar` rather than ECode's `MenuBuilder`,
+which belongs to the workbench. Reaching for `MenuBuilder` there would be the
+first step of the split coming undone.
+
+`ChromeTheme` lives in ECodeWidgets rather than with the workbench, which is the
+one place the layering reads oddly. `ScrollView`, `TextField` and `Splitter` each
+hold a reference to one, so a palette above them would point the arrow backwards;
+splitting the struct in two would fragment the settings-file schema that
+`Settings` and `Themes` read as a unit. It costs the embeddable target nothing —
+`EditorWidget` includes no theme header at all.
+
+**Consumption.** Source, via CPM, which is how ECode consumes eacp:
+
+```cmake
+CPMAddPackage("gh:eyalamirmusic/ECode@0.1.0")
+target_link_libraries(MyApp PRIVATE ECode::Editor)
+```
+
+`ECODE_BUILD_APPS` and `ECODE_ENABLE_TESTS` both default to
+`PROJECT_IS_TOP_LEVEL`, so a consumer builds libraries and nothing else.
+`ECODE_BUILD_SYNTAX=OFF` skips the tree-sitter fetch entirely, which is most of a
+cold configure — 105 s down to 7 s — and is worth having because an embedded view
+draws plain text without a grammar. Both applications need it, so it is checked
+against `ECODE_BUILD_APPS` rather than failing at link time.
+
+There is deliberately no `install(EXPORT)`, and the reason is upstream: eacp has
+no install rules or export sets at all, so an ECode target naming `eacp-core` in
+its link interface cannot be exported — CMake refuses at configure time. Headers
+are installed; a real installed-tree `find_package(ECode)` waits on eacp gaining
+export sets, which is §3 work.
 
 **Ownership rules that are load-bearing:**
 
@@ -129,6 +196,13 @@ App/Main.cpp       the shell: GPU resources, the window layout, the commands
 - **Anything that touches the cursor goes through `Editor`, not through
   `Editor::cursor()`.** That rule is why multi-cursor cost two lines outside the
   editor: `cursor()` had seven callers and every one genuinely wanted the primary.
+- **Read-only is a property of a view, not of a document.** The flag is on
+  `EditorWidget`, so two panes over one file could differ and a host that wants to
+  change the text programmatically still can through `editor()`. It gates input
+  and `replaceCurrent`/`replaceAllMatches` and nothing else: movement, selection,
+  copy, scroll and search all go on working, because a viewer nobody can select
+  out of is not a viewer. It refuses by *not consuming* the key, so a Return the
+  editor will not act on still reaches whatever the host bound it to.
 
 ---
 
@@ -146,6 +220,15 @@ Framework gaps, ordered by how hard they block. Each ships with unit tests under
 
 Beyond the numbered gaps:
 
+- **No install rules or export sets.** eacp is consumed only as source, and
+  nothing in it calls `install()`. That is fine for eacp and for ECode's own
+  build, but it caps how far ECode can be packaged: a target that names
+  `eacp-core` in its link interface cannot go into an `install(EXPORT)` set, so
+  `find_package(ECode)` against an installed tree is unreachable however ECode's
+  own CMake is written — CMake refuses at configure time. ECode installs its
+  headers and stops there; source consumption via CPM is the supported route. The
+  fix is upstream and ordinary: `install(TARGETS … EXPORT eacp-targets)` per
+  module, `install(EXPORT)`, and a generated `eacpConfig.cmake`.
 - **`GlyphRasterizer-Windows.cpp` is a stub** returning `isValid() == false`, so
   Windows draws no text at all. Porting notes are in its header. This is the
   first thing between ECode and a second platform, and the only item here that

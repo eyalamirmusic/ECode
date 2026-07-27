@@ -1,6 +1,6 @@
-#include <ECodeUI/ListView.h>
-#include <ECodeUI/ScrollView.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWidgets/ListView.h>
+#include <ECodeWidgets/ScrollView.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

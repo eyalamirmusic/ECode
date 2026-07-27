@@ -1,6 +1,6 @@
-#include <ECodeUI/Chrome.h>
-#include <ECodeUI/Splitter.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/Chrome.h>
+#include <ECodeWidgets/Splitter.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

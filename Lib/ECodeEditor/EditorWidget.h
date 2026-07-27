@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Widget.h"
+#include <ECodeWidgets/Widget.h>
 
-#include <ECodeCore/Workspace.h>
+#include <ECodeCore/OpenFile.h>
 #include <ECodeRender/TextRenderer.h>
 
 #include <functional>
@@ -88,6 +88,28 @@ public:
     }
     const Document& document() const { return open->file.document(); }
 
+    // --- read-only -------------------------------------------------------
+
+    // A view that cannot be typed into, which is what a host embedding ECode to
+    // *show* a file asks for.
+    //
+    // Everything that only reads goes on working — moving the caret, selecting,
+    // copying, scrolling, searching — because a viewer nobody can select out of
+    // is not a viewer, and a caret that will not move is indistinguishable from
+    // a window that has stopped responding.
+    //
+    // Enforced on the view rather than on Editor, and that is the whole reason
+    // it is a flag here: read-only is a property of *this view of* the document,
+    // not of the document. A host showing one file in two panes may want one of
+    // them editable, and one that wants to change the text itself still can
+    // through editor() — which is what a "revert" or a "format" button is.
+    //
+    // Refuses by not consuming the key rather than by swallowing it, so a
+    // Return the editor will not act on still reaches whatever the host bound
+    // it to.
+    void setReadOnly(bool shouldBeReadOnly) { readOnly = shouldBeReadOnly; }
+    bool isReadOnly() const { return readOnly; }
+
     // --- soft wrap -------------------------------------------------------
 
     // Wrapping is off by default, which is what a code editor wants: code is
@@ -122,10 +144,12 @@ public:
 
     // Replaces the current hit and moves to the one after it. Does nothing when
     // there is no current hit, which is what makes holding the button stop at
-    // the end rather than looping.
+    // the end rather than looping — or when the view is read-only, since a
+    // replace is an edit however it was reached.
     void replaceCurrent(std::string_view replacement);
 
-    // Returns how many were replaced. One undo step for the lot.
+    // Returns how many were replaced, so zero is also the read-only answer. One
+    // undo step for the lot.
     int replaceAllMatches(std::string_view replacement);
 
     bool wantsMouse() const override { return true; }
@@ -228,6 +252,9 @@ private:
     // Kept on the view rather than on the file: ⌥Z is a property of how the
     // text is being looked at, and the View menu presents it that way.
     bool wordWrap = false;
+
+    // See setReadOnly. Editable by default, so the full app needs no call.
+    bool readOnly = false;
 
     bool caretVisible = true;
     int blinkPhase = 0;

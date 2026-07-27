@@ -1,6 +1,9 @@
 add_executable(ECode Main.cpp)
 
-target_link_libraries(ECode PRIVATE ECodeCore ECodeRender ECodeSyntax ECodeUI eacp-sprites)
+# ECodeWorkbench pulls in ECodeEditor, ECodeWidgets, ECodeRender and ECodeCore
+# behind it; ECodeSyntax is named because it hangs off ECodeCore alone and the
+# app is what chooses to have a grammar.
+target_link_libraries(ECode PRIVATE ECodeSyntax ECodeWorkbench eacp-sprites)
 
 set(BUNDLE_ID "com.eacp.ecode")
 

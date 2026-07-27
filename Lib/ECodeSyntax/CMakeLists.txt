@@ -11,4 +11,6 @@ target_link_libraries(ECodeSyntax
         PUBLIC ECodeCore
         PRIVATE tree-sitter ts-grammar-cpp)
 
+add_library(ECode::Syntax ALIAS ECodeSyntax)
+
 set_default_target_setting(ECodeSyntax)

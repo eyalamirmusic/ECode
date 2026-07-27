@@ -17,4 +17,6 @@ add_library(ECodeCore STATIC
 target_include_directories(ECodeCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(ECodeCore PUBLIC eacp-core)
 
+add_library(ECode::Core ALIAS ECodeCore)
+
 set_default_target_setting(ECodeCore)

@@ -1,6 +1,6 @@
 #include "Chrome.h"
 
-#include "UIText.h"
+#include <ECodeWidgets/UIText.h>
 
 #include <algorithm>
 #include <cmath>

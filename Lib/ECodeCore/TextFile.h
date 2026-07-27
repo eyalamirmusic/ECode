@@ -49,6 +49,14 @@ public:
     // history does not survive: its edits describe text that is no longer there.
     bool reload();
 
+    // Replaces the buffer with text that did not come from a file — a host
+    // handing over a string it already has, a generated preview, a scratch
+    // buffer. The path is left alone, so text set into an opened file and then
+    // saved goes back where the file came from.
+    //
+    // The undo history does not survive, for the reason reload()'s does not.
+    void setText(std::string text);
+
     const eacp::FilePath& path() const { return filePath; }
 
     // The filename alone, for a title bar or a tab.
@@ -58,7 +66,13 @@ public:
     //
     // Follows undo rather than counting edits, so typing and then undoing back
     // to the saved text reads as clean again — see EditHistory::stateId.
-    bool isDirty() const { return ed.stateId() != savedState; }
+    //
+    // The flag is what setText needs and undo cannot express. Clearing the
+    // history puts stateId() back to the zero a never-edited buffer reports, so
+    // a file whose text was replaced wholesale would compare equal to the state
+    // it was opened in — reading as "matches disk" over text nothing has
+    // written, and making the next save() report itself up to date.
+    bool isDirty() const { return replaced || ed.stateId() != savedState; }
 
     // True when the file on disk is no longer the one we read: another editor,
     // a git checkout, a code generator. Cheap enough to call on every window
@@ -132,5 +146,10 @@ private:
     DiskState onDisk;
 
     bool conflict = false;
+
+    // The buffer was replaced by setText and nothing has written it since. See
+    // isDirty; cleared by markSaved along with everything else that says the
+    // buffer and the disk agree.
+    bool replaced = false;
 };
 } // namespace ecode

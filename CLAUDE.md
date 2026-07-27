@@ -14,6 +14,11 @@ no native widget toolkit. Modeless editing, mouse-first, standard chords,
 multi-cursor, command palette, sidebar tree, tabs, panel, status bar. It is
 **not** a vim-style editor.
 
+It is also a **library**. `ECode::Editor` is a single-file code view — read-only
+or editable, no tabs, no sidebar, no palette, no command registry — that another
+project embeds by constructing one `CodeEditorView`. Keeping that target small is
+a live constraint, not an aspiration: see "The library split" below.
+
 It is built on [eacp](https://github.com/eyalamirmusic/eacp), which is fetched
 with CPM. Much of the work is currently *in* eacp rather than here: the editor
 needs framework capabilities that did not exist yet, and those belong upstream.
@@ -103,6 +108,58 @@ Not one `Graphics::View` per widget:
 
 `Graphics::View` is still used for the window's root and for genuinely native
 things (menu bar, tray).
+
+### The library split
+
+Six targets, each linking the one above it:
+
+```
+ECodeCore       the model — no GPU, no platform
+ECodeSyntax     tree-sitter behind Style.h's interface (optional)
+ECodeRender     the glyph pipeline
+ECodeWidgets    the widget toolkit inside one GPUView
+ECodeEditor     the embeddable editor — what another project links
+ECodeWorkbench  tabs, sidebar, palette, find, settings — the IDE around it
+```
+
+**`ECodeEditorTests` and `ECodeEditorRenderTests` are what keep this honest.**
+Both link `ECodeEditor` alone — no workbench, no grammar — so an accidental
+dependency stops them building. That matters because the cost of one is invisible
+any other way: an embedder pays it in link size and build time, and the running
+app looks identical.
+
+So: **anything needing a command registry, a theme the editor does not read, or a
+grammar belongs in ECodeWorkbench.** `EditorWidget` deliberately includes no
+theme header. `ECodeSyntax` hangs off `ECodeCore` alone and nothing below links
+it — highlighting reaches an embedded view through `setHighlighter`, the same
+injection seam `Workspace`'s factory uses.
+
+There are two applications, both under `Apps/`:
+
+```
+Apps/ECode/       the editor — links ECodeWorkbench
+Apps/CodeViewer/  one file in a window — links ECode::Editor + ECode::Syntax
+```
+
+**Run `just run-viewer` after touching anything in ECodeEditor or below.**
+CodeViewer drives the whole embedding API by hand from a native menu bar, which
+no test does — a view that draws correctly into `renderToImage` can still come up
+blank on a Retina display or ignore a menu command. It uses eacp's own
+`Graphics::MenuBar`, never ECode's `MenuBuilder`: that belongs to the workbench,
+and reaching for it there would be the first step of the split coming undone.
+Numbers to preserve: 6.9 MB and zero workbench symbols, against ECode's 9.2 MB.
+
+Consumers get the library by source, via CPM, the way ECode gets eacp:
+
+```cmake
+CPMAddPackage("gh:eyalamirmusic/ECode@0.1.0")
+target_link_libraries(MyApp PRIVATE ECode::Editor)
+```
+
+`ECODE_BUILD_APPS` and `ECODE_ENABLE_TESTS` default to `PROJECT_IS_TOP_LEVEL`;
+`ECODE_BUILD_SYNTAX=OFF` skips the tree-sitter fetch (105 s of cold configure down
+to 7 s). There is no `install(EXPORT)` — eacp has no export sets, so CMake
+refuses. `PLAN.md` §3 tracks that.
 
 ### eacp pieces this builds on
 

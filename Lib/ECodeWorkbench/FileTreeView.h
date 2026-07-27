@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ListView.h"
-#include "ScrollView.h"
-#include "Theme.h"
+#include <ECodeWidgets/ListView.h>
+#include <ECodeWidgets/ScrollView.h>
+#include <ECodeWidgets/Theme.h>
 
 #include <ECodeCore/FileTree.h>
 

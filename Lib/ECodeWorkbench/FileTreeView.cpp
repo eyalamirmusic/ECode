@@ -1,6 +1,6 @@
 #include "FileTreeView.h"
 
-#include "UIText.h"
+#include <ECodeWidgets/UIText.h>
 
 namespace ecode
 {

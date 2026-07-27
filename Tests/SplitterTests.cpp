@@ -1,6 +1,6 @@
-#include <ECodeUI/EditorWidget.h>
-#include <ECodeUI/Splitter.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeEditor/EditorWidget.h>
+#include <ECodeWidgets/Splitter.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

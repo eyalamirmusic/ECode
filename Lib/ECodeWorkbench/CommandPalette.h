@@ -1,10 +1,10 @@
 #pragma once
 
 #include "Keymap.h"
-#include "ListView.h"
-#include "ScrollView.h"
-#include "TextField.h"
-#include "Theme.h"
+#include <ECodeWidgets/ListView.h>
+#include <ECodeWidgets/ScrollView.h>
+#include <ECodeWidgets/TextField.h>
+#include <ECodeWidgets/Theme.h>
 
 #include <ECodeCore/Commands.h>
 #include <ECodeCore/FuzzyMatch.h>

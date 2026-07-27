@@ -1,6 +1,6 @@
-#include <ECodeUI/Chrome.h>
-#include <ECodeUI/CommandPalette.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/Chrome.h>
+#include <ECodeWorkbench/CommandPalette.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

@@ -1,5 +1,5 @@
-#include <ECodeUI/EditorWidget.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeEditor/EditorWidget.h>
+#include <ECodeWidgets/WidgetHost.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 
 #include <NanoTest/NanoTest.h>

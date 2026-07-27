@@ -1,5 +1,5 @@
-#include <ECodeUI/FileTreeView.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/FileTreeView.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Theme.h"
-#include "Widget.h"
+#include <ECodeWidgets/Theme.h>
+#include <ECodeWidgets/Widget.h>
 
 #include <functional>
 #include <string>

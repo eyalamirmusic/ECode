@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Chrome.h"
-#include "EditorWidget.h"
+
+#include <ECodeCore/Workspace.h>
+#include <ECodeEditor/EditorWidget.h>
 
 #include <optional>
 #include <string>

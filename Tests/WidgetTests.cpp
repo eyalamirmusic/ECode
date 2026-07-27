@@ -1,4 +1,4 @@
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

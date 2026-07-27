@@ -1,6 +1,6 @@
 #include "FindBar.h"
 
-#include "UIText.h"
+#include <ECodeWidgets/UIText.h>
 
 #include <algorithm>
 

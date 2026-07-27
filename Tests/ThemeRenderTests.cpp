@@ -1,8 +1,8 @@
-#include <ECodeUI/Chrome.h>
-#include <ECodeUI/FindBar.h>
-#include <ECodeUI/Settings.h>
-#include <ECodeUI/Themes.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/Chrome.h>
+#include <ECodeWorkbench/FindBar.h>
+#include <ECodeWorkbench/Settings.h>
+#include <ECodeWorkbench/Themes.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 

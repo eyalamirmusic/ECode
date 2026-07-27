@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Keymap.h"
-#include "Theme.h"
-#include "Widget.h"
+#include <ECodeWidgets/Theme.h>
+#include <ECodeWidgets/Widget.h>
 
 #include <ECodeCore/Commands.h>
 

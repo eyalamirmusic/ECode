@@ -1,5 +1,5 @@
-#include <ECodeUI/EditorGroupView.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeWorkbench/EditorGroupView.h>
+#include <ECodeWidgets/WidgetHost.h>
 #include <ECodeCore/EditorGroups.h>
 #include <ECodeSyntax/SyntaxHighlighter.h>
 

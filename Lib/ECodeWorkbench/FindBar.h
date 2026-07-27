@@ -1,8 +1,8 @@
 #pragma once
 
-#include "TextField.h"
-#include "Theme.h"
-#include "Widget.h"
+#include <ECodeWidgets/TextField.h>
+#include <ECodeWidgets/Theme.h>
+#include <ECodeWidgets/Widget.h>
 
 #include <ECodeCore/Search.h>
 

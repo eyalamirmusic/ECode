@@ -1,4 +1,4 @@
-#include <ECodeUI/FindBar.h>
+#include <ECodeWorkbench/FindBar.h>
 
 #include <NanoTest/NanoTest.h>
 

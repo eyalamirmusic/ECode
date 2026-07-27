@@ -11,4 +11,6 @@ add_library(ECodeRender STATIC
 target_include_directories(ECodeRender PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(ECodeRender PUBLIC ECodeCore eacp-sprites eacp-text)
 
+add_library(ECode::Render ALIAS ECodeRender)
+
 set_default_target_setting(ECodeRender)

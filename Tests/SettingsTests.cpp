@@ -1,5 +1,5 @@
-#include <ECodeUI/Settings.h>
-#include <ECodeUI/Themes.h>
+#include <ECodeWorkbench/Settings.h>
+#include <ECodeWorkbench/Themes.h>
 
 #include <NanoTest/NanoTest.h>
 

@@ -379,6 +379,9 @@ void EditorWidget::findPrevious()
 
 void EditorWidget::replaceCurrent(std::string_view replacement)
 {
+    if (readOnly)
+        return;
+
     const auto* match = finder.currentMatch();
 
     if (match == nullptr)
@@ -400,6 +403,11 @@ void EditorWidget::replaceCurrent(std::string_view replacement)
 
 int EditorWidget::replaceAllMatches(std::string_view replacement)
 {
+    // Zero, which is also what a query matching nothing returns — a read-only
+    // view has nothing to say about a replace beyond "none of them".
+    if (readOnly)
+        return 0;
+
     const auto replaced = replaceAll(editor(), finder.query(), replacement);
 
     if (replaced > 0)
@@ -638,19 +646,37 @@ bool EditorWidget::keyDown(const Graphics::KeyEvent& event)
             editor().moveDown(shift, visibleRows());
             break;
 
+        // The five branches below are the whole of what this widget can do to
+        // the text, so they are the whole of what read-only has to refuse. The
+        // check sits in each rather than once above the switch because only the
+        // switch knows which key is which: on macOS an arrow key reports a
+        // private-use character, so a test for "did this keystroke produce
+        // text?" asked before the switch calls Left an edit.
         case Graphics::KeyCode::Delete:
+            if (readOnly)
+                return false;
+
             word ? editor().deleteWordBefore() : editor().backspace();
             break;
 
         case Graphics::KeyCode::ForwardDelete:
+            if (readOnly)
+                return false;
+
             word ? editor().deleteWordAfter() : editor().deleteForward();
             break;
 
         case Graphics::KeyCode::Return:
+            if (readOnly)
+                return false;
+
             editor().insert("\n");
             break;
 
         case Graphics::KeyCode::Tab:
+            if (readOnly)
+                return false;
+
             editor().insert("    ");
             break;
 
@@ -660,6 +686,9 @@ bool EditorWidget::keyDown(const Graphics::KeyEvent& event)
             // else, including dead-key composition.
             if (event.characters.empty() || event.modifiers.control
                 || static_cast<unsigned char>(event.characters[0]) < 0x20)
+                return false;
+
+            if (readOnly)
                 return false;
 
             editor().insert(event.characters);

@@ -1,6 +1,6 @@
-#include <ECodeUI/EditorWidget.h>
-#include <ECodeUI/FindBar.h>
-#include <ECodeUI/WidgetHost.h>
+#include <ECodeEditor/EditorWidget.h>
+#include <ECodeWorkbench/FindBar.h>
+#include <ECodeWidgets/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
 
