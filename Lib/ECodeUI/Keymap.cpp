@@ -66,6 +66,11 @@ constexpr NamedKey namedKeys[] = {
     {Graphics::KeyCode::F12, "f12", ""},
 };
 
+bool isSpace(char c)
+{
+    return std::isspace(static_cast<unsigned char>(c)) != 0;
+}
+
 std::string toLower(std::string_view text)
 {
     auto result = std::string {text};
@@ -254,27 +259,97 @@ std::string Chord::display() const
     return text + key;
 }
 
+// --- ChordSequence -----------------------------------------------------------
+
+ChordSequence ChordSequence::parse(std::string_view text)
+{
+    auto sequence = ChordSequence {};
+
+    for (std::size_t start = 0; start < text.size();)
+    {
+        if (isSpace(text[start]))
+        {
+            ++start;
+            continue;
+        }
+
+        auto end = start;
+
+        while (end < text.size() && !isSpace(text[end]))
+            ++end;
+
+        const auto chord = Chord::parse(text.substr(start, end - start));
+
+        // The whole sequence, or none of it. See the header: half of
+        // "cmd+k cmd+t" is a bare ⌘K bound to the theme picker.
+        if (!chord.isValid())
+            return {};
+
+        sequence.chords.add(chord);
+        start = end;
+    }
+
+    return sequence;
+}
+
+std::string ChordSequence::display() const
+{
+    auto text = std::string {};
+
+    for (const auto& chord: chords)
+    {
+        if (!text.empty())
+            text += " ";
+
+        text += chord.display();
+    }
+
+    return text;
+}
+
+Chord ChordSequence::single() const
+{
+    return chords.size() == 1 ? chords[0] : Chord {};
+}
+
+bool ChordSequence::continues(const ChordSequence& prefix) const
+{
+    if (chords.size() <= prefix.chords.size())
+        return false;
+
+    for (auto i = 0; i < prefix.chords.size(); ++i)
+        if (chords[i] != prefix.chords[i])
+            return false;
+
+    return true;
+}
+
 // --- Keymap -----------------------------------------------------------------
 
 void Keymap::bind(std::string_view chordText, std::string commandId)
 {
-    auto chord = Chord::parse(chordText);
+    auto chords = ChordSequence::parse(chordText);
 
-    if (!chord.isValid())
+    if (!chords.isValid())
         return;
 
-    list.push_back({std::move(chord), std::move(commandId)});
+    list.push_back({std::move(chords), std::move(commandId)});
+}
+
+std::string_view Keymap::commandFor(const ChordSequence& chords) const
+{
+    // Backwards, so a binding appended later shadows an earlier one for the
+    // same chords rather than being unreachable behind it.
+    for (auto i = list.size(); i > 0; --i)
+        if (list[i - 1].chords == chords)
+            return list[i - 1].commandId;
+
+    return {};
 }
 
 std::string_view Keymap::commandFor(const Chord& chord) const
 {
-    // Backwards, so a binding appended later shadows an earlier one for the
-    // same chord rather than being unreachable behind it.
-    for (auto i = list.size(); i > 0; --i)
-        if (list[i - 1].chord == chord)
-            return list[i - 1].commandId;
-
-    return {};
+    return commandFor(ChordSequence {{chord}});
 }
 
 std::string_view Keymap::commandFor(const Graphics::KeyEvent& event) const
@@ -282,7 +357,17 @@ std::string_view Keymap::commandFor(const Graphics::KeyEvent& event) const
     return commandFor(Chord::fromEvent(event));
 }
 
-Chord Keymap::chordFor(std::string_view commandId) const
+bool Keymap::isPrefixOfABinding(const ChordSequence& prefix) const
+{
+    for (const auto& binding: list)
+        if (binding.chords.continues(prefix))
+            if (!commandFor(binding.chords).empty())
+                return true;
+
+    return false;
+}
+
+ChordSequence Keymap::shortcutFor(std::string_view commandId) const
 {
     for (auto i = list.size(); i > 0; --i)
     {
@@ -291,13 +376,62 @@ Chord Keymap::chordFor(std::string_view commandId) const
         if (binding.commandId != commandId)
             continue;
 
-        // Shadowed by a later binding of the same chord, so it is not what runs
-        // this command any more and printing it would be a lie.
-        if (commandFor(binding.chord) != commandId)
+        // Shadowed by a later binding of the same chords, so it is not what
+        // runs this command any more and printing it would be a lie.
+        if (commandFor(binding.chords) != commandId)
             continue;
 
-        return binding.chord;
+        return binding.chords;
     }
+
+    return {};
+}
+
+// --- ChordMatcher ------------------------------------------------------------
+
+ChordMatcher::Match ChordMatcher::press(const Keymap& keymap, const Chord& chord)
+{
+    // Whatever it was waiting for or complaining about, this key answers it.
+    unmatched = {};
+
+    const auto wasPending = isPending();
+
+    pending.chords.add(chord);
+
+    // A prefix wins over a binding on the very same chords, because waiting is
+    // the only state from which either of them can still happen — running the
+    // short one at once would leave the long one unreachable, and nothing on
+    // screen would say why. reportKeybindingProblems is what says it instead.
+    if (keymap.isPrefixOfABinding(pending))
+        return {Result::pending, {}};
+
+    const auto attempted = pending;
+    pending = {};
+
+    if (const auto command = keymap.commandFor(attempted); !command.empty())
+        return {Result::matched, command};
+
+    if (!wasPending)
+        return {Result::noMatch, {}};
+
+    unmatched = attempted;
+
+    return {Result::cancelled, {}};
+}
+
+void ChordMatcher::cancel()
+{
+    pending = {};
+    unmatched = {};
+}
+
+std::string ChordMatcher::message() const
+{
+    if (pending.isValid())
+        return pending.display() + " was pressed — waiting for the next key";
+
+    if (unmatched.isValid())
+        return unmatched.display() + " is not a command";
 
     return {};
 }
@@ -351,19 +485,32 @@ Keymap defaultKeymap()
     // command that has no business reaching the document.
     keymap.bind("cmd+\\", "view.splitEditor");
 
-    // VSCode spells these ⌘K ⌘→, which is a chord *sequence* and there is no
-    // such thing here. ⌥⌘← / → are the nearest free pair, and the shifted ones
-    // move the file rather than the focus, which is the same
+    // VSCode's own spelling, and both of them: the sequence is the chord anyone
+    // arriving from VSCode will press, and ⌥⌘← / → is two fewer keys for the
+    // same thing. The sequence goes first because shortcutFor hands back the
+    // later binding, and the pair is what the palette should advertise.
+    //
+    // The shifted arrows move the file rather than the focus, which is the same
     // shift-means-take-it-with-you the arrow keys already mean in the document.
+    // VSCode has no sequence for those, so neither has this.
+    keymap.bind("cmd+k cmd+right", "view.focusNextGroup");
+    keymap.bind("cmd+k cmd+left", "view.focusPreviousGroup");
     keymap.bind("cmd+alt+right", "view.focusNextGroup");
     keymap.bind("cmd+alt+left", "view.focusPreviousGroup");
     keymap.bind("cmd+alt+shift+right", "view.moveEditorToNextGroup");
     keymap.bind("cmd+alt+shift+left", "view.moveEditorToPreviousGroup");
 
+    // VSCode's chord for the theme picker, and the reason sequences were built:
+    // there was no near-miss worth taking for it, so it went unbound and was
+    // reached by name from the palette. A sequence can never be a menu key
+    // equivalent, so the File menu still prints nothing beside it — the palette
+    // is where it is advertised.
+    keymap.bind("cmd+k cmd+t", "preferences.selectTheme");
+
     // ⌘+ is ⇧⌘= on a US layout, and people press it both ways — with the shift
     // because that is what the key is labelled, and without it because that is
     // what the key *is*. Both, in that order: the later binding is the one
-    // chordFor hands back, so the menu and the palette print ⌘= rather than the
+    // shortcutFor hands back, so the menu and the palette print ⌘= rather than the
     // shifted spelling of the same thing.
     //
     // Named by their unshifted keys, which is what Chord::fromEvent matches

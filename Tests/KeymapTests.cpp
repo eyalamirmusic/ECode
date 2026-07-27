@@ -92,6 +92,63 @@ auto tChordRejectsASecondKey = test("Chord/aMisspeltModifierIsNotABareKey") = []
     check(Chord::parse("cmd++").isValid());
 };
 
+// --- sequences --------------------------------------------------------------
+
+auto tSequenceParses = test("Chord/parsesASequenceOfChords") = []
+{
+    const auto sequence = ChordSequence::parse("cmd+k cmd+t");
+
+    check(sequence.isValid());
+    check(sequence.chords.size() == 2);
+    check(sequence.chords[0] == Chord::parse("cmd+k"));
+    check(sequence.chords[1] == Chord::parse("cmd+t"));
+    check(sequence.display() == "⌘K ⌘T");
+};
+
+// The whole sequence or none of it, and the second check is what that is for:
+// keeping the half that parsed would leave ⌘K *alone* bound to whatever the
+// sequence named, so a typo in the second chord would silently promote the
+// first into a shortcut for it.
+auto tSequenceIsWholeOrNothing = test("Chord/oneBadChordFailsTheWholeSequence") = []
+{
+    check(!ChordSequence::parse("cmd+k cmmd+t").isValid());
+    check(ChordSequence::parse("cmd+k cmmd+t") != ChordSequence::parse("cmd+k"));
+
+    check(!ChordSequence::parse("cmd+k shift").isValid());
+    check(!ChordSequence::parse("").isValid());
+    check(!ChordSequence::parse("   ").isValid());
+};
+
+auto tSequenceToleratesSpace = test("Chord/aSequenceToleratesExtraSpace") = []
+{
+    check(ChordSequence::parse("  cmd+k \t  cmd+t ")
+          == ChordSequence::parse("cmd+k cmd+t"));
+};
+
+// What decides whether a binding can become a native menu key equivalent, so
+// the case that costs something is the second: a sequence answering with its
+// first chord would put ⌘K in the menu bar, where macOS matches it before the
+// window and the second key would never arrive.
+auto tSequenceSingle = test("Chord/onlyAOneChordSequenceHasASingleChord") = []
+{
+    check(ChordSequence::parse("cmd+s").single() == Chord::parse("cmd+s"));
+    check(!ChordSequence::parse("cmd+k cmd+t").single().isValid());
+    check(!ChordSequence {}.single().isValid());
+};
+
+auto tSequenceContinues = test("Chord/knowsWhichSequenceCarriesOnFromWhich") = []
+{
+    const auto full = ChordSequence::parse("cmd+k cmd+t");
+
+    check(full.continues(ChordSequence::parse("cmd+k")));
+
+    // Not a prefix of itself: there is nothing left to wait for.
+    check(!full.continues(full));
+
+    check(!full.continues(ChordSequence::parse("cmd+j")));
+    check(!ChordSequence::parse("cmd+k").continues(full));
+};
+
 // --- events -----------------------------------------------------------------
 
 // macOS folds Shift into the character, so Cmd+Shift+P arrives as "P". Left
@@ -188,7 +245,7 @@ auto tKeymapUnbound = test("Keymap/anUnboundChordResolvesToNothing") = []
 
 // An unparseable binding is dropped rather than stored as a chord that could
 // never match — otherwise it would sit in the table shadowing nothing and
-// showing up in chordFor as a shortcut that does not exist.
+// showing up in shortcutFor as a shortcut that does not exist.
 auto tKeymapDropsInvalid = test("Keymap/dropsAnUnparseableBinding") = []
 {
     auto keymap = Keymap {};
@@ -213,11 +270,11 @@ auto tKeymapChordForDisplay = test("Keymap/reportsTheChordThatRunsACommand") = [
     auto keymap = Keymap {};
     keymap.bind("cmd+shift+p", "workbench.showPalette");
 
-    check(keymap.chordFor("workbench.showPalette").display() == "⇧⌘P");
-    check(!keymap.chordFor("file.save").isValid());
+    check(keymap.shortcutFor("workbench.showPalette").display() == "⇧⌘P");
+    check(!keymap.shortcutFor("file.save").isValid());
 };
 
-// The fold: a shadowed binding still names its command, so a chordFor that only
+// The fold: a shadowed binding still names its command, so a shortcutFor that only
 // searched for the id would report a shortcut that no longer runs it. The
 // palette prints that string next to the command, so the failure is an
 // instruction to press a key that does something else.
@@ -228,8 +285,8 @@ auto tKeymapDoesNotReportAShadowedChord =
     keymap.bind("cmd+s", "file.save");
     keymap.bind("cmd+s", "file.saveAll");
 
-    check(!keymap.chordFor("file.save").isValid());
-    check(keymap.chordFor("file.saveAll").display() == "⌘S");
+    check(!keymap.shortcutFor("file.save").isValid());
+    check(keymap.shortcutFor("file.saveAll").display() == "⌘S");
 };
 
 // A command bound twice reports the binding that is actually in force.
@@ -240,7 +297,7 @@ auto tKeymapReportsTheLiveBinding =
     keymap.bind("cmd+s", "file.save");
     keymap.bind("cmd+w", "file.save");
 
-    check(keymap.chordFor("file.save").display() == "⌘W");
+    check(keymap.shortcutFor("file.save").display() == "⌘W");
 };
 
 // Taking a binding away, which the settings file spells as an empty command id.
@@ -254,7 +311,174 @@ auto tKeymapEmptyIdUnbinds = test("Keymap/anEmptyCommandIdTakesTheChordAway") = 
     keymap.bind("cmd+s", "");
 
     check(keymap.commandFor(Chord::parse("cmd+s")).empty());
-    check(!keymap.chordFor("file.save").isValid());
+    check(!keymap.shortcutFor("file.save").isValid());
+};
+
+// --- chord sequences, pressed -----------------------------------------------
+
+// The state machine that turns keys into commands now that a binding can be
+// more than one chord. Every case here is silent when it is wrong: a sequence
+// that fires on its first key, or a first key that is swallowed forever, both
+// look from outside like a keyboard that has stopped working.
+
+namespace
+{
+Keymap sequenceKeymap()
+{
+    auto keymap = Keymap {};
+
+    keymap.bind("cmd+k cmd+t", "preferences.selectTheme");
+    keymap.bind("cmd+z", "edit.undo");
+
+    return keymap;
+}
+} // namespace
+
+auto tSequenceRunsOnItsLastKey = test("Keymap/aSequenceRunsOnItsLastChord") = []
+{
+    const auto keymap = sequenceKeymap();
+    auto matcher = ChordMatcher {};
+
+    const auto first = matcher.press(keymap, Chord::parse("cmd+k"));
+
+    check(first.result == ChordMatcher::Result::pending);
+    check(first.command.empty());
+    check(matcher.isPending());
+
+    const auto second = matcher.press(keymap, Chord::parse("cmd+t"));
+
+    check(second.result == ChordMatcher::Result::matched);
+    check(second.command == "preferences.selectTheme");
+    check(!matcher.isPending());
+};
+
+// The expensive direction. ⌘K ⌘Z is somebody reaching for a chord and missing,
+// and the second key having a binding of its own is exactly when that happens —
+// so a matcher that fell back to resolving the key on its own would answer a
+// mistyped shortcut by undoing the last edit.
+auto tSequenceSwallowsTheKeyThatEndsIt =
+    test("Keymap/aKeyThatEndsASequenceDoesNotRunItsOwnBinding") = []
+{
+    const auto keymap = sequenceKeymap();
+    auto matcher = ChordMatcher {};
+
+    matcher.press(keymap, Chord::parse("cmd+k"));
+
+    const auto ended = matcher.press(keymap, Chord::parse("cmd+z"));
+
+    check(ended.result == ChordMatcher::Result::cancelled);
+    check(ended.command.empty());
+    check(!matcher.isPending());
+};
+
+// And the other half of that: with nothing pending, a chord that begins no
+// sequence still resolves at once, and one that is bound to nothing reports
+// noMatch rather than cancelled — which is what lets the key through to the
+// document instead of eating it.
+auto tSingleChordsStillResolve =
+    test("Keymap/aChordThatBeginsNothingRunsAtOnce") = []
+{
+    const auto keymap = sequenceKeymap();
+    auto matcher = ChordMatcher {};
+
+    const auto undo = matcher.press(keymap, Chord::parse("cmd+z"));
+
+    check(undo.result == ChordMatcher::Result::matched);
+    check(undo.command == "edit.undo");
+
+    const auto letter = matcher.press(keymap, Chord::parse("x"));
+
+    check(letter.result == ChordMatcher::Result::noMatch);
+    check(!matcher.isPending());
+};
+
+// A chord that is both a binding and the start of a longer one waits, because
+// waiting is the only state from which either can still happen. The short one
+// is what loses, and reportKeybindingProblems is what says so out loud.
+auto tPrefixBeatsAnExactBinding =
+    test("Keymap/aChordThatBeginsALongerBindingWaits") = []
+{
+    auto keymap = Keymap {};
+
+    keymap.bind("cmd+k", "file.close");
+    keymap.bind("cmd+k cmd+t", "preferences.selectTheme");
+
+    auto matcher = ChordMatcher {};
+
+    check(matcher.press(keymap, Chord::parse("cmd+k")).result
+          == ChordMatcher::Result::pending);
+};
+
+// Taking a sequence away has to reach its prefix too. The table still holds the
+// shadowed entry, so a prefix test reading the *shape* of the table would go on
+// swallowing every ⌘K to wait for a second key that can no longer mean
+// anything — with nothing bound to explain it.
+auto tUnbindingASequenceFreesItsPrefix =
+    test("Keymap/unbindingASequenceReleasesItsFirstChord") = []
+{
+    auto keymap = Keymap {};
+
+    keymap.bind("cmd+k cmd+t", "preferences.selectTheme");
+    keymap.bind("cmd+k cmd+t", "");
+
+    check(!keymap.isPrefixOfABinding(ChordSequence::parse("cmd+k")));
+
+    auto matcher = ChordMatcher {};
+
+    check(matcher.press(keymap, Chord::parse("cmd+k")).result
+          == ChordMatcher::Result::noMatch);
+};
+
+// What the status bar shows, and the only thing on screen that can say why a
+// keystroke was swallowed rather than typed. Asserted whole rather than by
+// substring: a message that named the wrong chord would pass any check that
+// only asked whether one was mentioned.
+auto tMatcherSaysWhatItIsWaitingFor =
+    test("Keymap/aPendingChordSaysWhatItIsWaitingFor") = []
+{
+    const auto keymap = sequenceKeymap();
+    auto matcher = ChordMatcher {};
+
+    check(matcher.message().empty());
+
+    matcher.press(keymap, Chord::parse("cmd+k"));
+    check(matcher.message() == "⌘K was pressed — waiting for the next key");
+
+    matcher.press(keymap, Chord::parse("cmd+z"));
+    check(matcher.message() == "⌘K ⌘Z is not a command");
+
+    // A chord that resolved has nothing left to say, and the complaint goes
+    // with it — otherwise the bar would keep an old miss on screen while the
+    // command it names has since run.
+    matcher.press(keymap, Chord::parse("cmd+z"));
+    check(matcher.message().empty());
+};
+
+// What a re-read of the settings file does, and it says nothing: the table the
+// prefix belonged to has been replaced, which is not something anybody asked
+// about.
+auto tMatcherCancels = test("Keymap/aCancelledChordIsForgottenSilently") = []
+{
+    const auto keymap = sequenceKeymap();
+    auto matcher = ChordMatcher {};
+
+    matcher.press(keymap, Chord::parse("cmd+k"));
+    matcher.cancel();
+
+    check(!matcher.isPending());
+    check(matcher.message().empty());
+
+    // And the keyboard is back to normal rather than half inside a chord.
+    check(matcher.press(keymap, Chord::parse("cmd+z")).command == "edit.undo");
+};
+
+auto tSequenceIsReportedForDisplay =
+    test("Keymap/reportsASequenceAsTheShortcutForACommand") = []
+{
+    auto keymap = Keymap {};
+    keymap.bind("cmd+k cmd+t", "preferences.selectTheme");
+
+    check(keymap.shortcutFor("preferences.selectTheme").display() == "⌘K ⌘T");
 };
 
 // --- equality ---------------------------------------------------------------
@@ -309,7 +533,7 @@ auto tDefaultKeymapIsWhole = test("Keymap/everyDefaultBindingParsed") = []
 
     for (const auto& binding: keymap.bindings())
     {
-        check(binding.chord.isValid());
+        check(binding.chords.isValid());
         check(!binding.commandId.empty());
     }
 
@@ -328,5 +552,39 @@ auto tDefaultKeymapHasNoDeadBindings = test("Keymap/noDefaultShadowsAnother") = 
     const auto keymap = defaultKeymap();
 
     for (const auto& binding: keymap.bindings())
-        check(keymap.chordFor(binding.commandId).isValid());
+        check(keymap.shortcutFor(binding.commandId).isValid());
+};
+
+// The command sequences were built for: VSCode spells it ⌘K ⌘T, there was no
+// near-miss worth taking, and until there were sequences it was left unbound.
+auto tDefaultKeymapBindsTheThemePicker =
+    test("Keymap/theThemePickerHasItsVSCodeChord") = []
+{
+    const auto keymap = defaultKeymap();
+    auto matcher = ChordMatcher {};
+
+    check(keymap.shortcutFor("preferences.selectTheme").display() == "⌘K ⌘T");
+
+    matcher.press(keymap, Chord::parse("cmd+k"));
+
+    check(matcher.press(keymap, Chord::parse("cmd+t")).command
+          == "preferences.selectTheme");
+};
+
+// The pane commands are bound both ways, and which one is *advertised* is the
+// point: a command bound to a sequence prints no menu shortcut at all, so the
+// two-key spelling being reported would take the shortcut out of the View menu
+// for a command that still has one.
+auto tDefaultKeymapAdvertisesTheShorterPaneChord =
+    test("Keymap/theShorterPaneChordIsTheOneReported") = []
+{
+    const auto keymap = defaultKeymap();
+
+    check(keymap.shortcutFor("view.focusNextGroup").display() == "⌥⌘→");
+
+    auto matcher = ChordMatcher {};
+    matcher.press(keymap, Chord::parse("cmd+k"));
+
+    check(matcher.press(keymap, Chord::parse("cmd+right")).command
+          == "view.focusNextGroup");
 };

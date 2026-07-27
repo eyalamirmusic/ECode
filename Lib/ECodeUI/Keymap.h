@@ -64,6 +64,48 @@ struct Chord
     std::string display() const;
 };
 
+// One or more chords pressed in order: VSCode's ⌘K ⌘T, which a table keyed on a
+// single chord cannot express at all.
+//
+// Written with a space between the chords, because that is the one separator
+// "+" has not already claimed and it is the spelling a settings file has to be
+// able to carry. Whitespace between them is otherwise ignored, so a file that
+// lines its bindings up reads the same as one that does not.
+struct ChordSequence
+{
+    eacp::Vector<Chord> chords;
+
+    // Every chord in the text or none of them: one unreadable part fails the
+    // whole sequence rather than binding the half that parsed. That half is a
+    // *bare* ⌘K, and a keymap holding it would run the command the sequence
+    // named on the first key — a typo in the second chord silently promoted to
+    // a shortcut for something else.
+    static ChordSequence parse(std::string_view text);
+
+    bool isValid() const { return !chords.empty(); }
+
+    // "⌘K ⌘T".
+    std::string display() const;
+
+    // The one chord when there is exactly one, and an invalid chord otherwise.
+    //
+    // Which is what keeps a sequence out of the menu bar: macOS matches a key
+    // equivalent before the window is sent a key at all, so an item claiming
+    // ⌘K would swallow the prefix and the second chord would never arrive. See
+    // toKeyEquivalent.
+    Chord single() const;
+
+    // Whether this starts with `prefix` and is longer than it.
+    bool continues(const ChordSequence& prefix) const;
+
+    bool operator==(const ChordSequence& other) const
+    {
+        return chords == other.chords;
+    }
+
+    bool operator!=(const ChordSequence& other) const { return !(*this == other); }
+};
+
 // Chords to command ids.
 //
 // Deliberately holds ids rather than callables: a binding for a command that
@@ -74,12 +116,12 @@ class Keymap
 public:
     struct Binding
     {
-        Chord chord;
+        ChordSequence chords;
         std::string commandId;
 
         bool operator==(const Binding& other) const
         {
-            return chord == other.chord && commandId == other.commandId;
+            return chords == other.chords && commandId == other.commandId;
         }
     };
 
@@ -89,9 +131,9 @@ public:
     //
     // An empty command id is how a binding is taken *away*, and it is the same
     // mechanism rather than a second one: the entry shadows the default, so the
-    // chord resolves to nothing and chordFor stops offering it. Which is
+    // chord resolves to nothing and shortcutFor stops offering it. Which is
     // exactly what an unbound chord already looks like from both sides.
-    void bind(std::string_view chord, std::string commandId);
+    void bind(std::string_view chords, std::string commandId);
 
     const eacp::Vector<Binding>& bindings() const { return list; }
 
@@ -104,18 +146,97 @@ public:
     bool operator==(const Keymap& other) const { return list == other.list; }
     bool operator!=(const Keymap& other) const { return !(*this == other); }
 
-    // Empty when the chord is unbound.
+    // Empty when nothing is bound to exactly this, which includes a sequence
+    // that merely *begins* one: ⌘K resolves to nothing here however many
+    // bindings start with it. ChordMatcher is what turns keys into commands;
+    // this is the table it asks.
+    std::string_view commandFor(const ChordSequence& chords) const;
     std::string_view commandFor(const Chord& chord) const;
     std::string_view commandFor(const eacp::Graphics::KeyEvent& event) const;
 
-    // The chord that currently runs this command, for display. Invalid when
-    // there is none — including when the only binding for it has since been
+    // Whether some binding carries on from here — whether, having pressed this
+    // much, there is anything left to wait for.
+    //
+    // Live bindings only. A sequence the settings file took away with an empty
+    // command id leaves its entry in the table, and a prefix test reading the
+    // *shape* of the table would go on waiting for a second key that can no
+    // longer mean anything — with the first key swallowed every time.
+    bool isPrefixOfABinding(const ChordSequence& prefix) const;
+
+    // The chords that currently run this command, for display. Invalid when
+    // there are none — including when the only binding for it has since been
     // shadowed by a later one, because a palette that advertises a shortcut
     // that no longer works is worse than one that advertises nothing.
-    Chord chordFor(std::string_view commandId) const;
+    ChordSequence shortcutFor(std::string_view commandId) const;
 
 private:
     eacp::Vector<Binding> list;
+};
+
+// Where the keyboard stands inside a chord sequence: ⌘K has been pressed, and
+// what runs depends on the key after it.
+//
+// Its own class rather than state on Keymap, because a keymap is a table —
+// compared whole, and replaced whole every time the settings file is re-read —
+// while this is one window's keyboard at one instant. The table is passed in on
+// each press rather than held, so a reload cannot leave a reference behind.
+//
+// It also has to say what it is waiting for out loud, which is why message()
+// is here and not composed by the window: a prefix that swallows the next
+// keystroke with nothing on screen explaining why is the failure this editor
+// can least afford, and a rule belongs where a test can read it.
+//
+// There is no timeout, and that is a decision rather than an omission. Any key
+// that does not continue the sequence ends it, so a pending prefix costs at
+// most the one keystroke that ends it and never leaves the editor untypeable —
+// and a wall-clock rule would put the behaviour of the keyboard behind a number
+// no test could read without waiting for it.
+class ChordMatcher
+{
+public:
+    enum class Result
+    {
+        // Nothing is bound here and nothing was pending, so the key belongs to
+        // whatever sits below the keymap — the document, usually.
+        noMatch,
+
+        // The start of a longer binding. Consumed, and the next key decides.
+        pending,
+
+        // A whole binding, named by Match::command.
+        matched,
+
+        // A prefix was pending and this key does not continue it. Consumed —
+        // it was somebody reaching for a chord, not text — and named in
+        // message() rather than passed on to be typed.
+        cancelled,
+    };
+
+    struct Match
+    {
+        Result result = Result::noMatch;
+
+        // Into the keymap's own storage, so it is good only until that table is
+        // replaced. Dispatched immediately by every caller.
+        std::string_view command;
+    };
+
+    Match press(const Keymap& keymap, const Chord& chord);
+
+    // Forgets a pending prefix and says nothing about it. What a re-read of the
+    // settings file does: the table it was a prefix *of* has been replaced.
+    void cancel();
+
+    bool isPending() const { return pending.isValid(); }
+
+    // What the status bar says, or empty when there is nothing to say.
+    std::string message() const;
+
+private:
+    ChordSequence pending;
+
+    // The sequence that ended in nothing, kept only so it can be named.
+    ChordSequence unmatched;
 };
 
 // ECode's own bindings, which is what a settings file is layered onto.

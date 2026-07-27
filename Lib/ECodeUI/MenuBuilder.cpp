@@ -4,6 +4,15 @@ namespace ecode
 {
 using namespace eacp;
 
+std::optional<Graphics::KeyEquivalent> toKeyEquivalent(const ChordSequence& chords)
+{
+    // A sequence has no native form at all, so `single` answering with an
+    // invalid chord is the whole conversion. Deliberately: macOS matches a key
+    // equivalent before the window is sent a key, so a bar claiming ⌘K would
+    // swallow the prefix and the second chord would never arrive.
+    return toKeyEquivalent(chords.single());
+}
+
 std::optional<Graphics::KeyEquivalent> toKeyEquivalent(const Chord& chord)
 {
     if (!chord.isValid() || chord.key.size() != 1)
@@ -55,7 +64,7 @@ Graphics::MenuItem itemFor(const std::string& id,
     // installed, which outlives any dispatch the caller passed as a temporary.
     auto run = [dispatch, id] { dispatch(id); };
 
-    const auto shortcut = toKeyEquivalent(keymap.chordFor(id));
+    const auto shortcut = toKeyEquivalent(keymap.shortcutFor(id));
 
     // Asked each time the menu opens, so these read the command's own
     // predicates live rather than sampling them when the bar was built.

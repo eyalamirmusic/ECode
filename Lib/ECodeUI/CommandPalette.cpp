@@ -118,7 +118,7 @@ Vector<PaletteItem> CommandPalette::commandItems() const
         // Resolved once per opening rather than once per keystroke, which is
         // what it was when the entry carried it: the keymap cannot move while
         // the palette is up.
-        item.hint = keymap.chordFor(command.id).display();
+        item.hint = keymap.shortcutFor(command.id).display();
 
         item.run = command.run;
         item.isEnabled = command.isEnabled;

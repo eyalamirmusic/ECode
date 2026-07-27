@@ -159,6 +159,22 @@ auto tPunctuationConverts = test("MenuBuilder/punctuationConverts") = []
     check(slash->key == "/");
 };
 
+// A chord *sequence* has no native form, and the reason is sharper than the
+// named keys': macOS matches a key equivalent against the bar before the window
+// is sent a key at all, so an item that took ⌘K from ⌘K ⌘T would swallow the
+// prefix and the second chord would never reach the matcher waiting for it.
+auto tSequenceHasNoEquivalent = test("MenuBuilder/aSequenceHasNoEquivalent") = []
+{
+    check(!toKeyEquivalent(ChordSequence::parse("cmd+k cmd+t")).has_value());
+
+    // And a one-chord sequence still converts, which is what says the whole
+    // menu bar did not just lose its shortcuts.
+    const auto single = toKeyEquivalent(ChordSequence::parse("cmd+s"));
+
+    check(single.has_value());
+    check(single->key == "s");
+};
+
 // --- building ---------------------------------------------------------------
 
 auto tItemsTakeTitleFromRegistry =
@@ -241,6 +257,29 @@ auto tShortcutComesFromKeymap = test("MenuBuilder/shortcutComesFromKeymap") = []
 
     check(revert != nullptr);
     check(!revert->shortcut.has_value());
+};
+
+// A command bound to a sequence keeps its item and loses only its shortcut. The
+// item is the whole point of the check: the bar not claiming ⌘K is what leaves
+// the keymap free to wait for the second chord.
+auto tSequenceBoundItemPrintsNoShortcut =
+    test("MenuBuilder/aSequenceBoundCommandPrintsNoShortcut") = []
+{
+    auto fixture = Fixture {};
+
+    fixture.keymap.bind("cmd+k cmd+r", "file.revert");
+
+    const auto bar = buildMenuBar(
+        fixture.fileMenu(), fixture.commands, fixture.keymap, fixture.dispatch);
+
+    const auto* revert = itemNamed(bar.menus[0], "Revert File");
+
+    check(revert != nullptr);
+    check(!revert->shortcut.has_value());
+
+    // The keymap still holds the whole of it, which is what separates "no
+    // native equivalent" from "no binding".
+    check(fixture.keymap.shortcutFor("file.revert").display() == "⌘K ⌘R");
 };
 
 // A command the registry never got is left out entirely. Showing it would

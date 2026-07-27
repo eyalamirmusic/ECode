@@ -503,8 +503,8 @@ auto tKeybindingsRebindADefault =
 
     check(config.keymap.commandFor(Chord::parse("cmd+s")) == "file.saveAs");
 
-    check(!config.keymap.chordFor("file.save").isValid());
-    check(config.keymap.chordFor("file.saveAs").display() == "⌘S");
+    check(!config.keymap.shortcutFor("file.save").isValid());
+    check(config.keymap.shortcutFor("file.saveAs").display() == "⌘S");
 };
 
 // Taking a chord away entirely, which is the one thing the colour blocks have
@@ -514,7 +514,7 @@ auto tKeybindingsCanUnbind = test("Settings/anEmptyCommandIdUnbindsAChord") = []
     const auto config = configurationFromJson(R"({"keybindings": {"cmd+d": ""}})");
 
     check(config.keymap.commandFor(Chord::parse("cmd+d")).empty());
-    check(!config.keymap.chordFor("edit.addNextOccurrence").isValid());
+    check(!config.keymap.shortcutFor("edit.addNextOccurrence").isValid());
 
     // The rest of the table is still there, which is what separates an unbind
     // from a block that failed to load at all.
@@ -542,6 +542,46 @@ auto tOneBadChordCostsOneLine =
     check(config.keymap.commandFor(Chord::parse("k")).empty());
 };
 
+// A sequence, which is the whole reason a binding is written as text rather
+// than as a chord: the spelling with a space in it has to survive the file, the
+// map it is read into and the merge onto the defaults.
+auto tKeybindingsCanBeSequences = test("Settings/aFileCanBindAChordSequence") = []
+{
+    const auto config =
+        configurationFromJson(R"({"keybindings": {"cmd+k cmd+w": "file.close"}})");
+
+    check(config.keymap.commandFor(ChordSequence::parse("cmd+k cmd+w"))
+          == "file.close");
+
+    // And the prefix on its own is not the binding, which is what a keymap that
+    // took the first chord and stopped would have made of it.
+    check(config.keymap.commandFor(Chord::parse("cmd+k")).empty());
+    check(config.keymap.shortcutFor("file.close").display() == "⌘K ⌘W");
+};
+
+// The defaults put three sequences under ⌘K, so a file binding it alone is the
+// collision that is now easy to write — and it is silent from both sides: the
+// chord waits for a second key, and the command it names never runs.
+auto tKeybindingOnAPrefixIsReported =
+    test("Settings/aChordThatBeginsALongerOneIsStillAPrefix") = []
+{
+    const auto config =
+        configurationFromJson(R"({"keybindings": {"cmd+k": "file.close"}})");
+
+    check(config.keymap.isPrefixOfABinding(ChordSequence::parse("cmd+k")));
+
+    // Taking the sequences away with it is what makes the chord its own again,
+    // and it is the only way a file has of saying so.
+    const auto freed = configurationFromJson(R"({"keybindings": {
+        "cmd+k": "file.close",
+        "cmd+k cmd+t": "",
+        "cmd+k cmd+left": "",
+        "cmd+k cmd+right": ""
+    }})");
+
+    check(!freed.keymap.isPrefixOfABinding(ChordSequence::parse("cmd+k")));
+};
+
 // A command that was never registered still takes the chord, deliberately. The
 // alternative is a rebinding that half-applies — ⌘S still saving because the
 // command it was pointed at was misspelt — which is the one outcome that
@@ -553,7 +593,7 @@ auto tKeybindingsTakeTheChordRegardless =
         R"({"keybindings": {"cmd+s": "file.saveEverything"}})");
 
     check(config.keymap.commandFor(Chord::parse("cmd+s")) == "file.saveEverything");
-    check(!config.keymap.chordFor("file.save").isValid());
+    check(!config.keymap.shortcutFor("file.save").isValid());
 };
 
 // What the application gates the menu bar rebuild on. Installing a bar replaces
@@ -689,7 +729,7 @@ auto tWriteKeepsTheRestOfTheFile =
 
     check(config.settings.font.family == "Menlo");
     check(config.settings.font.size() == 15.f);
-    check(config.keymap.chordFor("file.save").display() == "⌘E");
+    check(config.keymap.shortcutFor("file.save").display() == "⌘E");
 
     // Including the key this version has never heard of, which is the one no
     // struct could have carried across.

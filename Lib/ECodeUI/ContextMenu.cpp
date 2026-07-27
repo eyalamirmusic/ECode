@@ -68,7 +68,7 @@ void ContextMenu::show(const Graphics::Point& at,
         auto row = Row {};
         row.id = id;
         row.title = command->title;
-        row.shortcut = keymap.chordFor(id).display();
+        row.shortcut = keymap.shortcutFor(id).display();
 
         items.add(std::move(row));
     }

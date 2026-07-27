@@ -1263,8 +1263,16 @@ struct EditorView final : GPU::GPUView
         const auto tooLarge =
             highlighter != nullptr && highlighter->isTooLargeToHighlight();
 
-        layout.status.setText(
-            position, tooLarge ? "UTF-8    Plain (file too large)" : "UTF-8    C++");
+        // A chord waiting for its next key takes the readout's place for as
+        // long as it waits, and so does the complaint when the key that
+        // arrived was not one the chord could use. It is the only thing on
+        // screen that can say why a keystroke was swallowed instead of typed,
+        // and the position is back the moment the next key resolves.
+        const auto chordText = chords.message();
+
+        layout.status.setText(chordText.empty() ? position : chordText,
+                              tooLarge ? "UTF-8    Plain (file too large)"
+                                       : "UTF-8    C++");
 
         updateTitle();
     }
@@ -1337,11 +1345,13 @@ struct EditorView final : GPU::GPUView
     // like a key that stopped working. The load path is deliberately incapable
     // of refusing a file — see Settings — so this is the only place that can
     // say which line to look at.
-    void reportKeybindingProblems(const Settings& settings) const
+    void reportKeybindingProblems(const Configuration& config) const
     {
-        for (const auto& [chord, commandId]: settings.keybindings)
+        for (const auto& [chord, commandId]: config.settings.keybindings)
         {
-            if (!Chord::parse(chord).isValid())
+            const auto chords = ChordSequence::parse(chord);
+
+            if (!chords.isValid())
             {
                 LOG("keybinding is not a chord: \"" + chord + "\"");
                 continue;
@@ -1355,6 +1365,16 @@ struct EditorView final : GPU::GPUView
             if (commands.find(commandId) == nullptr)
                 LOG("keybinding \"" + chord
                     + "\" names an unregistered command: " + commandId);
+
+            // Bound to the *start* of a longer chord, which waits for a second
+            // key rather than running — so this binding can never fire, and
+            // from outside that looks exactly like a shortcut that does
+            // nothing. The defaults put three sequences under ⌘K, so it is the
+            // one chord a file is most likely to collide with.
+            if (config.keymap.isPrefixOfABinding(chords))
+                LOG("keybinding \"" + chord
+                    + "\" begins a longer chord, so it will never fire on its "
+                      "own");
         }
     }
 
@@ -1367,12 +1387,18 @@ struct EditorView final : GPU::GPUView
     // what notices that.
     void applyKeymap(const Configuration& config)
     {
-        reportKeybindingProblems(config.settings);
+        reportKeybindingProblems(config);
 
         if (config.keymap == keymap)
             return;
 
         keymap = config.keymap;
+
+        // A half-pressed sequence belonged to the table that has just been
+        // replaced, and the chord it was waiting to complete may not exist any
+        // more. Silently, because nobody asked for it to be cancelled — a
+        // settings file saved in another window is not something to explain.
+        chords.cancel();
 
         // The bar carries the chords as native key equivalents, which macOS
         // matches before the window is sent a key at all. A stale one would go
@@ -1667,14 +1693,39 @@ struct EditorView final : GPU::GPUView
     }
 
     // The chords that belong to the window rather than to whatever has focus.
+    //
+    // Through the matcher rather than straight off the keymap, because a
+    // binding is a *sequence* now and the first key of one runs nothing: ⌘K is
+    // consumed, remembered, and answered by whatever is pressed next.
     bool handleShortcut(const Graphics::KeyEvent& event)
     {
-        if (const auto id = keymap.commandFor(event); !id.empty())
+        const auto match = chords.press(keymap, Chord::fromEvent(event));
+
+        // Whatever it decided, the status bar is what says so. A prefix waiting
+        // for its next key is otherwise invisible, and so is the keystroke it
+        // eats when the next key turns out not to fit.
+        updateChrome();
+
+        switch (match.result)
         {
-            // Consumed whether or not the command could run: a disabled undo
-            // must not fall through and arrive in the document as a "z".
-            dispatchCommand(id);
-            return true;
+            case ChordMatcher::Result::matched:
+                // Consumed whether or not the command could run: a disabled
+                // undo must not fall through and arrive in the document as a
+                // "z".
+                dispatchCommand(match.command);
+                return true;
+
+            // Both consumed the key. The pending one is waiting for the rest of
+            // a chord; the cancelled one has just eaten the key that ended one,
+            // which is the right thing to do with a keystroke that was part of
+            // somebody reaching for a shortcut rather than typing.
+            case ChordMatcher::Result::pending:
+            case ChordMatcher::Result::cancelled:
+                repaint();
+                return true;
+
+            case ChordMatcher::Result::noMatch:
+                break;
         }
 
         // Any other Cmd chord is swallowed rather than typed as text.
@@ -1683,6 +1734,18 @@ struct EditorView final : GPU::GPUView
 
     void keyDown(const Graphics::KeyEvent& event) override
     {
+        // A half-pressed chord owns the keyboard until it resolves, ahead of a
+        // focused text box and ahead of any open overlay. What is left of a
+        // sequence need not carry a modifier — VSCode spells zen mode ⌘K Z —
+        // and a plain key would otherwise be typed into the find field or the
+        // palette's query, leaving the prefix pending with nothing left able to
+        // end it.
+        if (chords.isPending())
+        {
+            handleShortcut(event);
+            return;
+        }
+
         // An open overlay is modal, so everything except a command chord reaches
         // it before the keymap does — otherwise a binding without a modifier
         // would fire instead of being typed into the palette's query or moving
@@ -1831,6 +1894,11 @@ struct EditorView final : GPU::GPUView
     // Ahead of the layout too, which holds the palette that reads both of them.
     CommandRegistry commands;
     Keymap keymap;
+
+    // How far into a chord sequence the keyboard is. Separate from the keymap
+    // because the keymap is replaced whole on every re-read of the settings
+    // file, and this is where one window stands at one instant.
+    ChordMatcher chords;
 
     WindowLayout layout {groups, commands, keymap};
     WidgetHost host;

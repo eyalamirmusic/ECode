@@ -142,6 +142,6 @@ auto tFontZoomChords = test("FontSettings/bothSpellingsOfCommandPlusAreBound") =
     check(keymap.commandFor(Chord::parse("cmd+0")) == "view.resetFontSize");
 
     // The unshifted spelling is what the menu and the palette print, which is
-    // why it is bound second: chordFor hands back the binding that wins.
-    check(!keymap.chordFor("view.increaseFontSize").modifiers.shift);
+    // why it is bound second: shortcutFor hands back the binding that wins.
+    check(!keymap.shortcutFor("view.increaseFontSize").single().modifiers.shift);
 };

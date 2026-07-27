@@ -12,9 +12,10 @@ replaces, soft-wraps, saves atomically, and notices external changes. The chrome
 is a widget tree drawn entirely on the GPU: sidebar file tree, per-pane tab
 strips, status bar, command palette, find bar, context menu, draggable
 splitters, native menu bar. Configured from `ECode/settings.json` in the
-platform's application-data directory — colours, font and keybindings — which it
-opens in itself and re-reads on save, and whose theme can be picked from the
-palette, previewed row by row, and written back. 695 tests.
+platform's application-data directory — colours, font and keybindings, the last
+of them including VSCode's two-key sequences — which it opens in itself and
+re-reads on save, and whose theme can be picked from the palette, previewed row
+by row, and written back. 714 tests.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -156,6 +157,13 @@ Beyond the numbered gaps:
   `command` mean the platform's primary accelerator modifier, which changes
   keyboard semantics framework-wide (`GlobalHotKey`, `TextInput`) — a decision
   rather than a patch.
+- **A menu item cannot print a shortcut it does not claim.**
+  `Graphics::MenuItem` takes a `KeyEquivalent`, which is both the text shown and
+  the chord the platform matches. A two-key sequence has no key equivalent — a
+  bar claiming ⌘K would eat the prefix before the window saw it — so ⌘K ⌘T is
+  bound, works, and prints nothing beside Color Theme. What is missing is a
+  display-only string, which every platform's menus can show and neither
+  platform's API infers.
 - **Gamma-correct blending.** Coverage alpha is blended in whatever space the
   drawable is in. This is the difference between "looks native" and "looks
   slightly off", worst on light-on-dark, which is the default theme. See §4.
@@ -318,15 +326,29 @@ What is left:
   `ListView`, a `TextField` and `Chord::fromEvent`, which already turns a key
   event into exactly the string the file wants.
 - **A bad binding is reported to the log, which nobody is reading.** An
-  unparseable chord and a command that was never registered are both silent in
-  the app itself — the shortcut simply does not work. The status bar is the
-  obvious surface, and it is the same gap the settings file has for a bad
-  colour, so it is one answer rather than two.
-- **There are no chord *sequences*.** VSCode spells several commands ⌘K ⌘→, and
-  a `Keymap` keyed on one `Chord` cannot express it — which is why the pane
-  commands took ⌥⌘← instead. It needs a pending-prefix state on the keymap and a
-  timeout, and it interacts with the menu bar: a sequence can never be a native
-  key equivalent, so anything bound to one prints no shortcut.
+  unparseable chord, a command that was never registered, and now a chord bound
+  over the start of a longer one are all silent in the app itself — the shortcut
+  simply does not work. The status bar is the obvious surface, and it is the
+  same gap the settings file has for a bad colour, so it is one answer rather
+  than two. It is also the surface a pending chord already uses, which is the
+  argument for putting the rest there.
+- **A command bound to a sequence prints no shortcut in the menu.** Sequences
+  are built — a binding is a `ChordSequence`, `ChordMatcher` holds where the
+  keyboard is inside one, and ⌘K ⌘T opens the theme picker — but a sequence can
+  never be a native key equivalent, because macOS matches the bar before the
+  window is sent a key and would eat the prefix. So the item shows nothing while
+  the palette prints "⌘K ⌘T", and the fix is a display-only shortcut string on
+  `Graphics::MenuItem`, which is eacp's to add.
+
+  Two decisions in it worth not relitigating. **A prefix beats an exact binding
+  on the same chords**, because waiting is the only state from which either can
+  still happen — the short one loses, and `reportKeybindingProblems` is what
+  says so. And **there is no timeout**: any key that does not continue the
+  sequence ends it, so a pending prefix costs the one keystroke that ends it and
+  can never leave the editor untypeable, whereas a wall-clock rule would put the
+  behaviour of the keyboard behind a number no test can read without waiting for
+  it. What stands in for the timeout is the status bar, which says what is being
+  waited for and, afterwards, which chord missed.
 
 **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
 diagnostics, completion and go-to-definition after the chrome settles.

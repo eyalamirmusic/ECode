@@ -45,7 +45,14 @@ using CommandDispatch = std::function<void(std::string_view)>;
 // glyph constants. Returning nothing for those is deliberate rather than
 // approximate — an item simply prints no shortcut, and because the menu bar
 // then does not claim the chord, the keymap still handles it as it did before.
+//
+// A *sequence* never converts, for a sharper version of the same reason: macOS
+// matches a key equivalent before the window is sent a key at all, so an item
+// claiming ⌘K would eat the prefix and the second chord would never reach the
+// matcher waiting for it.
 std::optional<eacp::Graphics::KeyEquivalent> toKeyEquivalent(const Chord& chord);
+std::optional<eacp::Graphics::KeyEquivalent>
+    toKeyEquivalent(const ChordSequence& chords);
 
 // The menu bar the specs describe, ready for setApplicationMenuBar.
 //
