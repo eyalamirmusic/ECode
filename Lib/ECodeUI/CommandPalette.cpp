@@ -41,10 +41,7 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
     input.setPlaceholder(placeholder);
     input.setHorizontalPadding(padding);
 
-    input.setColours({theme.paletteText,
-                      theme.paletteHintText,
-                      theme.paletteText,
-                      theme.paletteSelected});
+    themeChanged();
 
     // Every keystroke refilters, which is what makes the list follow the query
     // rather than waiting for Return.
@@ -89,6 +86,17 @@ CommandPalette::CommandPalette(const ChromeTheme& themeToUse,
 
     addChild(input);
     addChild(results);
+}
+
+// The query field is *given* its colours rather than reading them off the theme
+// by name, so it is one of the few things a theme change does not reach by
+// itself. See Widget::themeChanged.
+void CommandPalette::themeChanged()
+{
+    input.setColours({theme.paletteText,
+                      theme.paletteHintText,
+                      theme.paletteText,
+                      theme.paletteSelected});
 }
 
 void CommandPalette::show()

@@ -1,16 +1,31 @@
 #pragma once
 
+// Not only for the macro: it carries the ADL hook that makes every field below
+// a "#rrggbb" string rather than an object of four numbers.
+#include <ECodeRender/ColorJson.h>
+
 #include <eacp/Graphics/Graphics.h>
+
+#include <Miro/Reflect.h>
 
 namespace ecode
 {
 // Colours for the chrome around the editor.
 //
 // Separate from TextTheme, which colours a *document* — token kinds, selection,
-// caret, gutter. Both are hardcoded structs for now; PLAN.md §5 has themes
-// becoming data, at which point these are two tables in one file rather than
-// two structs in two headers. constexpr throughout, so a palette costs nothing
-// at static-init and lives in rodata.
+// caret, gutter. The two stay separate structs because they are read by
+// different layers: this one by the widgets, that one by the renderer, which
+// does not link the widgets. What they now share is the table that names them
+// together — see Themes.h — and the file that reads that table, which is the
+// part PLAN.md §5 asked for.
+//
+// The defaults are the dark theme, so a default-constructed one is what ECode
+// has always looked like and the table names it "dark". Still constexpr-friendly
+// throughout: a palette costs nothing at static-init and lives in rodata, and
+// reflection adds a member function rather than a member.
+//
+// Every field is a JSON key of the same name; see Settings for what a file may
+// leave out.
 struct ChromeTheme
 {
     eacp::Graphics::Color activityBar {0.094f, 0.098f, 0.118f};
@@ -134,5 +149,54 @@ struct ChromeTheme
     // A query that matched nothing. Said in words as well, so it does not rely
     // on colour alone.
     eacp::Graphics::Color findNoResults {0.898f, 0.541f, 0.310f};
+
+    MIRO_REFLECT(activityBar,
+                 sidebar,
+                 tabBar,
+                 activeTab,
+                 statusBar,
+                 activeTabText,
+                 inactiveTabText,
+                 statusText,
+                 activeTabAccent,
+                 inactiveGroupAccent,
+                 hoverTab,
+                 tabSeparator,
+                 tabCloseIcon,
+                 tabCloseIconHover,
+                 tabCloseHover,
+                 scrollThumb,
+                 scrollThumbActive,
+                 rowText,
+                 rowDirectoryText,
+                 rowSelected,
+                 unsaved,
+                 conflict,
+                 paletteBackdrop,
+                 paletteBackground,
+                 paletteBorder,
+                 paletteSelected,
+                 paletteText,
+                 paletteMatchText,
+                 paletteHintText,
+                 paletteDisabledText,
+                 splitter,
+                 splitterActive,
+                 menuBackground,
+                 menuBorder,
+                 menuHighlight,
+                 menuHighlightText,
+                 menuText,
+                 menuShortcutText,
+                 menuDisabledText,
+                 menuSeparator,
+                 findBackground,
+                 findBorder,
+                 findFieldBackground,
+                 findText,
+                 findHintText,
+                 findToggleOn,
+                 findToggleOnText,
+                 findNoResults)
 };
 } // namespace ecode

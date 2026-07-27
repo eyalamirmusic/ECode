@@ -143,7 +143,10 @@ Vector<MenuSpec> defaultMenus(bool withExit)
                                      "file.saveAs",
                                      "file.revert",
                                      separator,
-                                     "file.close"};
+                                     "file.close",
+                                     separator,
+                                     "preferences.open",
+                                     "preferences.reload"};
 
     // Below a separator and last, which is where Windows puts it.
     if (withExit)

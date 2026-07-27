@@ -10,7 +10,9 @@ several panes — highlights them with tree-sitter, scrolls, is typed in with
 multi-cursor selection, undo, clipboard and mouse, finds and replaces, soft-wraps,
 saves atomically, and notices external changes. The chrome is a widget tree drawn
 entirely on the GPU: sidebar file tree, per-pane tab strips, status bar, command
-palette, find bar, context menu, draggable splitters, native menu bar. 611 tests.
+palette, find bar, context menu, draggable splitters, native menu bar. Configured
+from `~/.config/ecode.json`, which it opens in itself and re-reads on save.
+651 tests.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -77,14 +79,19 @@ Lib/ECodeRender/   the glyph pipeline
   RowCache          the rows on screen, kept until something changes them
   PaintContext      sprites + glyph batch + the clip and atlas stacks
   FontSettings      family and size, and the atlas they ask for
+  TextTheme         a document's colours: gutter, caret, one per TokenKind
+  ColorJson         Color ⇄ "#rrggbb", and the hook that teaches Miro it
 
 Lib/ECodeUI/       the widget tree inside the single GPUView
   Widget/WidgetHost layout, hit-testing, capture, focus, hover
   EditorGroupView   one pane: tab strip + editor + its own TextRenderer
   EditorWidget      the text view and its input handling
   Chrome            Panel, TabBar, StatusBar
+  Theme             ChromeTheme — the colours around a document
+  Themes            the built-in palettes, by name
+  Settings          the file: what it says, and what it resolves to
   FileTreeView, ScrollView, ListView, TextField, FindBar,
-  CommandPalette, ContextMenu, Splitter, MenuBuilder, Keymap, Theme
+  CommandPalette, ContextMenu, Splitter, MenuBuilder, Keymap
 
 App/Main.cpp       the shell: GPU resources, the window layout, the commands
 ```
@@ -106,6 +113,14 @@ App/Main.cpp       the shell: GPU resources, the window layout, the commands
   wherever it is drawn and uploading it once is the whole point — but a
   `GlyphAtlas` is one face at one size, so a settable editor font means two of
   them, the document's and the chrome's. See §4.
+- **A widget reads its colours through a reference to the theme, never a copy.**
+  That is what makes changing the theme an assignment: every widget is drawing
+  the new palette on the next frame with nothing told and nothing walked. There
+  are exactly two shapes that cannot — a `Panel` *is* a colour, and a `TextField`
+  is *handed* its colours because the same field sits on the palette's background
+  in one place and the find bar's in another — and both are the reason
+  `Widget::themeChanged` exists. A stale copy has no CPU-side observable: it
+  draws perfectly, in the theme that was loaded at startup.
 - **Anything that touches the cursor goes through `Editor`, not through
   `Editor::cursor()`.** That rule is why multi-cursor cost two lines outside the
   editor: `cursor()` had seven callers and every one genuinely wanted the primary.
@@ -122,7 +137,7 @@ Framework gaps, ordered by how hard they block. Each ships with unit tests under
 |---|-----|---------------|--------------|
 | 3 | **No IME / composition.** No `NSTextInputClient`, no `interpretKeyEvents:`, no `WM_IME_*`. | CJK input, dead keys (`⌥e` → é) and the emoji picker are all unavailable, and none of it can be layered on from app code. | `NSTextInputClient` on the macOS backing view: marked-text range, composition callbacks, candidate-window rect. Real Objective-C++ work, and the largest item here. |
 | 9 | **No UTF-8 support in `Strings`.** No codepoint iteration, no grapheme clusters, no width tables, no case folding. | Search's case-insensitive match folds ASCII only, so "Ä" does not match "ä". Soft wrap counts a CJK character as one column rather than two, so a wrapped line of it breaks late. | `ecode::Utf8` already carries `next`, `previousBoundary` and `nextBoundary`, which is the shape the eacp version wants. Width tables and folding are new. |
-| 10 | **No file watching, no directory enumeration.** | The file tree and external-change detection. | FSEvents on macOS. The seams it replaces are `TextFile::hasChangedOnDisk` (polled once a second per open file) and `FileTreeModel::refresh` (`std::filesystem` behind `eacp::toStdPath`). |
+| 10 | **No file watching, no directory enumeration.** | The file tree and external-change detection. | FSEvents on macOS. The seams it replaces are `TextFile::hasChangedOnDisk` (polled once a second per open file), `SettingsWatcher::poll` (one more stat on the same timer) and `FileTreeModel::refresh` (`std::filesystem` behind `eacp::toStdPath`). |
 
 Beyond the numbered gaps:
 
@@ -274,19 +289,63 @@ spends. And **the deferral is safe because the mutation API is narrow**:
 `replace(start, end, text)` plus `line(i)`, so the storage can change without the
 renderer or the highlighter noticing.
 
-**Config and theming.** Not started. Miro reflection, exactly as CowTerm does it —
-the struct *is* the schema, `MIRO_REFLECT(...)`, `Miro::fromJSONString`, unknown
-keys ignored and missing keys defaulted, five lines total. Two changes from
-CowTerm: **themes as data** (`ChromeTheme` and `TextTheme` are hardcoded structs
-today) and **file watching for reload** (CowTerm reads config once at
-construction).
+**Config and theming.** Done, and what is left of it is listed below. The file is
+`~/.config/ecode.json`, read through Miro reflection exactly as CowTerm does it —
+the struct *is* the schema, unknown keys ignored and missing keys defaulted.
 
-`FontSettings` is the first struct waiting for it, and the shape the rest should
-follow: family and point size in one place with the zoom held separately, so
-Reset means the configured size rather than a constant. Choosing the *family*
-from inside the app waits on eacp — CoreText substitutes silently for a name it
-does not know and there is no way to ask which face it picked, so a picker today
-could only offer a list and hope. §3 is where that gap belongs.
+Four decisions worth not relitigating:
+
+- **A colour is a string.** `"#1e1e2e"`, or `"#ffffff0d"` when it is translucent,
+  taught to Miro by a free `reflectValue` in `eacp::Graphics` — the documented
+  extension point, and the only spelling ADL will find. Nobody can picture
+  `{"r": 0.098, "g": 0.106, "b": 0.125}`, and a diff of one is unreadable.
+- **A colour block is partial, and layering is free.** Name a theme, then say the
+  one thing you disagree with. Loading the named palette into the struct and the
+  file's block over it *is* the override mechanism, because Miro leaves a key the
+  JSON does not mention at the value the struct already held. The one trap is
+  that the hex round trip is lossy — a channel that was never a multiple of 1/255
+  comes back as the nearest one — so the load has to ask `kind() == String`
+  rather than infer "absent" from the string coming back unchanged. Re-parsing
+  unconditionally nudges every colour in an inherited palette by half a level:
+  invisible, and not the palette the code declared.
+- **Nothing writes the file behind the person editing it.** The only write is a
+  starter template, and only when there is no file at all — so a JSON round trip
+  can never eat a block someone hand-wrote. It is also why ⌘+ does not persist:
+  a zoom written to disk turns ⌘0 into "back to whatever size I was last at".
+  And why the template leaves both colour blocks *empty* rather than spelling all
+  sixty-eight out, which would silently pin the file to one palette and leave its
+  own `theme` key with nothing to decide.
+- **Reload rides the existing one-second disk poll**, since eacp still has no file
+  watching (§3 gap 10). One more stat a second next to a frame, and it is what
+  makes *Preferences: Open Settings* — which opens the file in ECode itself —
+  worth having: save the tab and the window behind it changes.
+
+**Themes are data now**, in a table of two: `dark` is the structs' own defaults,
+so every caller that never heard of a theme keeps the picture it had, and `light`
+is the second entry that makes the table a table. It is built by one rule — keep
+each entry's hue, flip its lightness — because a switch that also recoloured what
+things *mean* is two changes at once and the second is the one nobody asked for.
+The consequence to watch when adding a third: every overlay in a dark palette is
+white at low alpha, and in a light one they all have to be black.
+
+What is left:
+
+- **A theme cannot be chosen from inside the app.** There is no picker and no
+  cycle command; `"theme"` is edited in the file. The table is there and
+  `themeNames()` already answers, so this is a widget rather than a design.
+- **The window's title bar is not themed.** It follows the system appearance, so
+  a light theme opens under a dark title bar. That is a window-options gap in
+  eacp rather than anything here.
+- **Choosing the *family*** waits on eacp — CoreText substitutes silently for a
+  name it does not know and there is no way to ask which face it picked, so a
+  picker today could only offer a list and hope. §3 is where that gap belongs.
+  Until then a misspelt family in the file is accepted and drawn in something
+  else, which is the one thing the load path checks and cannot report.
+- **Keybindings are not in the file.** `Keymap` already binds by command id
+  precisely so a table can be read into it, and `bindKeys()` is that table
+  written in C++. This is the next struct in the queue, and unlike the colours it
+  needs a merge policy — a file that names three chords should not delete the
+  other thirty.
 
 **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
 diagnostics, completion and go-to-definition after the chrome settles.
@@ -462,7 +521,11 @@ worth trusting, and they keep coming back — several were learned twice.
   passed with the rule deleted, because the band spanned the box's border. A
   pane's text area contains the current-line band, which fills the caret's row
   edge to edge whatever the document says. After the code, the second place to
-  look is what else the widget draws for free.
+  look is what else the widget draws for free. Counting a colour over the *whole
+  image* is the same mistake with no region at all: the find bar's own button
+  labels are drawn in `theme.findText` and read it live, so a test meant to ask
+  whether the text field's private copy had been updated was answered by two
+  widgets that were never in doubt, and survived the field never being told.
 - **A named pixel is an assertion about rounding.** A one-point line centred in
   an eight-point band lands at `x - 0.5`, so the lit column is the one to the
   *left* of the divider. Take a peak across the band.
@@ -491,6 +554,20 @@ worth trusting, and they keep coming back — several were learned twice.
   test written specifically to cover that path. Any optimisation whose fallback
   is the thing it optimises needs a counter, and the counter is the test.
   `LineMap::rebuildCount`, `RowCache::layouts`, `SyntaxHighlighter::fullParses`.
+- **An oracle built out of the thing under test agrees with it while both are
+  wrong.** The layering test asked "is the un-overridden sidebar still the light
+  theme's?" against `themeByName("light")` — and a `themeByName` that ignored its
+  argument entirely handed the same dark palette to both sides, so it passed. The
+  comparison that could fail was against the *defaults*, which is the one value in
+  the test that the mutation could not also move. Both belong: one catches the
+  name being ignored, the other catches the layering producing some third colour.
+- **Reflection cannot be its own witness.** A field left out of `MIRO_REFLECT` is
+  a field the settings file cannot set, and nothing says so — the key is ignored
+  like any unknown one. Comparing two structs' JSON cannot see it, because a
+  missing field is missing from both sides and the test passes exactly when it
+  should fail. The oracle has to come from outside reflection: `memcmp` over the
+  struct, with every channel perturbed to its own value first, so a pair of names
+  swapped in the macro's list fails as loudly as a pair left out.
 - **When an optimisation has no observable, ask what changes *afterwards*.**
   Releasing the syntax tree for an over-size file shows up in no colour — but a
   file that shrinks back under the limit is then parsed from scratch, and

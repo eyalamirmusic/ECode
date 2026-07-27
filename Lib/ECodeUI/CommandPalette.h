@@ -33,6 +33,8 @@ public:
                    const CommandRegistry& registryToUse,
                    const Keymap& keymapToUse);
 
+    void themeChanged() override;
+
     // Opens with an empty query, so the palette always starts by offering
     // everything rather than resuming a filter the person has forgotten typing.
     void show();

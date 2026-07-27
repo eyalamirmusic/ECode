@@ -2,6 +2,9 @@
 
 #include <eacp/Text/Text.h>
 
+#include <Miro/Reflect.h>
+
+#include <algorithm>
 #include <string>
 
 namespace ecode
@@ -12,8 +15,11 @@ namespace ecode
 // and `zoom` is how far ⌘+ has moved from it, so Reset means "back to the
 // configured size" rather than "back to 13" — a difference that shows up only
 // once something sets the size to anything else, which is exactly when nobody
-// is looking for it. Until PLAN.md §5's config file exists, this struct is the
-// configuration.
+// is looking for it. The settings file is what sets it; see Settings.
+//
+// Which is also why the file carries the family and the point size and not the
+// zoom: a zoom written back to disk would turn ⌘0 into "back to whatever size I
+// last happened to be at", which is the one thing it must not mean.
 //
 // The chrome has its own instance of this at a fixed size: ⌘+ makes the code
 // bigger and leaves the tab strip and the status bar alone. See AtlasScope for
@@ -57,6 +63,24 @@ struct FontSettings
     // only ever correct together.
     bool operator==(const FontSettings& other) const;
     bool operator!=(const FontSettings& other) const { return !(*this == other); }
+
+    // Hand-written rather than MIRO_REFLECT so the two things a file can get
+    // wrong are corrected here rather than at whichever call site remembered.
+    // A point size of 500 would rasterize glyphs the size of the window, and an
+    // empty family reaches CoreText as a name it substitutes for silently — so
+    // the one place that reads them from outside is the one place that checks.
+    void reflect(Miro::Reflector& ref)
+    {
+        MIRO_FIELDS(ref, family, pointSize);
+
+        if (!ref.isLoading())
+            return;
+
+        pointSize = std::clamp(pointSize, minimumSize, maximumSize);
+
+        if (family.empty())
+            family = eacp::Text::defaultMonospaceFamily();
+    }
 };
 
 // The atlas to draw this font through, or null when the family resolved to

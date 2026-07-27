@@ -13,8 +13,10 @@ add_library(ECodeUI STATIC
         ListView.cpp
         MenuBuilder.cpp
         ScrollView.cpp
+        Settings.cpp
         Splitter.cpp
         TextField.cpp
+        Themes.cpp
         UIText.cpp
         Widget.cpp
         WidgetHost.cpp)

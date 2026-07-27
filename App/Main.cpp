@@ -7,8 +7,10 @@
 #include <ECodeUI/FindBar.h>
 #include <ECodeUI/Keymap.h>
 #include <ECodeUI/MenuBuilder.h>
+#include <ECodeUI/Settings.h>
 #include <ECodeUI/Splitter.h>
 #include <ECodeUI/Theme.h>
+#include <ECodeUI/Themes.h>
 #include <ECodeUI/WidgetHost.h>
 #include <ECodeCore/EditorGroups.h>
 #include <ECodeRender/FontSettings.h>
@@ -121,6 +123,21 @@ struct WindowLayout final : Widget
 
         rebuildChildren();
         layout();
+    }
+
+    // A new palette for everything around the document.
+    //
+    // Assignment is nearly the whole of it: every widget below holds a reference
+    // to this struct rather than a copy of the colours out of it, so they are
+    // all drawing the new theme on the next frame without being told. The walk
+    // afterwards is for the handful that cannot work that way — see
+    // Widget::themeChanged.
+    void setChromeTheme(const ChromeTheme& newTheme)
+    {
+        theme = newTheme;
+
+        themeChangedTree();
+        repaint();
     }
 
     int groupCount() const { return views.size(); }
@@ -406,6 +423,10 @@ struct EditorView final : GPU::GPUView
         bindKeys();
         connectFindBar();
         connectGroups();
+
+        // Before the first file is opened, so the window has never been drawn
+        // in a theme nobody asked for.
+        applyConfiguration(loadConfiguration(settingsWatch.path()));
 
         layout.palette.onClosed = [this]
         {
@@ -888,6 +909,20 @@ struct EditorView final : GPU::GPUView
                       "View: Refresh Explorer",
                       [this] { layout.files.refresh(); }});
 
+        // --- the settings file ------------------------------------------------
+
+        commands.add({"preferences.open",
+                      "Preferences: Open Settings",
+                      [this] { openSettingsFile(); }});
+
+        // The poll picks up a save within the second, so this is for the case
+        // the poll cannot see: a file edited in another application while ECode
+        // was not running, or one whose write landed inside the same filesystem
+        // tick as the last read. Cheap enough to offer rather than explain.
+        commands.add({"preferences.reload",
+                      "Preferences: Reload Settings",
+                      [this] { reloadSettings(); }});
+
         // --- the editor font ------------------------------------------------
         //
         // The document's size, not the window's: the tabs, the tree and the
@@ -1302,6 +1337,67 @@ struct EditorView final : GPU::GPUView
         layout.setAtlas(editorAtlas.get(), textTheme, scale);
     }
 
+    // Everything the settings file decides, pushed into the running app.
+    //
+    // The zoom survives it deliberately. ⌘+ is something someone did to this
+    // session, and a save of the settings file — which may not even have been
+    // theirs — has no business undoing it; that is the whole reason the zoom is
+    // a separate number from the configured size. See FontSettings.
+    void applyConfiguration(const Configuration& config)
+    {
+        font.family = config.settings.font.family;
+        font.pointSize = config.settings.font.pointSize;
+
+        textTheme = config.theme.text;
+        layout.setChromeTheme(config.theme.chrome);
+
+        // Not something ensureRenderer will get to on its own: it rebuilds when
+        // the font or the display scale has moved, and a colour is neither. Each
+        // pane's TextRenderer holds the text theme by value and was built
+        // against the one before this.
+        //
+        // A null atlas at startup, which every pane tolerates — the first frame
+        // builds one, at whatever size the settings just asked for.
+        layout.setAtlas(editorAtlas.get(), textTheme, builtAtScale);
+
+        repaint();
+    }
+
+    // Opens the settings file in ECode itself, writing a starter one first if
+    // there is nothing there.
+    //
+    // Editing it in the editor it configures is the point, and it is what makes
+    // the one-second poll worth having: save the tab and the window behind it
+    // changes. It is also why the template is never written over an existing
+    // file — this is a command someone can press twice.
+    void openSettingsFile()
+    {
+        const auto path = settingsWatch.path();
+
+        if (!writeSettingsTemplateIfAbsent(path))
+        {
+            LOG("could not write the settings file: " + path.str());
+            return;
+        }
+
+        // The file may have just come into existence, and if it did the app
+        // should be running what is in it before the tab showing it opens.
+        reloadSettings();
+
+        openFile(path);
+
+        host.setFocus(&layout.activeEditor());
+        repaint();
+    }
+
+    // Absorbs the stamp before reading, so the poll a second later does not
+    // read the same write as a second change and rebuild every renderer again.
+    void reloadSettings()
+    {
+        settingsWatch.poll();
+        applyConfiguration(loadConfiguration(settingsWatch.path()));
+    }
+
     // A step of the editor's font size, from ⌘+ or ⌘-.
     //
     // Nothing is rasterized here. ensureRenderer already owns the decision of
@@ -1386,6 +1482,14 @@ struct EditorView final : GPU::GPUView
     // late to warn about a conflict.
     void checkDisk()
     {
+        // The settings file rides the same timer, for the same reason: eacp has
+        // no file watching, and one more stat a second is nothing next to a
+        // frame. It is not one of the open files — it has no tab unless someone
+        // opened one, and reloading it means re-theming the window rather than
+        // replacing a buffer.
+        if (settingsWatch.poll())
+            applyConfiguration(loadConfiguration(settingsWatch.path()));
+
         auto changed = false;
 
         for (auto group = 0; group < groups.count(); ++group)
@@ -1644,8 +1748,8 @@ struct EditorView final : GPU::GPUView
         [](const std::string&) {};
 
     // What the document is drawn in, and the only place its size is decided.
-    // Changed by the zoom commands; PLAN.md §5's config file is what will set
-    // the family and the size it zooms from.
+    // The family and the size it zooms from come from the settings file; the
+    // zoom itself is this session's and is never written back.
     FontSettings font;
 
     // The chrome's, deliberately not settable: a tab strip that grew with the
@@ -1675,11 +1779,20 @@ struct EditorView final : GPU::GPUView
     int pendingCloseTab = -1;
     std::uint64_t pendingCloseState = 0;
 
+    // Stamped at construction, so a file that has not been touched since launch
+    // does not read as a change on the first tick and re-theme the window a
+    // second after it opened.
+    SettingsWatcher settingsWatch {settingsPath()};
+
     Threads::Timer blink {[this] { layout.activeEditor().tickCaretBlink(); }, 2};
     Threads::Timer diskWatch {[this] { checkDisk(); }, 1};
 };
 
-Graphics::WindowOptions windowOptions()
+// `background` is what the window shows in the moment before the first frame
+// and along any edge a resize outruns. Taken from the view, which has already
+// read the settings file, rather than from a default-constructed TextTheme: a
+// light theme would otherwise open behind a dark flash.
+Graphics::WindowOptions windowOptions(const Graphics::Color& background)
 {
     auto options = Graphics::WindowOptions {};
 
@@ -1688,7 +1801,7 @@ Graphics::WindowOptions windowOptions()
     options.minWidth = 480;
     options.minHeight = 320;
     options.title = "ECode";
-    options.backgroundColor = TextTheme {}.background;
+    options.backgroundColor = background;
 
     return options;
 }
@@ -1711,8 +1824,10 @@ struct App
         window.setTitle(view.windowTitle());
     }
 
+    // The view first, and it has to stay first: the window's background colour
+    // is read off the theme the view loaded.
     EditorView view;
-    Graphics::Window window {windowOptions()};
+    Graphics::Window window {windowOptions(view.textTheme.background)};
 };
 } // namespace ecode
 

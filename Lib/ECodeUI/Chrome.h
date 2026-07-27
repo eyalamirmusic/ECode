@@ -10,20 +10,30 @@ namespace ecode
 {
 // A flat block of colour. The activity bar and the sidebar are this and nothing
 // else until there is a tree to put in them.
+//
+// Points at its colour rather than copying it, which is what every other widget
+// here does with the theme and is the reason none of them need telling when it
+// changes. A copy taken in the constructor would be a copy of whichever theme
+// was loaded at startup, and switching themes would leave two grey rectangles
+// where the sidebar and the activity bar used to be.
+//
+// So the colour has to outlive the panel. Every caller passes a field of a
+// ChromeTheme that does exactly that — the theme is a member of the window
+// layout, and the widgets are members after it.
 class Panel final : public Widget
 {
 public:
     explicit Panel(const eacp::Graphics::Color& colourToUse)
-        : colour(colourToUse)
+        : colour(&colourToUse)
     {
     }
 
-    void setColour(const eacp::Graphics::Color& newColour) { colour = newColour; }
+    void setColour(const eacp::Graphics::Color& newColour) { colour = &newColour; }
 
     void paint(PaintContext& context) override;
 
 private:
-    eacp::Graphics::Color colour;
+    const eacp::Graphics::Color* colour;
 };
 
 // One open file's entry in the tab strip.

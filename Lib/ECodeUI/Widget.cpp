@@ -70,6 +70,14 @@ void Widget::prepareTree(Text::GlyphAtlas& atlas, const Graphics::Rect& clip)
         child->prepareTree(atlas, narrowed);
 }
 
+void Widget::themeChangedTree()
+{
+    themeChanged();
+
+    for (auto* child: childList)
+        child->themeChangedTree();
+}
+
 void Widget::paintTree(PaintContext& context)
 {
     if (!visible || area.isEmpty())

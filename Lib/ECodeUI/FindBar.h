@@ -28,6 +28,8 @@ class FindBar final : public Widget
 public:
     explicit FindBar(const ChromeTheme& themeToUse);
 
+    void themeChanged() override;
+
     // `initialQuery` seeds the find field and is selected rather than appended
     // to, so ⌘F with something already in the box offers it and still lets the
     // next keystroke start a new search. Empty leaves whatever was there.

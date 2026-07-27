@@ -61,13 +61,9 @@ FindBar::FindBar(const ChromeTheme& themeToUse)
 {
     setVisible(false);
 
-    const auto colours = TextField::Colours {
-        theme.findText, theme.findHintText, theme.findText, theme.paletteSelected};
+    themeChanged();
 
-    findField.setColours(colours);
     findField.setPlaceholder(findPlaceholder);
-
-    replaceField.setColours(colours);
     replaceField.setPlaceholder(replacePlaceholder);
 
     findField.onTextChanged = [this](const std::string&) { queryChanged(); };
@@ -158,6 +154,18 @@ void FindBar::rebuildHotspots()
 void FindBar::layout()
 {
     rebuildHotspots();
+}
+
+// Both fields are *given* their colours rather than reading them off the theme
+// by name, so they are among the few things a theme change does not reach by
+// itself. See Widget::themeChanged.
+void FindBar::themeChanged()
+{
+    const auto colours = TextField::Colours {
+        theme.findText, theme.findHintText, theme.findText, theme.paletteSelected};
+
+    findField.setColours(colours);
+    replaceField.setColours(colours);
 }
 
 void FindBar::show(const std::string& initialQuery, bool withReplace)

@@ -40,7 +40,7 @@ constexpr auto statusPadding = 10.f;
 
 void Panel::paint(PaintContext& context)
 {
-    context.sprites().fillRect(bounds(), colour);
+    context.sprites().fillRect(bounds(), *colour);
 }
 
 // --- TabBar -----------------------------------------------------------------

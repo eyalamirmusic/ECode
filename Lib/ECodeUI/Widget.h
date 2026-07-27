@@ -93,6 +93,24 @@ public:
     void prepareTree(eacp::Text::GlyphAtlas& atlas,
                      const eacp::Graphics::Rect& clip);
 
+    // The theme's colours have changed under a widget that holds a reference to
+    // it. Almost nothing needs this: a widget that reads `theme.rowText` at
+    // paint time picks the new colour up on the next frame with no notification
+    // at all, which is why the reference is how the chrome is wired.
+    //
+    // It is for the two shapes that cannot. A Panel *is* a colour rather than a
+    // themed widget, and a TextField is handed its colours rather than looking
+    // them up, because the same field sits on the palette's background in one
+    // place and the find bar's in another and neither name would suit both.
+    // Both keep copies, and a copy taken in a constructor is a copy of whatever
+    // theme was current then — which was always the right answer until a theme
+    // could change while the app was running.
+    virtual void themeChanged() {}
+
+    // Walks the subtree, hidden children included: a palette that is closed when
+    // the theme changes still has to open in the new one.
+    void themeChangedTree();
+
     // --- input -----------------------------------------------------------
 
     // Widgets are transparent to the mouse unless they say otherwise, so a
