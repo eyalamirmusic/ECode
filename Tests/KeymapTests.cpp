@@ -71,6 +71,27 @@ auto tChordRejectsNonsense = test("Chord/aChordWithNoKeyIsInvalid") = []
     check(!Chord::parse("cmd+shift").isValid());
 };
 
+// A misspelt modifier, which is the failure a hand-edited settings file makes
+// possible and the one it can least afford. Nothing distinguishes "cmmd" from a
+// key name, so the lenient reading is the *bare* key "k" — and a bare binding is
+// matched before the document sees the keystroke, so one typo in the file would
+// leave the editor unable to type a letter with nothing anywhere saying why.
+//
+// The second check is what separates rejecting the chord from merely ignoring
+// the token: taking "cmmd" as a stray modifier would leave a working ⌘K.
+auto tChordRejectsASecondKey = test("Chord/aMisspeltModifierIsNotABareKey") = []
+{
+    check(!Chord::parse("cmmd+k").isValid());
+    check(Chord::parse("cmmd+k") != Chord::parse("cmd+k"));
+
+    check(!Chord::parse("a+b").isValid());
+    check(!Chord::parse("cmd+s+escape").isValid());
+
+    // And the one spelling where a key legitimately arrives before a token that
+    // is not the last, which parse() takes off the end before splitting at all.
+    check(Chord::parse("cmd++").isValid());
+};
+
 // --- events -----------------------------------------------------------------
 
 // macOS folds Shift into the character, so Cmd+Shift+P arrives as "P". Left
@@ -88,7 +109,8 @@ auto tEventNormalizesShift = test("Chord/foldsShiftOutOfTheCharacter") = []
 // Letters are identified by the character, not the code. A Dvorak keyboard
 // reports the *position* of QWERTY's Z as the code for undo's neighbours, so
 // matching on the code would put undo under whichever key happens to sit there.
-auto tEventLettersComeFromTheCharacter = test("Chord/identifiesLettersByCharacter") = []
+auto tEventLettersComeFromTheCharacter =
+    test("Chord/identifiesLettersByCharacter") = []
 {
     // The physical key at QWERTY's ";" position, which on Dvorak types "z".
     auto event = keyEvent(Graphics::KeyCode::Semicolon, "z");
@@ -103,7 +125,8 @@ auto tEventLettersComeFromTheCharacter = test("Chord/identifiesLettersByCharacte
 // And punctuation the other way round. Cmd+Shift+/ produces "?", so a chord
 // taken from the character would not match a binding written "/" — which is
 // exactly why eacp names its punctuation key codes for the *unshifted* key.
-auto tEventPunctuationComesFromTheCode = test("Chord/identifiesPunctuationByKeyCode") = []
+auto tEventPunctuationComesFromTheCode =
+    test("Chord/identifiesPunctuationByKeyCode") = []
 {
     auto event = keyEvent(Graphics::KeyCode::Slash, "?");
     event.modifiers.command = true;
@@ -210,11 +233,100 @@ auto tKeymapDoesNotReportAShadowedChord =
 };
 
 // A command bound twice reports the binding that is actually in force.
-auto tKeymapReportsTheLiveBinding = test("Keymap/reportsTheLastLiveBindingForACommand") = []
+auto tKeymapReportsTheLiveBinding =
+    test("Keymap/reportsTheLastLiveBindingForACommand") = []
 {
     auto keymap = Keymap {};
     keymap.bind("cmd+s", "file.save");
     keymap.bind("cmd+w", "file.save");
 
     check(keymap.chordFor("file.save").display() == "⌘W");
+};
+
+// Taking a binding away, which the settings file spells as an empty command id.
+// It is the shadowing rule rather than a second mechanism, and the two halves
+// are what make that indistinguishable from never having been bound: the chord
+// resolves to nothing, and nothing offers the chord.
+auto tKeymapEmptyIdUnbinds = test("Keymap/anEmptyCommandIdTakesTheChordAway") = []
+{
+    auto keymap = Keymap {};
+    keymap.bind("cmd+s", "file.save");
+    keymap.bind("cmd+s", "");
+
+    check(keymap.commandFor(Chord::parse("cmd+s")).empty());
+    check(!keymap.chordFor("file.save").isValid());
+};
+
+// --- equality ---------------------------------------------------------------
+
+// What tells the application whether a reloaded settings file moved a binding,
+// and so whether the menu bar has to be built again. The case that matters is
+// the second one: a keymap that compared by size, or not at all, would rebuild
+// the bar on every save of the file and would do it while a menu could be open.
+auto tKeymapEquality = test("Keymap/comparesBindingForBinding") = []
+{
+    auto one = Keymap {};
+    one.bind("cmd+s", "file.save");
+
+    auto same = Keymap {};
+    same.bind("cmd+s", "file.save");
+
+    check(one == same);
+
+    auto rebound = Keymap {};
+    rebound.bind("cmd+s", "file.saveAs");
+
+    check(one != rebound);
+
+    auto moved = Keymap {};
+    moved.bind("cmd+w", "file.save");
+
+    check(one != moved);
+
+    // Order is part of it, because order is what decides which binding wins.
+    auto ordered = Keymap {};
+    ordered.bind("cmd+s", "file.save");
+    ordered.bind("cmd+s", "file.close");
+
+    auto reversed = Keymap {};
+    reversed.bind("cmd+s", "file.close");
+    reversed.bind("cmd+s", "file.save");
+
+    check(ordered != reversed);
+};
+
+// --- the default table ------------------------------------------------------
+
+// The table lives here rather than in the application so that this can read it,
+// and the property worth pinning is not which chord is which — it is that every
+// binding in it survived parsing. A chord that does not parse is dropped
+// silently, so a typo in the table is a shortcut that simply never fires.
+auto tDefaultKeymapIsWhole = test("Keymap/everyDefaultBindingParsed") = []
+{
+    const auto keymap = defaultKeymap();
+
+    check(!keymap.bindings().empty());
+
+    for (const auto& binding: keymap.bindings())
+    {
+        check(binding.chord.isValid());
+        check(!binding.commandId.empty());
+    }
+
+    // Counted, because "every binding in the table parsed" is also true of a
+    // table that lost half of itself: bind() drops what it cannot read, so the
+    // loop above only ever sees the survivors.
+    check(keymap.bindings().size() >= 30);
+};
+
+// A shortcut nothing can reach. One command taking two chords is not an error —
+// ⌘= is deliberately bound twice, with and without the shift — but a default
+// whose chord a *later* default takes away is one, because then the palette and
+// the menu print nothing beside a command that has a binding written for it.
+auto tDefaultKeymapHasNoDeadBindings = test("Keymap/noDefaultShadowsAnother") = []
+{
+    const auto keymap = defaultKeymap();
+
+    for (const auto& binding: keymap.bindings())
+        check(keymap.chordFor(binding.commandId).isValid());
 };

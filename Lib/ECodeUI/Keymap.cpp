@@ -155,7 +155,16 @@ Chord Chord::parse(std::string_view text)
         const auto token = std::string_view {lowered}.substr(start, end - start);
 
         if (!token.empty() && !applyModifier(token, chord.modifiers))
+        {
+            // A second key in one chord, which is not a chord this can express
+            // — and the way a misspelt modifier arrives. See the header: taken
+            // as a key it would bind a bare letter, which is worse than nothing
+            // because it is matched before the document.
+            if (!chord.key.empty())
+                return {};
+
             chord.key = token;
+        }
 
         start = end + 1;
     }
@@ -291,5 +300,85 @@ Chord Keymap::chordFor(std::string_view commandId) const
     }
 
     return {};
+}
+
+// --- the default table -------------------------------------------------------
+
+Keymap defaultKeymap()
+{
+    auto keymap = Keymap {};
+
+    keymap.bind("cmd+shift+p", "workbench.showPalette");
+    keymap.bind("cmd+n", "file.new");
+    keymap.bind("cmd+o", "file.open");
+    keymap.bind("cmd+shift+o", "file.openFolder");
+    keymap.bind("cmd+s", "file.save");
+    keymap.bind("cmd+shift+s", "file.saveAs");
+    keymap.bind("cmd+w", "file.close");
+    keymap.bind("cmd+z", "edit.undo");
+    keymap.bind("cmd+shift+z", "edit.redo");
+    keymap.bind("cmd+x", "edit.cut");
+    keymap.bind("cmd+c", "edit.copy");
+    keymap.bind("cmd+v", "edit.paste");
+    keymap.bind("cmd+a", "edit.selectAll");
+    keymap.bind("cmd+d", "edit.addNextOccurrence");
+    keymap.bind("cmd+shift+l", "edit.selectAllOccurrences");
+
+    // VSCode's chords, and like ⌃Tab they cannot become menu key equivalents:
+    // toKeyEquivalent only converts single characters, so an arrow stays with
+    // the keymap. That is the right side of the trade here — a key equivalent
+    // is matched by macOS before the window sees the key, and ⌥⌘↑ has to reach
+    // the editor.
+    keymap.bind("cmd+alt+up", "edit.addCursorAbove");
+    keymap.bind("cmd+alt+down", "edit.addCursorBelow");
+    keymap.bind("cmd+f", "find.show");
+    keymap.bind("cmd+alt+f", "find.showReplace");
+    keymap.bind("cmd+g", "find.next");
+    keymap.bind("cmd+shift+g", "find.previous");
+    keymap.bind("cmd+1", "view.focusEditor");
+    keymap.bind("cmd+shift+e", "view.focusExplorer");
+
+    // VSCode's chords, and deliberately not expressible as menu key
+    // equivalents: toKeyEquivalent only converts single characters, so "tab"
+    // stays with the keymap and the menu item prints no shortcut rather than
+    // claiming one macOS would match before the window.
+    keymap.bind("ctrl+tab", "view.nextTab");
+    keymap.bind("ctrl+shift+tab", "view.previousTab");
+
+    // VSCode's chord for splitting, and unlike the arrows it *is* a single
+    // character, so the menu takes it as a native key equivalent and macOS
+    // matches it before the window. That is the right side of the trade for a
+    // command that has no business reaching the document.
+    keymap.bind("cmd+\\", "view.splitEditor");
+
+    // VSCode spells these ⌘K ⌘→, which is a chord *sequence* and there is no
+    // such thing here. ⌥⌘← / → are the nearest free pair, and the shifted ones
+    // move the file rather than the focus, which is the same
+    // shift-means-take-it-with-you the arrow keys already mean in the document.
+    keymap.bind("cmd+alt+right", "view.focusNextGroup");
+    keymap.bind("cmd+alt+left", "view.focusPreviousGroup");
+    keymap.bind("cmd+alt+shift+right", "view.moveEditorToNextGroup");
+    keymap.bind("cmd+alt+shift+left", "view.moveEditorToPreviousGroup");
+
+    // ⌘+ is ⇧⌘= on a US layout, and people press it both ways — with the shift
+    // because that is what the key is labelled, and without it because that is
+    // what the key *is*. Both, in that order: the later binding is the one
+    // chordFor hands back, so the menu and the palette print ⌘= rather than the
+    // shifted spelling of the same thing.
+    //
+    // Named by their unshifted keys, which is what Chord::fromEvent matches
+    // punctuation on — ⇧⌘= arrives as "+" and would match no binding at all if
+    // these were written by the character.
+    keymap.bind("cmd+shift+=", "view.increaseFontSize");
+    keymap.bind("cmd+=", "view.increaseFontSize");
+    keymap.bind("cmd+-", "view.decreaseFontSize");
+    keymap.bind("cmd+0", "view.resetFontSize");
+
+    // VSCode's chord, and the one place a binding without Command matters:
+    // handleShortcut runs before the editor sees the key, so ⌥Z toggles
+    // wrapping rather than typing the Ω that macOS resolves it to.
+    keymap.bind("alt+z", "view.toggleWordWrap");
+
+    return keymap;
 }
 } // namespace ecode

@@ -420,12 +420,13 @@ struct EditorView final : GPU::GPUView
         groups.onChanged = [this] { showActiveFile(); };
 
         registerCommands();
-        bindKeys();
         connectFindBar();
         connectGroups();
 
         // Before the first file is opened, so the window has never been drawn
-        // in a theme nobody asked for.
+        // in a theme nobody asked for — and the only thing that fills in the
+        // keymap, since the defaults are what a settings file is layered onto
+        // rather than something applied separately first.
         applyConfiguration(loadConfiguration(settingsWatch.path()));
 
         layout.palette.onClosed = [this]
@@ -971,84 +972,6 @@ struct EditorView final : GPU::GPUView
         return groups.active().count() > 1 && layout.canSplit();
     }
 
-    // The default keymap. A table rather than a chain of ifs, and the shape a
-    // config file will be read into — which is why bindings name commands by id
-    // instead of holding the callable.
-    void bindKeys()
-    {
-        keymap.bind("cmd+shift+p", "workbench.showPalette");
-        keymap.bind("cmd+n", "file.new");
-        keymap.bind("cmd+o", "file.open");
-        keymap.bind("cmd+shift+o", "file.openFolder");
-        keymap.bind("cmd+s", "file.save");
-        keymap.bind("cmd+shift+s", "file.saveAs");
-        keymap.bind("cmd+w", "file.close");
-        keymap.bind("cmd+z", "edit.undo");
-        keymap.bind("cmd+shift+z", "edit.redo");
-        keymap.bind("cmd+x", "edit.cut");
-        keymap.bind("cmd+c", "edit.copy");
-        keymap.bind("cmd+v", "edit.paste");
-        keymap.bind("cmd+a", "edit.selectAll");
-        keymap.bind("cmd+d", "edit.addNextOccurrence");
-        keymap.bind("cmd+shift+l", "edit.selectAllOccurrences");
-
-        // VSCode's chords, and like ⌃Tab they cannot become menu key
-        // equivalents: toKeyEquivalent only converts single characters, so an
-        // arrow stays with the keymap. That is the right side of the trade
-        // here — a key equivalent is matched by macOS before the window sees
-        // the key, and ⌥⌘↑ has to reach the editor.
-        keymap.bind("cmd+alt+up", "edit.addCursorAbove");
-        keymap.bind("cmd+alt+down", "edit.addCursorBelow");
-        keymap.bind("cmd+f", "find.show");
-        keymap.bind("cmd+alt+f", "find.showReplace");
-        keymap.bind("cmd+g", "find.next");
-        keymap.bind("cmd+shift+g", "find.previous");
-        keymap.bind("cmd+1", "view.focusEditor");
-        keymap.bind("cmd+shift+e", "view.focusExplorer");
-
-        // VSCode's chords, and deliberately not expressible as menu key
-        // equivalents: toKeyEquivalent only converts single characters, so
-        // "tab" stays with the keymap and the menu item prints no shortcut
-        // rather than claiming one macOS would match before the window.
-        keymap.bind("ctrl+tab", "view.nextTab");
-        keymap.bind("ctrl+shift+tab", "view.previousTab");
-
-        // VSCode's chord for splitting, and unlike the arrows it *is* a single
-        // character, so the menu takes it as a native key equivalent and macOS
-        // matches it before the window. That is the right side of the trade for
-        // a command that has no business reaching the document.
-        keymap.bind("cmd+\\", "view.splitEditor");
-
-        // VSCode spells these ⌘K ⌘→, which is a chord *sequence* and there is
-        // no such thing here. ⌥⌘← / → are the nearest free pair, and the
-        // shifted ones move the file rather than the focus, which is the same
-        // shift-means-take-it-with-you the arrow keys already mean in the
-        // document.
-        keymap.bind("cmd+alt+right", "view.focusNextGroup");
-        keymap.bind("cmd+alt+left", "view.focusPreviousGroup");
-        keymap.bind("cmd+alt+shift+right", "view.moveEditorToNextGroup");
-        keymap.bind("cmd+alt+shift+left", "view.moveEditorToPreviousGroup");
-
-        // ⌘+ is ⇧⌘= on a US layout, and people press it both ways — with the
-        // shift because that is what the key is labelled, and without it
-        // because that is what the key *is*. Both, in that order: the later
-        // binding is the one chordFor hands back, so the menu and the palette
-        // print ⌘= rather than the shifted spelling of the same thing.
-        //
-        // Named by their unshifted keys, which is what Chord::fromEvent matches
-        // punctuation on — ⇧⌘= arrives as "+" and would match no binding at all
-        // if these were written by the character.
-        keymap.bind("cmd+shift+=", "view.increaseFontSize");
-        keymap.bind("cmd+=", "view.increaseFontSize");
-        keymap.bind("cmd+-", "view.decreaseFontSize");
-        keymap.bind("cmd+0", "view.resetFontSize");
-
-        // VSCode's chord, and the one place a binding without Command matters:
-        // handleShortcut runs before the editor sees the key, so ⌥Z toggles
-        // wrapping rather than typing the Ω that macOS resolves it to.
-        keymap.bind("alt+z", "view.toggleWordWrap");
-    }
-
     void togglePalette()
     {
         if (layout.palette.isOpen())
@@ -1337,6 +1260,58 @@ struct EditorView final : GPU::GPUView
         layout.setAtlas(editorAtlas.get(), textTheme, scale);
     }
 
+    // What a settings file got wrong about its bindings, said out loud.
+    //
+    // Nothing here can be reported by failing, and that is the whole reason it
+    // exists: an unparseable chord costs its line, an unregistered command
+    // takes its chord away from whatever had it, and both look from the outside
+    // like a key that stopped working. The load path is deliberately incapable
+    // of refusing a file — see Settings — so this is the only place that can
+    // say which line to look at.
+    void reportKeybindingProblems(const Settings& settings) const
+    {
+        for (const auto& [chord, commandId]: settings.keybindings)
+        {
+            if (!Chord::parse(chord).isValid())
+            {
+                LOG("keybinding is not a chord: \"" + chord + "\"");
+                continue;
+            }
+
+            // The spelling for taking a binding away, so it names no command
+            // on purpose.
+            if (commandId.empty())
+                continue;
+
+            if (commands.find(commandId) == nullptr)
+                LOG("keybinding \"" + chord
+                    + "\" names an unregistered command: " + commandId);
+        }
+    }
+
+    // The merged keymap, and the menu bar that is built out of it.
+    //
+    // Only when it actually moved. Rebuilding the bar is not a redraw: it
+    // replaces the NSMenu tree and the targets its items message, so doing it
+    // on every unrelated save of the settings file would mean doing it while a
+    // menu might be open. A colour change leaves the chords alone, and this is
+    // what notices that.
+    void applyKeymap(const Configuration& config)
+    {
+        reportKeybindingProblems(config.settings);
+
+        if (config.keymap == keymap)
+            return;
+
+        keymap = config.keymap;
+
+        // The bar carries the chords as native key equivalents, which macOS
+        // matches before the window is sent a key at all. A stale one would go
+        // on claiming a chord the file has since given to something else, and
+        // the keymap underneath would never see it.
+        onMenuBarChanged();
+    }
+
     // Everything the settings file decides, pushed into the running app.
     //
     // The zoom survives it deliberately. ⌘+ is something someone did to this
@@ -1347,6 +1322,8 @@ struct EditorView final : GPU::GPUView
     {
         font.family = config.settings.font.family;
         font.pointSize = config.settings.font.pointSize;
+
+        applyKeymap(config);
 
         textTheme = config.theme.text;
         layout.setChromeTheme(config.theme.chrome);
@@ -1747,6 +1724,17 @@ struct EditorView final : GPU::GPUView
     std::function<void(const std::string&)> onTitleChanged =
         [](const std::string&) {};
 
+    // A settings file has rebound something, so the menus have to be built
+    // again with the chords they now carry.
+    //
+    // A callback for the reason menuBar() is a function this view offers rather
+    // than something it installs: a menu bar belongs to a window on Windows and
+    // to the application on macOS, and this view has no window. The no-op
+    // default is what absorbs the first call — the constructor applies a
+    // configuration before App has a window to hand it, and the bar App
+    // installs straight afterwards is built from the keymap that call left.
+    std::function<void()> onMenuBarChanged = [] {};
+
     // What the document is drawn in, and the only place its size is decided.
     // The family and the size it zooms from come from the settings file; the
     // zoom itself is this session's and is never written back.
@@ -1815,6 +1803,11 @@ struct App
         // After the window exists, because that is what the menu bar attaches
         // to on the platforms that own menus per window.
         Graphics::setApplicationMenuBar(view.menuBar(), window);
+
+        // And again whenever the settings file rebinds something, since an
+        // item's shortcut is baked into the bar when it is built.
+        view.onMenuBarChanged = [this]
+        { Graphics::setApplicationMenuBar(view.menuBar(), window); };
 
         view.onTitleChanged = [this](const std::string& text)
         { window.setTitle(text); };

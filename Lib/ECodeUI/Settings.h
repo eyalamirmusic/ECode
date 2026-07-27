@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Keymap.h"
 #include "Themes.h"
 
 #include <ECodeRender/FontSettings.h>
@@ -8,6 +9,7 @@
 
 #include <Miro/Reflect.h>
 
+#include <map>
 #include <string>
 #include <string_view>
 
@@ -24,7 +26,8 @@ namespace ecode
 //       "font": { "family": "Menlo", "pointSize": 13 },
 //       "theme": "dark",
 //       "chromeColors": { "statusBar": "#7c3aed" },
-//       "textColors": { "keyword": "#ff5555" }
+//       "textColors": { "keyword": "#ff5555" },
+//       "keybindings": { "cmd+p": "workbench.showPalette", "cmd+d": "" }
 //   }
 //
 // Nothing writes this file behind the person editing it. ECode reads it, and
@@ -40,7 +43,17 @@ struct Settings
     // failing; see themeByName.
     std::string theme {defaultThemeName};
 
-    MIRO_REFLECT(font, theme)
+    // Chords to command ids, and partial in the same way the colour blocks are:
+    // what is here is layered onto the default keymap rather than replacing it,
+    // so a file naming three chords keeps the other thirty. See Configuration.
+    //
+    // A map rather than a list of pairs because a chord can only mean one thing
+    // at a time, and JSON's own duplicate-key rule then says so. Its ordering is
+    // alphabetical and does not matter: two entries can only interact by naming
+    // the same chord, which an object cannot do.
+    std::map<std::string, std::string> keybindings;
+
+    MIRO_REFLECT(font, theme, keybindings)
 };
 
 // The settings plus the palettes they resolve to, which is what the app applies.
@@ -55,10 +68,24 @@ struct Settings
 // rather than the palette being written out in full. A file that spelled all
 // sixty-eight colours would make its own "theme" key do nothing, and the person
 // who set it would have no way to see why.
+//
+// The keymap is the same shape of answer and needs no more code than the
+// colours did, because Keymap was already built to be appended to: the defaults
+// go in, the file's bindings go in after them, and "later wins" *is* the merge.
+// What the colours have no equivalent of is taking something away, and that is
+// an empty command id — the entry shadows the default, and the chord goes back
+// to meaning nothing. See Keymap::bind.
 struct Configuration
 {
     Settings settings;
     Theme theme;
+
+    // The default bindings with the file's layered over them. A chord the file
+    // gives to a command that was never registered still takes the chord away
+    // from whatever had it, deliberately: a rebinding that half-applied — the
+    // old command still running because the new one was misspelt — is the one
+    // outcome nobody could reason about.
+    Keymap keymap;
 };
 
 // Where the file lives. `~/.config/ecode.json`, matching CowTerm's

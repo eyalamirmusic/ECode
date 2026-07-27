@@ -1,4 +1,5 @@
 #include <ECodeUI/CommandPalette.h>
+#include <ECodeUI/Settings.h>
 #include <ECodeUI/WidgetHost.h>
 
 #include <NanoTest/NanoTest.h>
@@ -520,4 +521,49 @@ auto tPaletteBoxIsCentred = test("Palette/theBoxIsCentredAndFitsANarrowWindow") 
 
     check(fixture.palette.boxBounds().x >= 0.f);
     check(fixture.palette.boxBounds().right() <= 320.f);
+};
+
+// --- the shortcuts it prints ------------------------------------------------
+
+// The composition the settings file makes possible, and the reason it is tested
+// here rather than only in SettingsTests: the merge produces a keymap, and the
+// palette is what a person reads that keymap *through*. Two halves that are each
+// right can still print the wrong string between them.
+//
+// The three checks are three different failures. The rebound command has to show
+// its new chord; a command the file never mentioned has to keep the default's;
+// and the chord that was taken away has to stop being offered for the command it
+// used to run — that last one is the expensive direction, since the palette
+// prints it as an instruction to press a key.
+auto tPalettePrintsTheConfiguredChords =
+    test("Palette/printsTheChordsAFileRebound") = []
+{
+    auto fixture = Fixture {};
+
+    fixture.keymap =
+        configurationFromJson(R"({"keybindings": {"cmd+e": "file.save"}})").keymap;
+
+    fixture.show();
+    fixture.type("save");
+
+    check(fixture.selectedTitle() == "File: Save");
+    check(fixture.palette.entries()[0].shortcut == "⌘E");
+
+    fixture.palette.setQuery("show all");
+    check(fixture.palette.entries()[0].shortcut == "⇧⌘P");
+};
+
+auto tPaletteDropsAnUnboundChord =
+    test("Palette/offersNoChordForACommandTheFileUnbound") = []
+{
+    auto fixture = Fixture {};
+
+    fixture.keymap =
+        configurationFromJson(R"({"keybindings": {"cmd+s": ""}})").keymap;
+
+    fixture.show();
+    fixture.type("save");
+
+    check(fixture.selectedTitle() == "File: Save");
+    check(fixture.palette.entries()[0].shortcut.empty());
 };

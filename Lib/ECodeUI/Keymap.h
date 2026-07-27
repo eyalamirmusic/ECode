@@ -43,6 +43,13 @@ struct Chord
     // modifier takes its common aliases (cmd/command/meta, alt/option/opt,
     // ctrl/control). An unparseable string gives an invalid chord rather than
     // throwing, so a bad line in a keymap costs that one binding.
+    //
+    // Exactly one token may be the key, and that is stricter than it needs to
+    // be for anything the app itself writes. It is for the settings file: a
+    // misspelt modifier is a token like any other, so "cmmd+k" would otherwise
+    // parse as the *bare* key "k" — and a bare binding is matched before the
+    // document sees the key, so a typo would leave the editor unable to type a
+    // letter with nothing on screen to say why.
     static Chord parse(std::string_view text);
 
     static Chord fromEvent(const eacp::Graphics::KeyEvent& event);
@@ -69,14 +76,33 @@ public:
     {
         Chord chord;
         std::string commandId;
+
+        bool operator==(const Binding& other) const
+        {
+            return chord == other.chord && commandId == other.commandId;
+        }
     };
 
     // An unparseable chord is dropped. Binding the same chord twice keeps both
     // and the later one wins, which is what lets user bindings be appended
     // after the defaults instead of merged into them.
+    //
+    // An empty command id is how a binding is taken *away*, and it is the same
+    // mechanism rather than a second one: the entry shadows the default, so the
+    // chord resolves to nothing and chordFor stops offering it. Which is
+    // exactly what an unbound chord already looks like from both sides.
     void bind(std::string_view chord, std::string commandId);
 
     const eacp::Vector<Binding>& bindings() const { return list; }
+
+    // Whole-table equality, which the application uses to tell whether a
+    // reloaded settings file actually moved a binding. It matters because the
+    // menu bar is built from this: on macOS an item's key equivalent is matched
+    // before the window sees the key, so a stale bar keeps claiming a chord the
+    // file has since given to something else — and reinstalling one is not free
+    // of consequence, since it replaces the menus AppKit may be tracking.
+    bool operator==(const Keymap& other) const { return list == other.list; }
+    bool operator!=(const Keymap& other) const { return !(*this == other); }
 
     // Empty when the chord is unbound.
     std::string_view commandFor(const Chord& chord) const;
@@ -91,4 +117,12 @@ public:
 private:
     eacp::Vector<Binding> list;
 };
+
+// ECode's own bindings, which is what a settings file is layered onto.
+//
+// Here rather than in the application for the reason defaultMenus() is: it is a
+// table, and a table belongs where a test can read it. It is also half of the
+// merge policy — the file's bindings are appended to this rather than replacing
+// it, so a file that names three chords keeps the other thirty.
+Keymap defaultKeymap();
 } // namespace ecode

@@ -11,8 +11,8 @@ multi-cursor selection, undo, clipboard and mouse, finds and replaces, soft-wrap
 saves atomically, and notices external changes. The chrome is a widget tree drawn
 entirely on the GPU: sidebar file tree, per-pane tab strips, status bar, command
 palette, find bar, context menu, draggable splitters, native menu bar. Configured
-from `~/.config/ecode.json`, which it opens in itself and re-reads on save.
-651 tests.
+from `~/.config/ecode.json` — colours, font and keybindings — which it opens in
+itself and re-reads on save. 664 tests.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -267,19 +267,11 @@ small because it went through `Editor` rather than around it, and marked text ca
 be held to the same rule. It is a range on the `CursorSet`, not a second thing
 views reach into.
 
-**The rope.** Deferred on a measurement, not a guess. At `-O2`, off-screen, on a
-generated 100 MB C++ file of 4.83 million lines:
-
-| | 1 MB | 10 MB | 100 MB |
-|---|---|---|---|
-| keystroke in the middle | 0.01 ms | 0.10 ms | **1.02 ms** |
-| the same, soft-wrapped at ~80 columns | 0.017 ms | 0.18 ms | 2.03 ms |
-| `LineMap::rebuild` (⌥Z, or a resize) | 0.98 ms | 9.8 ms | **102 ms** |
-| `Document::fromText` — read and index | — | — | 30.0 ms |
-
-The 1.02 ms is the string's memmove and the line index's shift in roughly a 3:1
-ratio. So: not at 10 MB, and one millisecond at 100 MB. Real, but not what stands
-between ECode and a large file.
+**The rope.** Deferred on a measurement, not a guess: on a generated 100 MB file
+a keystroke in the middle costs 1.02 ms — the string's memmove and the line
+index's shift in roughly a 3:1 ratio — and a full `LineMap::rebuild` (⌥Z, or a
+resize) costs 102 ms. Nothing at 10 MB. Real, but not what stands between ECode
+and a large file.
 
 Two things to know before building it. **`LineMap::rowStarts` is the same shape as
 `Document`'s line index** — a flat vector of absolute positions, repaired
@@ -289,46 +281,10 @@ spends. And **the deferral is safe because the mutation API is narrow**:
 `replace(start, end, text)` plus `line(i)`, so the storage can change without the
 renderer or the highlighter noticing.
 
-**Config and theming.** Done, and what is left of it is listed below. The file is
-`~/.config/ecode.json`, read through Miro reflection exactly as CowTerm does it —
-the struct *is* the schema, unknown keys ignored and missing keys defaulted.
-
-Four decisions worth not relitigating:
-
-- **A colour is a string.** `"#1e1e2e"`, or `"#ffffff0d"` when it is translucent,
-  taught to Miro by a free `reflectValue` in `eacp::Graphics` — the documented
-  extension point, and the only spelling ADL will find. Nobody can picture
-  `{"r": 0.098, "g": 0.106, "b": 0.125}`, and a diff of one is unreadable.
-- **A colour block is partial, and layering is free.** Name a theme, then say the
-  one thing you disagree with. Loading the named palette into the struct and the
-  file's block over it *is* the override mechanism, because Miro leaves a key the
-  JSON does not mention at the value the struct already held. The one trap is
-  that the hex round trip is lossy — a channel that was never a multiple of 1/255
-  comes back as the nearest one — so the load has to ask `kind() == String`
-  rather than infer "absent" from the string coming back unchanged. Re-parsing
-  unconditionally nudges every colour in an inherited palette by half a level:
-  invisible, and not the palette the code declared.
-- **Nothing writes the file behind the person editing it.** The only write is a
-  starter template, and only when there is no file at all — so a JSON round trip
-  can never eat a block someone hand-wrote. It is also why ⌘+ does not persist:
-  a zoom written to disk turns ⌘0 into "back to whatever size I was last at".
-  And why the template leaves both colour blocks *empty* rather than spelling all
-  sixty-eight out, which would silently pin the file to one palette and leave its
-  own `theme` key with nothing to decide.
-- **Reload rides the existing one-second disk poll**, since eacp still has no file
-  watching (§3 gap 10). One more stat a second next to a frame, and it is what
-  makes *Preferences: Open Settings* — which opens the file in ECode itself —
-  worth having: save the tab and the window behind it changes.
-
-**Themes are data now**, in a table of two: `dark` is the structs' own defaults,
-so every caller that never heard of a theme keeps the picture it had, and `light`
-is the second entry that makes the table a table. It is built by one rule — keep
-each entry's hue, flip its lightness — because a switch that also recoloured what
-things *mean* is two changes at once and the second is the one nobody asked for.
-The consequence to watch when adding a third: every overlay in a dark palette is
-white at low alpha, and in a light one they all have to be black.
-
-What is left:
+**Config and theming.** The file is `~/.config/ecode.json`: font, theme name,
+two partial colour blocks and a partial keybindings block, read through Miro
+reflection. Why each of those is shaped the way it is lives in `Settings.h`,
+`ColorJson.h`, `Themes.cpp` and `Keymap.h`. What is left:
 
 - **A theme cannot be chosen from inside the app.** There is no picker and no
   cycle command; `"theme"` is edited in the file. The table is there and
@@ -341,11 +297,22 @@ What is left:
   picker today could only offer a list and hope. §3 is where that gap belongs.
   Until then a misspelt family in the file is accepted and drawn in something
   else, which is the one thing the load path checks and cannot report.
-- **Keybindings are not in the file.** `Keymap` already binds by command id
-  precisely so a table can be read into it, and `bindKeys()` is that table
-  written in C++. This is the next struct in the queue, and unlike the colours it
-  needs a merge policy — a file that names three chords should not delete the
-  other thirty.
+- **Nothing in the app shows what the keys are bound to, or edits them.** The
+  palette and the menus print the chord beside each command, which is the whole
+  of the read side, and the file is the whole of the write side. VSCode's
+  keybindings editor is a table with a recorder in it; the pieces here are a
+  `ListView`, a `TextField` and `Chord::fromEvent`, which already turns a key
+  event into exactly the string the file wants.
+- **A bad binding is reported to the log, which nobody is reading.** An
+  unparseable chord and a command that was never registered are both silent in
+  the app itself — the shortcut simply does not work. The status bar is the
+  obvious surface, and it is the same gap the settings file has for a bad
+  colour, so it is one answer rather than two.
+- **There are no chord *sequences*.** VSCode spells several commands ⌘K ⌘→, and
+  a `Keymap` keyed on one `Chord` cannot express it — which is why the pane
+  commands took ⌥⌘← instead. It needs a pending-prefix state on the keymap and a
+  timeout, and it interacts with the menu bar: a sequence can never be a native
+  key equivalent, so anything bound to one prints no shortcut.
 
 **LSP.** `Processes::runAsync` returning `Async<T>` is the right foundation;
 diagnostics, completion and go-to-definition after the chrome settles.
@@ -471,6 +438,13 @@ worth trusting, and they keep coming back — several were learned twice.
 - **Check it fails in the direction that costs you something.** A wrong answer
   usually only hurts one way: falsely *clean* skips the save and loses the work,
   while falsely dirty writes a file twice.
+- **A line no mutation can kill is a line nobody needs.** The settings template
+  writes its two colour blocks by hand, so the keybindings block was written the
+  same way — and backing that line out left every test green. Reflection had
+  been emitting it all along, because unlike the colour blocks it *is* a field
+  of `Settings` and an empty map prints as `{}`. A surviving mutation is
+  normally a hole in the tests; sometimes it is the code that is redundant, and
+  the two are only told apart by asking why the tests did not care.
 - **A test can be unable to fail on your machine.** The clamp keeping a negative
   row index from becoming an enormous unsigned one guards undefined behaviour,
   and on arm64 the UB happens to do the right thing. A green suite is not
@@ -669,6 +643,14 @@ worth trusting, and they keep coming back — several were learned twice.
   Focusing a pane and then clicking a command the focus had just enabled did
   nothing, three times running. Enumerate, then click in a separate step. A
   command that appears to do nothing under automation is not evidence.
+- **The settings file cannot be pointed somewhere else for a run.**
+  `FilePath::homeDirectory()` is `NSHomeDirectory()`, which comes from the user
+  record and ignores `$HOME` — verified, because a run under a scratch home read
+  the real path and reported nothing, which looks identical to the feature not
+  working. So there is no way to exercise the configured app without writing to
+  the actual `~/.config`, and that is the argument for `configurationFromJson`
+  taking *text*: everything the file decides is testable, and only the wiring
+  between the load and the window is not.
 - **ECode will not reliably come to the front**, and captures come back showing
   another application. Chords that are single characters become native menu key
   equivalents, matched by macOS before the window sees a key at all — verified

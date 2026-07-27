@@ -380,6 +380,109 @@ auto tOneBadColourCostsOneEntry =
     check(same(config.theme.text.selection, fromHexColor("#010203", Color {})));
 };
 
+// --- keybindings ----------------------------------------------------------
+
+// The merge policy, and the whole reason the block is layered rather than
+// loaded: a file naming one chord has said nothing about the other forty.
+//
+// Both halves are needed and neither is enough. A block that *replaced* the
+// defaults would pass the first check and fail the second; a block that was
+// read and thrown away would pass the second and fail the first.
+auto tKeybindingsLayerOnTheDefaults =
+    test("Settings/aKeybindingBlockLayersOverTheDefaults") = []
+{
+    const auto config =
+        configurationFromJson(R"({"keybindings": {"cmd+k": "file.close"}})");
+
+    check(config.keymap.commandFor(Chord::parse("cmd+k")) == "file.close");
+    check(config.keymap.commandFor(Chord::parse("cmd+s")) == "file.save");
+};
+
+// Rebinding a chord the defaults already used, which is the case that says
+// which way round the two are appended. And the second check is the one that
+// costs something to get wrong: a chord taken from a command has to stop being
+// advertised for it, because the palette prints that string as an instruction.
+auto tKeybindingsRebindADefault =
+    test("Settings/aFileCanTakeAChordFromTheCommandThatHadIt") = []
+{
+    const auto config =
+        configurationFromJson(R"({"keybindings": {"cmd+s": "file.saveAs"}})");
+
+    check(config.keymap.commandFor(Chord::parse("cmd+s")) == "file.saveAs");
+
+    check(!config.keymap.chordFor("file.save").isValid());
+    check(config.keymap.chordFor("file.saveAs").display() == "⌘S");
+};
+
+// Taking a chord away entirely, which is the one thing the colour blocks have
+// no equivalent of — a colour can only be changed to another colour.
+auto tKeybindingsCanUnbind = test("Settings/anEmptyCommandIdUnbindsAChord") = []
+{
+    const auto config = configurationFromJson(R"({"keybindings": {"cmd+d": ""}})");
+
+    check(config.keymap.commandFor(Chord::parse("cmd+d")).empty());
+    check(!config.keymap.chordFor("edit.addNextOccurrence").isValid());
+
+    // The rest of the table is still there, which is what separates an unbind
+    // from a block that failed to load at all.
+    check(config.keymap.commandFor(Chord::parse("cmd+z")) == "edit.undo");
+};
+
+// A bad line costs its own line, the same way a bad colour costs its own entry.
+//
+// The second check is the one worth having, and it is why Chord::parse rejects
+// a second key rather than taking the last one: read leniently, "cmmd+k" is a
+// binding on the *bare* key K, and handleShortcut runs before the document —
+// so a typo in the file would cost the ability to type a letter, silently, in
+// every file open in the editor.
+auto tOneBadChordCostsOneLine =
+    test("Settings/anUnreadableChordLeavesTheRestOfTheBlockAlone") = []
+{
+    const auto config = configurationFromJson(R"({
+        "keybindings": {
+            "cmmd+k": "file.close",
+            "cmd+j": "file.new"
+        }
+    })");
+
+    check(config.keymap.commandFor(Chord::parse("cmd+j")) == "file.new");
+    check(config.keymap.commandFor(Chord::parse("k")).empty());
+};
+
+// A command that was never registered still takes the chord, deliberately. The
+// alternative is a rebinding that half-applies — ⌘S still saving because the
+// command it was pointed at was misspelt — which is the one outcome that
+// cannot be reasoned about from the file.
+auto tKeybindingsTakeTheChordRegardless =
+    test("Settings/anUnknownCommandStillTakesTheChord") = []
+{
+    const auto config = configurationFromJson(
+        R"({"keybindings": {"cmd+s": "file.saveEverything"}})");
+
+    check(config.keymap.commandFor(Chord::parse("cmd+s")) == "file.saveEverything");
+    check(!config.keymap.chordFor("file.save").isValid());
+};
+
+// What the application gates the menu bar rebuild on. Installing a bar replaces
+// the menus AppKit may be tracking, so "the settings file changed" is not the
+// question — "did a chord move" is, and a colour block is the case that has to
+// answer no.
+auto tKeymapIsUnmovedByAColourChange =
+    test("Settings/aColourOnlyFileLeavesTheKeymapIdentical") = []
+{
+    const auto plain = configurationFromJson("{}");
+    const auto coloured = configurationFromJson(
+        R"({"theme": "light", "textColors": {"caret": "#00ff00"}})");
+
+    check(plain.keymap == coloured.keymap);
+    check(plain.keymap == defaultKeymap());
+
+    const auto rebound =
+        configurationFromJson(R"({"keybindings": {"cmd+k": "file.close"}})");
+
+    check(!(rebound.keymap == plain.keymap));
+};
+
 // --- the template ---------------------------------------------------------
 
 // Written once, when there is nothing there. Reading it back has to give
@@ -395,11 +498,17 @@ auto tTemplateIsTheDefaults = test("Settings/theTemplateReadsBackAsTheDefaults")
 
     check(sameBytes(config.theme.chrome, darkChrome));
     check(sameBytes(config.theme.text, darkText));
+
+    check(config.keymap == defaultKeymap());
 };
 
 // Present and empty. A template that spelled all sixty-eight colours out would
 // pin the file to one palette and leave its own "theme" key doing nothing — and
 // the person who changed it would have no way to see why.
+//
+// The keybindings block is the same decision with a sharper edge: written out
+// in full it would be a copy of a table that moves, so every chord the file
+// named would be frozen at whatever the version that created it had bound.
 auto tTemplateHasEmptyColourBlocks =
     test("Settings/theTemplateOffersTheBlocksWithoutFillingThem") = []
 {
@@ -407,10 +516,15 @@ auto tTemplateHasEmptyColourBlocks =
 
     check(text.find("chromeColors") != std::string::npos);
     check(text.find("textColors") != std::string::npos);
+    check(text.find("keybindings") != std::string::npos);
 
     // No colour in it anywhere. Cheap and exact: every colour this could write
     // starts with a '#', and nothing else in the template does.
     check(text.find('#') == std::string::npos);
+
+    // And no binding either, by the same trick: every chord in the table has a
+    // modifier, and "+" appears nowhere else in a settings file.
+    check(text.find('+') == std::string::npos);
 };
 
 auto tTemplateIsWrittenOnce = test("Settings/theTemplateNeverOverwritesAFile") = []

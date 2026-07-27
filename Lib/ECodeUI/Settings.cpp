@@ -55,6 +55,16 @@ Configuration configurationFromJson(std::string_view text)
     Miro::fromJSON(config.theme.chrome, blockOrNull(json, chromeColorsKey));
     Miro::fromJSON(config.theme.text, blockOrNull(json, textColorsKey));
 
+    // And the same order for the bindings, for the same reason: appending is
+    // what makes the file's block partial, since Keymap resolves a chord to its
+    // last binding. An unparseable chord is dropped by bind() and costs that
+    // one line — the defaults it would have shadowed stay in force, which is
+    // the side of that trade a person can still work in.
+    config.keymap = defaultKeymap();
+
+    for (const auto& [chord, commandId]: config.settings.keybindings)
+        config.keymap.bind(chord, commandId);
+
     return config;
 }
 
@@ -84,6 +94,16 @@ std::string settingsTemplate()
 
     fields[chromeColorsKey] = Miro::Json::Object {};
     fields[textColorsKey] = Miro::Json::Object {};
+
+    // Nothing puts "keybindings" here, and that is the difference between the
+    // two: it is a field of Settings, so reflection writes it — empty, because
+    // the struct's own default is empty. The colour blocks are not fields of
+    // anything and have to be added by hand.
+    //
+    // Empty is the right template entry for it either way, and for a sharper
+    // reason than the colours have. A template that spelled out the forty-odd
+    // default bindings would be a copy of a table that moves, so every chord it
+    // named would be pinned to whatever the version that created the file had.
 
     return Miro::Json::print(json, 4);
 }
