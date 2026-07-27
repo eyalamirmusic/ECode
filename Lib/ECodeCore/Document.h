@@ -81,6 +81,20 @@ public:
     // PLAN.md §7.6.
     std::size_t widestLine() const;
 
+    // The line that count was measured on, for turning the range into points.
+    //
+    // Bytes cannot do that on their own: a tab is one byte and up to tabWidth
+    // columns, so only the characters themselves say how far a line reaches.
+    // The measuring is the renderer's — a tab width is a drawing decision this
+    // class deliberately knows nothing about — so what is handed over is the
+    // text.
+    //
+    // The widest line in *bytes*, which is not always the one that reaches
+    // furthest across the screen: a shorter line with more tabs in it can
+    // out-reach it. PLAN.md §5.3 records what that costs and what fixing it
+    // would take.
+    std::string_view widestLineText() const;
+
     // How many times the answer above had to be rebuilt from scratch.
     //
     // Exposed for tests, in the shape LineMap::rebuildCount() established: the

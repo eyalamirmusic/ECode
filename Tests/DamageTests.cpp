@@ -109,7 +109,7 @@ struct DamageView final : GPU::GPUView
 
         auto context = PaintContext {pass, sprites, *glyphs, *atlas, area(), 1.f};
 
-        renderer->draw(context, view, {}, area(), scrollY);
+        renderer->draw(context, view, {}, area(), {0.f, scrollY});
     }
 
     const RowCache& rows() const { return renderer->rows(); }

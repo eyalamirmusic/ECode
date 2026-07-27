@@ -89,7 +89,7 @@ struct WrapTestView final : GPU::GPUView
         overlay.cursors = showCursors ? &cursors : nullptr;
         overlay.caretVisible = showCursors;
 
-        renderer->draw(context, view, overlay, bounds(), 0.f);
+        renderer->draw(context, view, overlay, bounds(), {});
     }
 
     // Shows exactly this cursor, with its caret lit. Every test here wants one

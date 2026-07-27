@@ -373,6 +373,38 @@ auto tZoomKeepsTheTopLine =
     check(view.group.editor().topVisibleLine() == 120);
 };
 
+// The same across. The offset is in points and the column width moves with the
+// size just as the row height does, so a view scrolled across a long line would
+// otherwise land somewhere else along it on every ⌘+.
+//
+// A long line to scroll along, and one column short of the range's end, so that
+// the clamp cannot be what is holding the answer still.
+auto tZoomKeepsTheLeftColumn =
+    test("FontRender/changingTheSizeKeepsTheColumnAtTheLeft") = []
+{
+    auto view = FontTestView {};
+
+    if (!view.build(chromeSize, false))
+        return;
+
+    view.setText(std::string(600, 'x') + "\n");
+    view.settledImage();
+
+    view.group.editor().scrollToLeftColumn(200);
+
+    check(view.group.editor().leftVisibleColumn() == 200);
+
+    if (!view.setEditorFontSize(22.f))
+        return;
+
+    check(view.group.editor().leftVisibleColumn() == 200);
+
+    if (!view.setEditorFontSize(8.f))
+        return;
+
+    check(view.group.editor().leftVisibleColumn() == 200);
+};
+
 // The other half of that, and the half a test could not have predicted: every
 // command wakes the editor, and waking it used to bring the caret into view
 // whether or not anything had moved. Zooming with the caret on line 1 and the

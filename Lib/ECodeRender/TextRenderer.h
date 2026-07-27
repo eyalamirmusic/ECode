@@ -7,6 +7,7 @@
 #include <ECodeCore/Editor.h>
 #include <ECodeCore/Document.h>
 #include <ECodeCore/LineMap.h>
+#include <ECodeCore/ScrollOffset.h>
 #include <ECodeCore/Search.h>
 #include <ECodeCore/Style.h>
 
@@ -94,14 +95,24 @@ public:
               const DocumentView& view,
               const EditorOverlay& overlay,
               const eacp::Graphics::Rect& viewport,
-              float scrollY);
+              ScrollOffset scroll);
 
     // Rasterizes the glyphs the next draw() will need, without drawing.
+    //
+    // Takes only the vertical offset, and that is not an oversight: a row is
+    // laid out and cached whole, clipped rather than trimmed, so scrolling
+    // across it needs no glyph that standing at the left edge did not. Which
+    // rows are on screen is the only thing either offset decides, and that is
+    // the vertical one.
     void prepare(const DocumentView& view,
                  const eacp::Graphics::Rect& viewport,
                  float scrollY);
 
     float rowHeight() const;
+
+    // One character's width. The unit a horizontal scroll steps in, and what
+    // the wrap width is counted out of.
+    float columnWidth() const;
 
     // Where a row's top edge sits, before scrolling. The only multiplication by
     // a row index in the codebase, and the seam a variable row height replaces.
@@ -119,6 +130,26 @@ public:
     // Total height of the document, for the scroll range.
     float contentHeight(const DocumentView& view) const;
 
+    // How much of the viewport is text rather than line numbers. The gutter
+    // does not scroll with the text, so this is what a horizontal offset is
+    // compared against — not the viewport.
+    float textWidth(const eacp::Graphics::Rect& viewport,
+                    std::size_t lineCount) const;
+
+    // How far the widest line reaches, with the padding either side of it and
+    // one column of room past its end so a caret sitting there is not against
+    // the edge. The other half of the scroll range.
+    //
+    // Measures rather than multiplies, because a tab is not one advance wide.
+    // Only the line Document nominated, though, so a shorter line with more
+    // tabs in it can reach past this — see Document::widestLineText.
+    float contentWidth(const DocumentView& view) const;
+
+    // Where a caret at this offset sits across the text area, measured in the
+    // coordinates contentWidth() is in, so the two can be compared without
+    // either caller knowing what the padding is.
+    float caretX(const DocumentView& view, std::size_t offset) const;
+
     // How many characters fit across the text area, which is the width soft
     // wrap breaks at. Zero when there is no room for even one, so a viewport
     // squeezed to nothing turns wrapping off rather than dividing by it.
@@ -131,7 +162,7 @@ public:
     std::size_t offsetAtPoint(const DocumentView& view,
                               const eacp::Graphics::Point& point,
                               const eacp::Graphics::Rect& viewport,
-                              float scrollY) const;
+                              ScrollOffset scroll) const;
 
     // The x offset of a byte position within a row's own text, so the caret and
     // selection can be placed without re-walking the glyphs. Row-local, because
@@ -178,21 +209,21 @@ private:
     // same code — the only thing that differs is the colour.
     void fillRange(eacp::Sprites::SpriteRenderer& sprites,
                    const DocumentView& view,
-                   std::size_t from,
-                   std::size_t to,
+                   std::size_t rangeStart,
+                   std::size_t rangeEnd,
                    const eacp::Graphics::Rect& textRect,
-                   float scrollY,
+                   ScrollOffset scroll,
                    std::size_t first,
                    std::size_t last,
-                   const eacp::Graphics::Color& color);
+                   const eacp::Graphics::Color& color) const;
 
     void drawMatches(eacp::Sprites::SpriteRenderer& sprites,
                      const DocumentView& view,
                      const EditorOverlay& overlay,
                      const eacp::Graphics::Rect& textRect,
-                     float scrollY,
+                     ScrollOffset scroll,
                      std::size_t first,
-                     std::size_t last);
+                     std::size_t last) const;
 
     eacp::Text::GlyphAtlas& atlas;
     TextTheme theme;

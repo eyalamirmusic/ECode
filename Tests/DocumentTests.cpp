@@ -96,6 +96,41 @@ auto tTracksWidestLine = test("Document/tracksTheWidestLine") = []
     check(document.widestLine() == 6);
 };
 
+// The text of that line, not merely a line of that length: the renderer measures
+// it to size a horizontal scroll, and a tab is one byte and several columns, so
+// handing back the wrong line of the right length would be an answer that looks
+// correct and reaches the wrong distance.
+//
+// The document is built so that no other line could stand in — "abcdef" is the
+// only one of its width, and the two either side of it differ from it in their
+// characters as well as in their length.
+auto tWidestLineTextIsThatLine =
+    test("Document/theWidestLineIsHandedBackAsText") = []
+{
+    const auto document = Document::fromText("ab\nabcdef\nabc");
+
+    check(document.widestLineText() == "abcdef");
+    check(document.widestLineText().size() == document.widestLine());
+};
+
+// It follows the record rather than being computed once, including across the
+// rescan a shortened record forces.
+auto tWidestLineTextFollowsEdits =
+    test("Document/theWidestLineTextFollowsTheRecord") = []
+{
+    auto document = Document::fromText("ab\nabcdef\nabcd");
+
+    check(document.widestLineText() == "abcdef");
+
+    // A new record on another line, carried without a rescan.
+    document.replace(0, 2, "zzzzzzzz");
+    check(document.widestLineText() == "zzzzzzzz");
+
+    // And the record's own line cut down, which is the case that rescans.
+    document.replace(0, 8, "z");
+    check(document.widestLineText() == "abcdef");
+};
+
 auto tTextIsPreserved = test("Document/keepsTheOriginalText") = []
 {
     const auto source = std::string {"alpha\nbeta\n"};

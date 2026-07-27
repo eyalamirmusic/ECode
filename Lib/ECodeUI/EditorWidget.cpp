@@ -93,7 +93,38 @@ void EditorWidget::clampScroll()
     // but never push a short document around.
     const auto lowest = std::min(0.f, bounds().h - content);
 
-    open->scrollY = std::clamp(open->scrollY, lowest, 0.f);
+    open->scroll.y = std::clamp(open->scroll.y, lowest, 0.f);
+
+    clampScrollColumn();
+}
+
+void EditorWidget::clampScrollColumn()
+{
+    // Wrapping breaks every line to fit, so nothing reaches past the right edge
+    // and the offset belongs at the left. Pinned here rather than refused at
+    // the wheel, so that turning wrapping *on* while scrolled across puts the
+    // text back where it can be read.
+    if (wordWrap)
+    {
+        open->scroll.x = 0.f;
+        return;
+    }
+
+    // A view at the left edge is inside any range there could be, so the range
+    // does not have to be worked out — and working it out means asking for the
+    // widest line, which Document rescans whenever an edit takes the record off
+    // it. See Document::widestLine for what that scan measured. clampScroll
+    // runs after every keystroke by way of scrollToCaret, so this is what keeps
+    // typing in a file nobody has scrolled sideways from paying for it.
+    if (open->scroll.x == 0.f)
+        return;
+
+    const auto view = documentView();
+
+    const auto visible = renderer->textWidth(bounds(), document().lineCount());
+    const auto leftmost = std::min(0.f, visible - renderer->contentWidth(view));
+
+    open->scroll.x = std::clamp(open->scroll.x, leftmost, 0.f);
 }
 
 void EditorWidget::scrollToRow(std::size_t row)
@@ -107,13 +138,14 @@ void EditorWidget::scrollToRow(std::size_t row)
     // Already on screen: leave the view alone. Re-centring on every hit would
     // scroll the file out from under a match that was perfectly visible, and
     // ⌘G down a screenful of hits would judder rather than step.
-    if (top + open->scrollY >= 0.f && top + rowHeight + open->scrollY <= bounds().h)
+    if (top + open->scroll.y >= 0.f
+        && top + rowHeight + open->scroll.y <= bounds().h)
         return;
 
     // Otherwise centre it rather than bringing it just inside the edge. A hit
     // revealed by the smallest possible scroll lands hard against the top or
     // bottom with no context on the side it arrived from.
-    open->scrollY = -top + (bounds().h - rowHeight) * 0.5f;
+    open->scroll.y = -top + (bounds().h - rowHeight) * 0.5f;
 
     clampScroll();
 }
@@ -123,7 +155,7 @@ std::size_t EditorWidget::topVisibleLine() const
     if (renderer == nullptr)
         return 0;
 
-    const auto row = renderer->firstVisibleRow(open->scrollY);
+    const auto row = renderer->firstVisibleRow(open->scroll.y);
 
     return editor().lineMap().row(document(), row).line;
 }
@@ -133,7 +165,25 @@ void EditorWidget::scrollToTopLine(std::size_t line)
     if (renderer == nullptr)
         return;
 
-    open->scrollY = -renderer->rowTop(editor().lineMap().firstRowOfLine(line));
+    open->scroll.y = -renderer->rowTop(editor().lineMap().firstRowOfLine(line));
+
+    clampScroll();
+}
+
+std::size_t EditorWidget::leftVisibleColumn() const
+{
+    if (renderer == nullptr || renderer->columnWidth() <= 0.f)
+        return 0;
+
+    return static_cast<std::size_t>(-open->scroll.x / renderer->columnWidth());
+}
+
+void EditorWidget::scrollToLeftColumn(std::size_t column)
+{
+    if (renderer == nullptr)
+        return;
+
+    open->scroll.x = -static_cast<float>(column) * renderer->columnWidth();
 
     clampScroll();
 }
@@ -143,6 +193,14 @@ void EditorWidget::scrollToCaret()
     if (renderer == nullptr)
         return;
 
+    scrollToCaretRow();
+    scrollToCaretColumn();
+
+    clampScroll();
+}
+
+void EditorWidget::scrollToCaretRow()
+{
     const auto row =
         editor().lineMap().rowOfOffset(document(), editor().cursor().head);
     const auto rowHeight = renderer->rowHeight();
@@ -152,12 +210,32 @@ void EditorWidget::scrollToCaret()
 
     // Only move when the caret has actually left the viewport, so typing in the
     // middle of the screen does not drag the view around.
-    if (top + open->scrollY < 0.f)
-        open->scrollY = -top;
-    else if (bottom + open->scrollY > bounds().h)
-        open->scrollY = bounds().h - bottom;
+    if (top + open->scroll.y < 0.f)
+        open->scroll.y = -top;
+    else if (bottom + open->scroll.y > bounds().h)
+        open->scroll.y = bounds().h - bottom;
+}
 
-    clampScroll();
+void EditorWidget::scrollToCaretColumn()
+{
+    // Wrapping keeps every row inside the viewport, so there is never a caret
+    // off the side to follow — and asking would cost the widest-line scan that
+    // clampScrollColumn is careful not to.
+    if (wordWrap)
+        return;
+
+    const auto left = renderer->caretX(documentView(), editor().cursor().head);
+
+    // A whole column rather than the caret's own two points, so that the
+    // character about to be typed has somewhere to appear. Otherwise typing on
+    // past the right edge shows the caret and never the letter.
+    const auto right = left + renderer->columnWidth();
+    const auto visible = renderer->textWidth(bounds(), document().lineCount());
+
+    if (left + open->scroll.x < 0.f)
+        open->scroll.x = -left;
+    else if (right + open->scroll.x > visible)
+        open->scroll.x = visible - right;
 }
 
 int EditorWidget::visibleRows() const
@@ -389,8 +467,8 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
     {
         const auto& lines = editor().lineMap();
 
-        const auto first = renderer->firstVisibleRow(open->scrollY);
-        const auto last = renderer->lastVisibleRow(view, bounds(), open->scrollY);
+        const auto first = renderer->firstVisibleRow(open->scroll.y);
+        const auto last = renderer->lastVisibleRow(view, bounds(), open->scroll.y);
 
         highlighter()->update(document(),
                               lines.lineOfRow(document(), first),
@@ -407,7 +485,7 @@ void EditorWidget::prepare(Text::GlyphAtlas&, const Graphics::Rect&)
             repaint();
     }
 
-    renderer->prepare(view, bounds(), open->scrollY);
+    renderer->prepare(view, bounds(), open->scroll.y);
 }
 
 void EditorWidget::paint(PaintContext& context)
@@ -421,7 +499,7 @@ void EditorWidget::paint(PaintContext& context)
     overlay.matches = &finder.matches();
     overlay.currentMatch = finder.currentIndex();
 
-    renderer->draw(context, documentView(), overlay, bounds(), open->scrollY);
+    renderer->draw(context, documentView(), overlay, bounds(), open->scroll);
 }
 
 void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
@@ -430,7 +508,7 @@ void EditorWidget::mouseDown(const Graphics::MouseEvent& event)
         return;
 
     const auto offset =
-        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scrollY);
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scroll);
 
     if (event.button == Graphics::MouseButton::Right)
     {
@@ -476,7 +554,7 @@ void EditorWidget::mouseDragged(const Graphics::MouseEvent& event)
 
     // Always an extension: the anchor was set on mouse-down.
     editor().placeCaret(
-        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scrollY),
+        renderer->offsetAtPoint(documentView(), event.pos, bounds(), open->scroll),
         true);
 
     wake();
@@ -488,12 +566,18 @@ bool EditorWidget::mouseWheel(const Graphics::MouseEvent& event)
         return false;
 
     // A trackpad reports points; a notched wheel reports lines, and only this
-    // widget knows how tall a line is.
-    const auto points = event.preciseScrolling
-                            ? event.delta.y
-                            : event.delta.y * renderer->rowHeight() * 3.f;
+    // widget knows how tall a line is — or how wide a column is, which is what
+    // a horizontal detent moves by.
+    //
+    // Both axes arrive on the same event and macOS has already resolved which
+    // one a gesture meant, shift-wheel included: AppKit reports a shifted wheel
+    // as scrollingDeltaX. Swapping them here as well would undo that.
+    const auto points = [&](float delta, float step)
+    { return event.preciseScrolling ? delta : delta * step * 3.f; };
 
-    open->scrollY += points;
+    open->scroll.y += points(event.delta.y, renderer->rowHeight());
+    open->scroll.x += points(event.delta.x, renderer->columnWidth());
+
     clampScroll();
     repaint();
 

@@ -60,6 +60,7 @@ nano_add_executable(ECodeRenderTests
             EditorGroupRenderTests.cpp
             FindRenderTests.cpp
             FontRenderTests.cpp
+            HorizontalScrollTests.cpp
             MultiCursorRenderTests.cpp
             PaletteRenderTests.cpp
             RenderIntegrationTests.cpp

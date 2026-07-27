@@ -366,16 +366,16 @@ auto tEachTabKeepsItsOwnState =
 
     workspace.open(a);
     workspace.editor().insert("one");
-    workspace.active().scrollY = -120.f;
+    workspace.active().scroll.y = -120.f;
 
     workspace.open(b);
     workspace.editor().insert("two");
-    workspace.active().scrollY = -40.f;
+    workspace.active().scroll.y = -40.f;
 
     workspace.activate(0);
 
     check(workspace.active().file.document().text() == "oneaaa\n");
-    check(workspace.active().scrollY == -120.f);
+    check(workspace.active().scroll.y == -120.f);
     check(workspace.editor().canUndo());
 
     // Undo here must not reach into the other file.
@@ -383,7 +383,7 @@ auto tEachTabKeepsItsOwnState =
 
     check(workspace.at(0).file.document().text() == "aaa\n");
     check(workspace.at(1).file.document().text() == "twobbb\n");
-    check(workspace.at(1).scrollY == -40.f);
+    check(workspace.at(1).scroll.y == -40.f);
 
     std::filesystem::remove_all(dir);
 };

@@ -112,6 +112,17 @@ std::size_t Document::widestLine() const
     return widest;
 }
 
+std::string_view Document::widestLineText() const
+{
+    if (!widestKnown)
+        rescanWidest();
+
+    // widestStart is checked against the repaired index on every edit that
+    // keeps it, so it names a real line start whose length is `widest` — the
+    // same guarantee that lets widestLine() trust the memo at all.
+    return line(lineAt(widestStart));
+}
+
 TextEdit Document::replace(std::size_t start, std::size_t end, std::string_view text)
 {
     start = std::min(start, contents.size());

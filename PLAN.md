@@ -6,15 +6,15 @@ finished decision lives in the header of the class that holds it, and the histor
 lives in the git log.
 
 **Status.** A working editor, macOS only. Opens files — several at once, in
-several panes — highlights them with tree-sitter, scrolls, is typed in with
-multi-cursor selection, undo, clipboard and mouse, finds and replaces, soft-wraps,
-saves atomically, and notices external changes. The chrome is a widget tree drawn
-entirely on the GPU: sidebar file tree, per-pane tab strips, status bar, command
-palette, find bar, context menu, draggable splitters, native menu bar. Configured
-from `ECode/settings.json` in the platform's application-data directory —
-colours, font and keybindings — which it opens in itself and re-reads on save,
-and whose theme can be picked from the palette, previewed row by row, and written
-back. 683 tests.
+several panes — highlights them with tree-sitter, scrolls both down and across,
+is typed in with multi-cursor selection, undo, clipboard and mouse, finds and
+replaces, soft-wraps, saves atomically, and notices external changes. The chrome
+is a widget tree drawn entirely on the GPU: sidebar file tree, per-pane tab
+strips, status bar, command palette, find bar, context menu, draggable
+splitters, native menu bar. Configured from `ECode/settings.json` in the
+platform's application-data directory — colours, font and keybindings — which it
+opens in itself and re-reads on save, and whose theme can be picked from the
+palette, previewed row by row, and written back. 695 tests.
 
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
@@ -71,6 +71,7 @@ Lib/ECodeCore/     no GPU, no platform, fully unit-testable
   Commands          the command registry
   Style             the Highlighter interface — no tree-sitter in here
   Utf8, FuzzyMatch  header-only helpers
+  ScrollOffset      where a view sits over its content, negative up and left
 
 Lib/ECodeSyntax/   tree-sitter behind Style.h's interface
   SyntaxLanguage    grammar + compiled query, shared by every highlighter
@@ -361,8 +362,19 @@ diagnostics, completion and go-to-definition after the chrome settles.
   model.
 - **⌥-double-click adds two carets** rather than a word selection: the widget
   takes ⌥-click before the click-count cases.
-- **No horizontal scrolling.** `Document::widestLine()` exists to size the range
-  and has no caller outside its own tests.
+- **The horizontal range is sized from the widest line in *bytes*.** Scrolling
+  across works — the wheel drives it, the caret is followed off the right edge,
+  the gutter stays put while the text slides under it, and wrapping pins it back
+  to the left because a wrapped row never reaches past the edge. What is
+  approximate is which line the range is measured on: `Document` records the
+  longest in bytes, and while that line is then measured properly, tabs and all,
+  a *shorter* line with more tabs in it can reach further and have its last
+  columns be unreachable. Fixing it means counting expanded columns, which puts
+  a tab width — a rendering decision — inside the one class that deliberately
+  has none. `LineMap` already has one and is the better home if it is wanted.
+  The reason it is a memo at all is that recomputing eagerly measured 4.7 ms of
+  a 6.7 ms keystroke on a 100 MB file, so `clampScrollColumn` asks only of a
+  view that has actually been scrolled across.
 - **Continuation rows are not indented.** VSCode aligns a wrapped row with its
   line's indentation, which matters much more for code than for prose. It is a
   `LineMap` change — a per-line indent added to the row's left edge and
@@ -623,9 +635,11 @@ worth trusting, and they keep coming back — several were learned twice.
   what an edit costs wherever it lands: 4.72 ms of 6.70, and now 0.000. The
   cheapest way to break a number down is an input where the part goes to zero.
 - **Grep for who reads a number before optimising it.** Two thirds of a keystroke
-  on a large file went into `Document::widestLine()`, which nothing outside its
-  own tests calls. Nothing looked wrong and no test could have failed: it was
-  computing the right answer, eagerly, for nobody.
+  on a large file went into `Document::widestLine()`, which at the time nothing
+  outside its own tests called. Nothing looked wrong and no test could have
+  failed: it was computing the right answer, eagerly, for nobody. The horizontal
+  scroll is its caller now, and asks only when the view has left the left edge —
+  which is the shape the memo was left in to make possible.
 - **A/B the parts that "obviously" help.** A `reserve` on the line index measured
   as noise — 29.6 ms against 30.0 — and would have over-allocated 25 MB on a file
   that turned out to be one long line. The whole 3.5× came from `memchr`.

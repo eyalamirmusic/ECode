@@ -559,7 +559,7 @@ auto tSwitchingBackRestoresTheView =
 
     const auto scrolled = view.editor.scrollOffset();
 
-    check(scrolled < -100.f);
+    check(scrolled.y < -100.f);
 
     const auto before = view.renderToImage(1.f);
 

@@ -91,7 +91,7 @@ struct EditorTestView final : GPU::GPUView
         overlay.matches = matches;
         overlay.currentMatch = currentMatch;
 
-        renderer->draw(context, view, overlay, area, 0.f);
+        renderer->draw(context, view, overlay, area, {});
     }
 
     // With wrapping off a LineMap stores nothing per line and answers from the
@@ -383,7 +383,7 @@ auto tHitTestRoundTrips =
             const auto y = (static_cast<float>(line) + 0.5f) * lineHeight;
 
             const auto offset =
-                view.renderer->offsetAtPoint({document, lines}, {x, y}, area, 0.f);
+                view.renderer->offsetAtPoint({document, lines}, {x, y}, area, {});
 
             check(document.lineAt(offset) == line);
             check(document.columnAt(offset) == column);
@@ -652,16 +652,16 @@ auto tHitTestClamps = test("RenderIntegration/clicksOutsideTheTextClamp") = []
         {document, lines},
         {viewWidth * 4.f, view.renderer->rowHeight() * 0.5f},
         area,
-        0.f);
+        {});
 
     check(document.lineAt(right) == 0);
     check(document.columnAt(right) == document.line(0).size());
 
     // Above the first line, and far below the last.
     const auto above =
-        view.renderer->offsetAtPoint({document, lines}, {0.f, -500.f}, area, 0.f);
+        view.renderer->offsetAtPoint({document, lines}, {0.f, -500.f}, area, {});
     const auto below =
-        view.renderer->offsetAtPoint({document, lines}, {0.f, 5000.f}, area, 0.f);
+        view.renderer->offsetAtPoint({document, lines}, {0.f, 5000.f}, area, {});
 
     check(above == 0);
     check(document.lineAt(below) == document.lineCount() - 1);

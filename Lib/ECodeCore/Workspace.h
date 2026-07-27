@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ScrollOffset.h"
 #include "Style.h"
 #include "TextFile.h"
 
@@ -41,7 +42,7 @@ struct OpenFile
     // reason Editor owns the line map: a step that has to be remembered at
     // every call site is one that will eventually be forgotten, and forgetting
     // it means the view jumping on a tab switch with nothing to say why.
-    float scrollY = 0.f;
+    ScrollOffset scroll;
 };
 
 // Every file open at once, and which of them is being looked at.

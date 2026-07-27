@@ -44,9 +44,9 @@ public:
 
     Highlighter* highlighter() const { return open->highlighter.get(); }
 
-    // Where this file is scrolled to, in points, negative downwards. Exposed
-    // for the tests that check a switch does not lose it.
-    float scrollOffset() const { return open->scrollY; }
+    // Where this file is scrolled to, in points, negative down and right.
+    // Exposed for the tests that check a switch does not lose it.
+    ScrollOffset scrollOffset() const { return open->scroll; }
 
     // The document line at the top of the viewport, and putting one back there.
     //
@@ -59,6 +59,16 @@ public:
     // Line 0 before there is a renderer, which is also the right answer then.
     std::size_t topVisibleLine() const;
     void scrollToTopLine(std::size_t line);
+
+    // The same pair across, and for the same reason: the offset is in points
+    // and the column width moves with the font, so ⌘+ while scrolled across
+    // would leave the view on a different part of the line.
+    //
+    // Counted in whole columns of the uniform grid rather than against any one
+    // line's tab stops, because the left edge is a property of the viewport and
+    // not of a line — nothing here knows which line is being read.
+    std::size_t leftVisibleColumn() const;
+    void scrollToLeftColumn(std::size_t column);
 
     // Inside *any* selection, half-open, matching Cursor's own range: an offset
     // at the very end of a selection is past it, which is where a click lands
@@ -177,7 +187,16 @@ private:
     void updateWrapWidth();
 
     void clampScroll();
+
+    // Apart from the vertical clamp because it is the one that can cost
+    // something: the horizontal range is the widest line, which Document
+    // rescans whenever an edit takes the record off it. See the definition for
+    // what keeps that off the keystroke path.
+    void clampScrollColumn();
+
     void scrollToCaret();
+    void scrollToCaretRow();
+    void scrollToCaretColumn();
 
     // Whether the text or the primary caret has changed since the last wake,
     // which is what decides whether the view follows it. The document's
