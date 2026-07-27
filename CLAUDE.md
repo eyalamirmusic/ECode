@@ -156,10 +156,19 @@ CPMAddPackage("gh:eyalamirmusic/ECode@0.1.0")
 target_link_libraries(MyApp PRIVATE ECode::Editor)
 ```
 
-`ECODE_BUILD_APPS` and `ECODE_ENABLE_TESTS` default to `PROJECT_IS_TOP_LEVEL`;
-`ECODE_BUILD_SYNTAX=OFF` skips the tree-sitter fetch (105 s of cold configure down
-to 7 s). There is no `install(EXPORT)` — eacp has no export sets, so CMake
-refuses. `PLAN.md` §3 tracks that.
+`ECODE_BUILD_APPS` and `ECODE_ENABLE_TESTS` default to `PROJECT_IS_TOP_LEVEL`,
+and are the only two knobs. Everything else is built unconditionally, including
+tree-sitter — a cold configure is about nine seconds. `ECodeEditor` does not link
+`ECodeSyntax`, so an embedded code view carries no grammar regardless of what is
+built, which is the property worth protecting; a build flag for it was not.
+There is no `install(EXPORT)` — eacp has no export sets, so CMake refuses.
+`PLAN.md` §3 tracks that.
+
+**Fetch dependencies as release tarballs, not git clones.** `parser.c` is
+generated and 16 MB, rewritten every release, so tree-sitter-cpp carries 96 MB of
+history — 79 s to clone, for three files. `GIT_SHALLOW` does *not* fix it:
+ExternalProject clones `--depth 1 --no-single-branch`, fetching every tag's tip,
+each with its own 16 MB blob. `CMake/FindTreeSitter.cmake` has the measurements.
 
 ### eacp pieces this builds on
 

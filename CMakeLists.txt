@@ -28,19 +28,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
 include(CPM)
 find_package(EACP REQUIRED)
 
-# Syntax highlighting is the one module with a heavyweight dependency, and it is
-# the one a consumer may genuinely not want: tree-sitter and the C++ grammar are
-# fetched and compiled at configure time, which is most of a cold configure. An
-# embedded code view draws plain text without it, so the fetch is guarded rather
-# than paid unconditionally.
+# Unconditional, and cheap enough to be: the grammars come down as release
+# tarballs rather than git clones, so this is about two seconds and 2.4 MB. It
+# was guarded behind an option while it cost 98 seconds — see
+# CMake/FindTreeSitter.cmake for what that was — and the option earned its
+# complexity then and stopped earning it the moment the fetch got fast.
 #
-# On by default all the same, because a consumer that wants colour should get
-# ECode::Syntax by linking it rather than by discovering a flag.
-option(ECODE_BUILD_SYNTAX "Build ECodeSyntax, the tree-sitter highlighter" ON)
-
-if (ECODE_BUILD_SYNTAX)
-    find_package(TreeSitter REQUIRED)
-endif ()
+# Nothing is forced on a consumer by building it. ECodeEditor does not link
+# ECodeSyntax, so an embedded code view carries no grammar however this is
+# fetched; a host that wants colour links ECode::Syntax itself.
+find_package(TreeSitter REQUIRED)
 
 # eacp appends its CMake helper directory to CMAKE_MODULE_PATH only within its
 # own directory scope, so re-add it here: Apps/ calls find_package(ResEmbed) via
@@ -77,13 +74,6 @@ add_subdirectory(Lib)
 # meaning "vendor the sources".
 option(ECODE_BUILD_APPS "Build the applications in Apps/" ${PROJECT_IS_TOP_LEVEL})
 option(ECODE_ENABLE_TESTS "Build ECode's tests" ${PROJECT_IS_TOP_LEVEL})
-
-if (ECODE_BUILD_APPS AND NOT ECODE_BUILD_SYNTAX)
-    message(FATAL_ERROR
-            "ECODE_BUILD_APPS needs ECODE_BUILD_SYNTAX: both applications colour "
-            "their text with tree-sitter. Turning the grammar off is for consumers "
-            "embedding ECode::Editor, which draws plain text without it.")
-endif ()
 
 if (ECODE_BUILD_APPS)
     add_subdirectory(Apps)

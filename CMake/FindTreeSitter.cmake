@@ -1,5 +1,30 @@
 include(CPM)
 
+# Release tarballs, not git clones, and it is worth saying why once rather than
+# three times: this was 98 of the 105 seconds a cold configure used to take.
+#
+# A grammar's `src/parser.c` is *generated*, and it is 16 MB. Every release
+# rewrites the whole file, so git stores a fresh 16 MB blob per tag —
+# tree-sitter-cpp carries 96 MB of history behind a 17 MB working tree, and
+# cloning it alone took 79 s to reach three files.
+#
+# GIT_SHALLOW does not fix it. CMake's ExternalProject clones with
+# `--depth 1 --no-single-branch`, so that a GIT_TAG naming any ref can still be
+# checked out afterwards — which fetches the depth-1 tip of *every* branch and
+# tag, and every one of those tips has its own 16 MB parser.c. Measured: 88 MB
+# and 85 s full, 28 MB and 79 s shallow. Barely moved. (CPM would have set
+# GIT_SHALLOW on its own here, since these tags are not commit hashes, but only
+# inside its CPM_SOURCE_CACHE branch — so with no cache configured you get full
+# clones and no warning either way.)
+#
+# A tarball has no history at all: 2.4 MB and about 2 s for all three.
+#
+# URL_HASH is the tradeoff to know about. It buys integrity, and it costs a
+# build that fails loudly if GitHub ever regenerates an archive — which it has
+# done once, in 2023, when it changed compression and broke pinned hashes across
+# the ecosystem. A loud failure fixed by one line is the better end of that
+# trade for a dependency carrying a parser we execute.
+
 # tree-sitter's own CMakeLists declares BUILD_SHARED_LIBS as a *cache* option
 # defaulting to ON, so leaving it alone both makes tree-sitter shared and leaks
 # the setting to every CPM package configured after it. A plain normal variable
@@ -9,8 +34,9 @@ set(BUILD_SHARED_LIBS OFF)
 
 CPMAddPackage(
         NAME tree-sitter
-        GITHUB_REPOSITORY tree-sitter/tree-sitter
-        GIT_TAG v0.26.11)
+        VERSION 0.26.11
+        URL https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.26.11.tar.gz
+        URL_HASH SHA256=1bab01ed21464f3272665b9c60e39ee79f68da1333e80b23f2c9356569d06971)
 
 # The grammars are DOWNLOAD_ONLY on purpose.
 #
@@ -21,8 +47,9 @@ CPMAddPackage(
 # parser.c is complete; compiling it directly avoids the whole problem.
 CPMAddPackage(
         NAME tree-sitter-cpp
-        GITHUB_REPOSITORY tree-sitter/tree-sitter-cpp
-        GIT_TAG v0.23.4
+        VERSION 0.23.4
+        URL https://github.com/tree-sitter/tree-sitter-cpp/archive/refs/tags/v0.23.4.tar.gz
+        URL_HASH SHA256=7a2c55afe3028f4105f25762ea58cc16537d1f5a1dcd9cca90410b3cd5d46051
         DOWNLOAD_ONLY YES)
 
 # Fetched only for queries/highlights.scm. C++ highlighting is officially C's
@@ -30,8 +57,9 @@ CPMAddPackage(
 # the C++ file alone is 12 patterns with no comments, numbers or operators.
 CPMAddPackage(
         NAME tree-sitter-c
-        GITHUB_REPOSITORY tree-sitter/tree-sitter-c
-        GIT_TAG v0.24.2
+        VERSION 0.24.2
+        URL https://github.com/tree-sitter/tree-sitter-c/archive/refs/tags/v0.24.2.tar.gz
+        URL_HASH SHA256=2eeb4db31f8fa0865e45488503d13403923bcb485a1bdb637abff8c42dd97364
         DOWNLOAD_ONLY YES)
 
 if (NOT TARGET ts-grammar-cpp)

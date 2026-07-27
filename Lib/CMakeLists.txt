@@ -10,11 +10,7 @@
 # ECodeSyntax hangs off ECodeCore alone and nothing below it links it, which is
 # what keeps tree-sitter out of an embedded code view.
 add_subdirectory(ECodeCore)
-
-if (ECODE_BUILD_SYNTAX)
-    add_subdirectory(ECodeSyntax)
-endif ()
-
+add_subdirectory(ECodeSyntax)
 add_subdirectory(ECodeRender)
 add_subdirectory(ECodeWidgets)
 add_subdirectory(ECodeEditor)

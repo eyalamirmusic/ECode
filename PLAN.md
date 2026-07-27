@@ -156,11 +156,18 @@ target_link_libraries(MyApp PRIVATE ECode::Editor)
 ```
 
 `ECODE_BUILD_APPS` and `ECODE_ENABLE_TESTS` both default to
-`PROJECT_IS_TOP_LEVEL`, so a consumer builds libraries and nothing else.
-`ECODE_BUILD_SYNTAX=OFF` skips the tree-sitter fetch entirely, which is most of a
-cold configure — 105 s down to 7 s — and is worth having because an embedded view
-draws plain text without a grammar. Both applications need it, so it is checked
-against `ECODE_BUILD_APPS` rather than failing at link time.
+`PROJECT_IS_TOP_LEVEL`, so a consumer builds libraries and nothing else. Those
+are the only two knobs, and a cold configure is about nine seconds.
+
+There was briefly a third, `ECODE_BUILD_SYNTAX`, guarding the tree-sitter fetch
+because it cost 98 of those seconds. Moving the grammars from git clones to
+release tarballs took that to two, and a flag saving two seconds is worth less
+than the branch it puts through every CMakeLists and two test targets — so it is
+gone. Nothing was lost by removing it: `ECodeEditor` never linked `ECodeSyntax`,
+so an embedded code view carries no grammar whether or not one is *built*, and
+that is the property that actually matters. See `CMake/FindTreeSitter.cmake` for
+why cloning a generated 16 MB `parser.c` with its history cost so much, and why
+`GIT_SHALLOW` does not fix it.
 
 There is deliberately no `install(EXPORT)`, and the reason is upstream: eacp has
 no install rules or export sets at all, so an ECode target naming `eacp-core` in

@@ -46,17 +46,11 @@ nano_add_executable(ECodeEditorTests
 
 # Highlighting runs a real grammar and a real query, but still needs no GPU: the
 # spans are computed entirely on the CPU.
-#
-# These two are the only test targets that need the grammar, so they are the only
-# ones guarded — everything above still runs under -DECODE_BUILD_SYNTAX=OFF,
-# which is what makes that configuration testable rather than merely buildable.
-if (ECODE_BUILD_SYNTAX)
-    nano_add_executable(ECodeSyntaxTests
-            SOURCES
-                ColdOpenTests.cpp
-                SyntaxHighlighterTests.cpp
-            TARGETS ECodeSyntax)
-endif ()
+nano_add_executable(ECodeSyntaxTests
+        SOURCES
+            ColdOpenTests.cpp
+            SyntaxHighlighterTests.cpp
+        TARGETS ECodeSyntax)
 
 nano_add_executable(ECodeWorkbenchTests
         SOURCES
@@ -85,28 +79,23 @@ nano_add_executable(ECodeEditorRenderTests
 # The renderer/highlighter integration draws off-screen, so unlike the others
 # these need a GPU device and an event loop. NO_MAIN + TestMain runs them inside
 # Apps::run, the same shape eacp's GPU tests use.
-#
-# Guarded with ECodeSyntaxTests: several of these draw a *highlighted* document,
-# which is the whole point of them.
-if (ECODE_BUILD_SYNTAX)
-    nano_add_executable(ECodeRenderTests
-            NO_MAIN
-            SOURCES
-                ChromeRenderTests.cpp
-                ColdOpenRenderTests.cpp
-                ContextMenuRenderTests.cpp
-                DamageTests.cpp
-                EditorGroupRenderTests.cpp
-                FindRenderTests.cpp
-                FontRenderTests.cpp
-                HorizontalScrollTests.cpp
-                MultiCursorRenderTests.cpp
-                PaletteRenderTests.cpp
-                RenderIntegrationTests.cpp
-                SplitterRenderTests.cpp
-                TabRenderTests.cpp
-                TestMain.cpp
-                ThemeRenderTests.cpp
-                WrapRenderTests.cpp
-            TARGETS ECodeSyntax ECodeWorkbench)   # the workbench links ECodeRender publicly
-endif ()
+nano_add_executable(ECodeRenderTests
+        NO_MAIN
+        SOURCES
+            ChromeRenderTests.cpp
+            ColdOpenRenderTests.cpp
+            ContextMenuRenderTests.cpp
+            DamageTests.cpp
+            EditorGroupRenderTests.cpp
+            FindRenderTests.cpp
+            FontRenderTests.cpp
+            HorizontalScrollTests.cpp
+            MultiCursorRenderTests.cpp
+            PaletteRenderTests.cpp
+            RenderIntegrationTests.cpp
+            SplitterRenderTests.cpp
+            TabRenderTests.cpp
+            TestMain.cpp
+            ThemeRenderTests.cpp
+            WrapRenderTests.cpp
+        TARGETS ECodeSyntax ECodeWorkbench)   # the workbench links ECodeRender publicly
