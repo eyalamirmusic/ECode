@@ -37,17 +37,30 @@ public:
     PaintContext& operator=(const PaintContext&) = delete;
 
     eacp::GPU::RenderPass& pass() const { return renderPass; }
-    eacp::Text::GlyphRenderer& glyphs() const { return glyphRenderer; }
+
+    // Submits any queued rectangles first, so the text about to be queued lands
+    // *over* them rather than under. See sprites() for the whole rule.
+    //
+    // Fetch it at the point of use rather than caching the reference: a cached
+    // one skips this flush, which is exactly how a selection ends up painted
+    // over the text it is selecting.
+    eacp::Text::GlyphRenderer& glyphs();
 
     // The atlas glyphs are being drawn from right now, which is the chrome's
     // unless an AtlasScope is open.
     eacp::Text::GlyphAtlas& atlas() const { return *glyphAtlas; }
 
-    // Rebinds the sprite pipeline if a glyph flush has clobbered it since the
-    // last call, which is the second half of the same coupling: flushing text
-    // leaves the glyph pipeline bound, so the next fillRect would otherwise
-    // draw through the glyph shader. Fetch it at the point of use rather than
-    // caching the reference — a cached one goes stale across a clip change.
+    // Submits any queued text first, then hands back the renderer.
+    //
+    // Both accessors flush the *other* batch, and between them that is the whole
+    // ordering rule: whatever was issued first reaches the GPU first. It has to
+    // be enforced here because the two renderers batch independently — a
+    // rectangle is queued onto a run and drawn when something makes the next
+    // quad unable to join it, and glyphs are queued until a flush — so without
+    // it the drawing order is not the call order but the order the two queues
+    // happen to drain in.
+    //
+    // Fetch it at the point of use rather than caching the reference.
     eacp::Sprites::SpriteRenderer& sprites();
 
     // Pixels per point. Destinations are in points and scissor rects are in
@@ -58,9 +71,22 @@ public:
     const eacp::Graphics::Rect& clip() const { return currentClip; }
 
     // Submits the queued glyphs under the clip they were queued with. Called
-    // for you on every clip change and at the end of the frame; call it by
-    // hand only when issuing a draw that must land after pending text.
+    // for you on every clip change, by sprites(), and at the end of the frame.
+    // There is rarely a reason to call it by hand any more: a rectangle issued
+    // after text already lands on top of it.
     void flushGlyphs();
+
+    // The same for the queued rectangles.
+    //
+    // Rectangles must be submitted before the pass ends *and* before the scissor
+    // rect moves, and neither happens on its own. eacp's SpriteRenderer batches
+    // onto an open run and draws it when the pass ends — but the pass applies
+    // whatever scissor is in force at that moment, so a rectangle queued under
+    // one widget's clip and drained under another's is clipped by a rectangle it
+    // was never inside. Usually that is invisible, because a clip widens again
+    // on the way back up the tree. Sometimes the quad is scissored away entirely
+    // and simply never appears.
+    void flushSprites();
 
 private:
     friend class ClipScope;
@@ -79,10 +105,6 @@ private:
 
     eacp::Graphics::Rect currentClip;
     float scale = 1.f;
-
-    // Starts true so the first sprite draw of the frame binds, which is why no
-    // caller has to call SpriteRenderer::begin itself.
-    bool spritesNeedRebind = true;
 };
 
 // Narrows the clip for the lifetime of the scope and restores it after.

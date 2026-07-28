@@ -543,8 +543,6 @@ void TextRenderer::draw(PaintContext& context,
     cache.revalidate(stampFor(view));
     cache.setWindow(first, last);
 
-    auto& glyphs = context.glyphs();
-
     // Line numbers are clipped to the gutter and the text to what remains, so
     // neither can spill into the other however long a line is.
     const auto gutterRect =
@@ -647,7 +645,7 @@ void TextRenderer::draw(PaintContext& context,
             // the text slides under them, which is what every editor does.
             const auto x = viewport.x + gutter - gutterPadding - row.numberWidth;
 
-            submitLine(glyphs,
+            submitLine(context.glyphs(),
                        row.number,
                        x,
                        viewport.y + scroll.y + rowTop(index) + ascent);
@@ -658,14 +656,18 @@ void TextRenderer::draw(PaintContext& context,
         const auto clip = ClipScope {context, textRect};
 
         for (auto index = first; index < last; ++index)
-            submitLine(glyphs,
+            submitLine(context.glyphs(),
                        rowLayout(view, index).text,
                        textRect.x + textPadding + scroll.x,
                        viewport.y + scroll.y + rowTop(index) + ascent);
 
         // The batch has to reach the GPU before the caret is drawn over it,
-        // rather than at the end of the scope. context.sprites() rebinds after
-        // the flush on its own.
+        // rather than at the end of the scope.
+        //
+        // Redundant now that context.sprites() flushes the text itself, and kept
+        // because it says what the following block depends on. Deleting it would
+        // leave the caret's position in the frame resting on a rule stated only
+        // in PaintContext.
         context.flushGlyphs();
 
         // The carets go on top of the text: at a line's end one would otherwise
