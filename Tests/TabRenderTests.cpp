@@ -53,13 +53,13 @@ struct StripTestView final : GPU::GPUView
         request.pointSize = 13.f;
         request.scale = 1.f;
 
-        auto rasterizer = makeOwned<Text::GlyphRasterizer>(request);
-
-        if (!rasterizer->isValid())
+        if (!Text::GlyphRasterizer {request}.isValid())
             return false;
 
-        atlas = makeOwned<Text::GlyphAtlas>(
-            OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 2048);
+        atlas = makeOwned<Text::GlyphAtlas>(Text::rasterizerFaceFactory(),
+                                            request,
+                                            512,
+                                            2048);
 
         glyphs.emplace();
         glyphs->setViewportSize({viewWidth, viewHeight});
@@ -130,13 +130,13 @@ struct SwitchTestView final : GPU::GPUView
         request.pointSize = 13.f;
         request.scale = 1.f;
 
-        auto rasterizer = makeOwned<Text::GlyphRasterizer>(request);
-
-        if (!rasterizer->isValid())
+        if (!Text::GlyphRasterizer {request}.isValid())
             return false;
 
-        atlas = makeOwned<Text::GlyphAtlas>(
-            OwningPointer<Text::GlyphSource> {std::move(rasterizer)}, 512, 2048);
+        atlas = makeOwned<Text::GlyphAtlas>(Text::rasterizerFaceFactory(),
+                                            request,
+                                            512,
+                                            2048);
 
         renderer.emplace(*atlas, textTheme, 1.f);
         glyphs.emplace();

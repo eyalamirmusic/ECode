@@ -52,14 +52,16 @@ OwningPointer<Text::GlyphAtlas> makeGlyphAtlas(const FontSettings& font, float s
     request.pointSize = font.size();
     request.scale = scale;
 
-    auto rasterizer = makeOwned<Text::GlyphRasterizer>(request);
-
-    if (!rasterizer->isValid())
+    // The atlas builds its own faces through the factory and reports nothing
+    // when a family fails to resolve — it falls back to face 0. So the probe
+    // stays: a caller asking for a font this machine does not have gets an
+    // empty pointer here rather than an atlas quietly drawing something else.
+    if (!Text::GlyphRasterizer {request}.isValid())
         return {};
 
-    return makeOwned<Text::GlyphAtlas>(
-        OwningPointer<Text::GlyphSource> {std::move(rasterizer)},
-        initialAtlasSize,
-        maximumAtlasSize);
+    return makeOwned<Text::GlyphAtlas>(Text::rasterizerFaceFactory(),
+                                       request,
+                                       initialAtlasSize,
+                                       maximumAtlasSize);
 }
 } // namespace ecode
