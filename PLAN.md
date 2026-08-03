@@ -24,6 +24,12 @@ project embeds by constructing one `CodeEditorView`. See §2.
 Built against [eacp](https://github.com/eyalamirmusic/eacp) `main` via CPM. Much
 of the framework work ECode needed landed upstream; §3 is what has not.
 
+**One part of this document is being overtaken.** eacp has grown its own
+lightweight widget tier, `UI::Component`, which is the same design as ECode's
+`Widget` and a superset of it. `ComponentPlan.md` is the live plan for moving
+onto it; §2's module map and §3's list of missing pieces both describe the world
+before it existed, and are rewritten when that work lands.
+
 ---
 
 ## 1. Decisions that hold
